@@ -26,28 +26,26 @@ def export_to_excel(db_path: str = "data/decisions.db",
 
     wb = Workbook()
 
-    date_filter = ""
-    if today_only:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        date_filter = f" WHERE d.timestamp LIKE '{today}%'"
+    # Pass date string only — each sheet builds its own WHERE clause safely
+    date_str = datetime.utcnow().strftime("%Y-%m-%d") if today_only else None
 
     # Sheet 1: Paper Trades (most useful during dry run)
-    _build_paper_trades_sheet(wb, conn, date_filter)
+    _build_paper_trades_sheet(wb, conn, date_str)
 
     # Sheet 2: Daily Summary
     _build_daily_summary_sheet(wb, conn)
 
     # Sheet 3: Live Trades (empty in dry run)
-    _build_trades_sheet(wb, conn, date_filter)
+    _build_trades_sheet(wb, conn, date_str)
 
     # Sheet 4: All Decisions
-    _build_decisions_sheet(wb, conn, date_filter)
+    _build_decisions_sheet(wb, conn, date_str)
 
     # Sheet 5: Skipped Winners
-    _build_skipped_winners_sheet(wb, conn, date_filter)
+    _build_skipped_winners_sheet(wb, conn, date_str)
 
     # Sheet 6: Filter Performance
-    _build_filter_performance_sheet(wb, conn, date_filter)
+    _build_filter_performance_sheet(wb, conn, date_str)
 
     # Remove default empty sheet if we created others
     if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
@@ -97,7 +95,7 @@ def _color_pnl_column(ws, col_idx: int, start_row: int = 2):
                 pass
 
 
-def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
+def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
     ws = wb.create_sheet("Paper Trades 💧")
     headers = [
         "Timestamp", "Coin", "Market", "Strategy", "Side",
@@ -106,21 +104,18 @@ def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filte
     ]
     ws.append(headers)
 
-    date_where = ""
-    if date_filter:
-        today = datetime.utcnow().strftime("%Y-%m-%d")
-        date_where = f"WHERE timestamp LIKE '{today}%'"
-
+    where = "WHERE timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
     query = f"""
         SELECT timestamp, coin, market_slug, strategy_type, side,
                entry_price, target_price, shares, cost, fee_total,
                status, exit_price, pnl
         FROM paper_trades
-        {date_where}
+        {where}
         ORDER BY id DESC
         LIMIT 10000
     """
-    for row in conn.execute(query):
+    for row in conn.execute(query, params):
         r = list(row)
         # Add P&L %
         cost = r[8] or 0
@@ -161,46 +156,52 @@ def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filte
         pnl_cell.fill = GREEN_FILL if (total_pnl or 0) > 0 else RED_FILL
 
 
-def _build_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
-    ws = wb.create_sheet("Trades")
+def _build_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
+    ws = wb.create_sheet("Live Trades")
     headers = [
-        "Timestamp", "Market", "UP Price", "DOWN Price", "Combined Cost",
-        "Fees", "Shares", "Status", "Abort Cost", "Actual P&L"
+        "Timestamp", "Coin", "Strategy", "Side", "Market",
+        "UP Price", "DOWN Price", "Entry Price", "Target Price",
+        "Combined Cost", "Fees", "Shares", "Status", "Abort Cost", "Actual P&L"
     ]
     ws.append(headers)
 
+    where = "WHERE t.timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
     query = f"""
-        SELECT t.timestamp, t.market_slug, t.up_price, t.down_price,
+        SELECT t.timestamp, t.coin, t.strategy_type, t.side, t.market_slug,
+               t.up_price, t.down_price, t.entry_price, t.target_price,
                t.combined_cost, t.fee_total, t.shares, t.status, t.abort_cost,
                do.actual_profit
         FROM trades t
         LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
-        {'WHERE t.timestamp LIKE ' + repr(datetime.utcnow().strftime("%Y-%m-%d") + "%") if date_filter else ''}
+        {where}
         ORDER BY t.id DESC
     """
-    for row in conn.execute(query):
+    for row in conn.execute(query, params):
         ws.append(list(row))
 
     _style_header(ws, len(headers))
     _auto_width(ws)
-    _color_pnl_column(ws, 10)  # Actual P&L column
+    _color_pnl_column(ws, 15)  # Actual P&L column
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_decisions_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
+def _build_decisions_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
     ws = wb.create_sheet("Decisions")
     headers = [
-        "Timestamp", "Market", "UP Ask", "DOWN Ask", "Combined",
-        "BTC Price", "Velocity 30s", "Velocity 60s",
+        "Timestamp", "Coin", "Strategy", "Market", "UP Ask", "DOWN Ask", "Combined",
+        "Price", "Velocity 30s", "Velocity 60s",
         "UP Depth", "DOWN Depth", "Time Left (s)",
         "Feeds", "Passed Filters", "Failed Filters",
         "Action", "Reason", "Would Have Profited", "Hypothetical P&L"
     ]
     ws.append(headers)
 
-    where = date_filter.replace("d.", "decisions.")
+    where = "WHERE d.timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
     query = f"""
-        SELECT d.timestamp, d.market_slug, d.up_best_ask, d.down_best_ask,
+        SELECT d.timestamp, d.coin, d.strategy_type, d.market_slug,
+               d.up_best_ask, d.down_best_ask,
                d.combined_cost, d.btc_price, d.coin_velocity_30s, d.coin_velocity_60s,
                d.up_depth_usd, d.down_depth_usd, d.time_remaining_s,
                d.feed_count, d.filter_passed, d.filter_failed,
@@ -212,46 +213,46 @@ def _build_decisions_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: 
         ORDER BY d.id DESC
         LIMIT 10000
     """
-    for row in conn.execute(query):
+    for row in conn.execute(query, params):
         ws.append(list(row))
 
     _style_header(ws, len(headers))
     _auto_width(ws)
-    _color_pnl_column(ws, 18)  # Hypothetical P&L column
+    _color_pnl_column(ws, 20)  # Hypothetical P&L column
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_skipped_winners_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
+def _build_skipped_winners_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
     ws = wb.create_sheet("Skipped Winners")
     headers = [
-        "Timestamp", "Market", "UP Ask", "DOWN Ask", "Combined",
+        "Timestamp", "Coin", "Market", "UP Ask", "DOWN Ask", "Combined",
         "Failed Filters", "Reason", "Hypothetical P&L", "Winner"
     ]
     ws.append(headers)
 
-    where = date_filter.replace("d.", "decisions.")
-    if where:
-        where += " AND"
-    else:
-        where = " WHERE"
+    where = "WHERE d.action = 'SKIP' AND do.would_have_profited = 1"
+    params = []
+    if date_str:
+        where += " AND d.timestamp LIKE ?"
+        params.append(f"{date_str}%")
 
     query = f"""
-        SELECT d.timestamp, d.market_slug, d.up_best_ask, d.down_best_ask,
+        SELECT d.timestamp, d.coin, d.market_slug, d.up_best_ask, d.down_best_ask,
                d.combined_cost, d.filter_failed, d.reason,
                do.hypothetical_profit, o.winner
         FROM decisions d
         JOIN decision_outcomes do ON do.decision_id = d.id
         JOIN outcomes o ON do.outcome_id = o.id
-        {where} d.action = 'SKIP' AND do.would_have_profited = 1
+        {where}
         ORDER BY do.hypothetical_profit DESC
         LIMIT 5000
     """
-    for row in conn.execute(query):
+    for row in conn.execute(query, params):
         ws.append(list(row))
 
     _style_header(ws, len(headers))
     _auto_width(ws)
-    _color_pnl_column(ws, 8)  # Hypothetical P&L
+    _color_pnl_column(ws, 9)  # Hypothetical P&L
     ws.auto_filter.ref = ws.dimensions
 
 
@@ -291,7 +292,7 @@ def _build_daily_summary_sheet(wb: Workbook, conn: sqlite3.Connection):
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_filter_performance_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
+def _build_filter_performance_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
     ws = wb.create_sheet("Filter Performance")
     headers = [
         "Filter", "Times Passed", "Times Failed", "Reject Rate %",
@@ -299,10 +300,10 @@ def _build_filter_performance_sheet(wb: Workbook, conn: sqlite3.Connection, date
     ]
     ws.append(headers)
 
-    # Get all filter data
-    where = date_filter if date_filter else ""
+    where = "WHERE timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
     rows = conn.execute(
-        f"SELECT filter_passed, filter_failed, action FROM decisions {where}"
+        f"SELECT filter_passed, filter_failed, action FROM decisions {where}", params
     ).fetchall()
 
     filter_counts: dict[str, dict] = {}
@@ -318,18 +319,18 @@ def _build_filter_performance_sheet(wb: Workbook, conn: sqlite3.Connection, date
                 filter_counts.setdefault(name, {"passed": 0, "failed": 0})
                 filter_counts[name]["failed"] += 1
 
-    # Get accuracy data (how many rejections were correct)
     for fname in filter_counts:
-        # A "correct rejection" is when the filter failed AND the hypothetical profit was <= 0
+        date_clause = "AND d.timestamp LIKE ?" if date_str else ""
+        acc_params = [f"%{fname}%"] + ([f"{date_str}%"] if date_str else [])
         query = f"""
             SELECT
-                SUM(CASE WHEN do.would_have_profited = 0 THEN 1 ELSE 0 END) as correct,
-                SUM(CASE WHEN do.would_have_profited = 1 THEN 1 ELSE 0 END) as missed
+                SUM(CASE WHEN do.would_have_profited = 0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN do.would_have_profited = 1 THEN 1 ELSE 0 END)
             FROM decisions d
             JOIN decision_outcomes do ON do.decision_id = d.id
-            {where} {"AND" if where else "WHERE"} d.filter_failed LIKE ?
+            WHERE d.filter_failed LIKE ? {date_clause}
         """
-        result = conn.execute(query, (f"%{fname}%",)).fetchone()
+        result = conn.execute(query, acc_params).fetchone()
         if result:
             filter_counts[fname]["correct"] = result[0] or 0
             filter_counts[fname]["missed"] = result[1] or 0

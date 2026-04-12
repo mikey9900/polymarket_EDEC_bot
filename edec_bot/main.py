@@ -204,6 +204,9 @@ async def main():
             reply_markup=telegram._main_keyboard(),
         )
 
+        # Start live dashboard
+        await telegram.start_dashboard()
+
         logger.info("All systems running. Press Ctrl+C to stop.")
         await asyncio.gather(*tasks)
 

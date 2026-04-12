@@ -40,6 +40,8 @@ class TelegramBot:
         self.executor = executor
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
+        self._dashboard_message_id: int | None = None  # live dashboard message
+        self._dashboard_task: asyncio.Task | None = None
 
     async def start(self):
         """Initialize and start the Telegram bot."""
@@ -90,6 +92,122 @@ class TelegramBot:
     # -----------------------------------------------------------------------
     # Alert methods (called by other components)
     # -----------------------------------------------------------------------
+
+    # -----------------------------------------------------------------------
+    # Live dashboard
+    # -----------------------------------------------------------------------
+
+    def _build_dashboard_text(self) -> str:
+        """Build the live dashboard message text."""
+        now = datetime.utcnow().strftime("%H:%M:%S UTC")
+        is_active = self.strategy_engine.is_active if self.strategy_engine else False
+        status = self.risk_manager.get_status()
+        paper = self.tracker.get_paper_stats() if self.tracker else {}
+        _, capital = self.tracker.get_paper_capital() if self.tracker else (0, 0)
+
+        state = "🟢 SCANNING" if is_active else "⏹ STOPPED"
+        pnl = paper.get("total_pnl", 0)
+        pnl_emoji = "📈" if pnl >= 0 else "📉"
+        wins = paper.get("wins", 0)
+        losses = paper.get("losses", 0)
+        open_pos = paper.get("open_positions", 0)
+        win_rate = f"{paper.get('win_rate', 0):.0f}%" if (wins + losses) > 0 else "—"
+
+        lines = [
+            f"📡 *EDEC Live Dashboard* — {now}",
+            f"Status: {state} | 💧 Dry Run",
+            "",
+            f"🏦 Capital: `${capital:.2f}` | {pnl_emoji} P&L: `${pnl:+.2f}`",
+            f"✅ {wins} wins | ❌ {losses} losses | 🔄 {open_pos} open | 🎯 {win_rate}",
+            "",
+        ]
+
+        # Per-coin prices
+        if self.scanner:
+            lines.append("*Coin Prices*")
+            snapshot = self.scanner.get_status_snapshot()
+            cfg_single = self.config.single_leg
+            for coin in self.config.coins:
+                data = snapshot.get(coin)
+                if data:
+                    up = data["up_ask"]
+                    dn = data["down_ask"]
+                    # Signal indicator
+                    signal = ""
+                    if up <= cfg_single.entry_max and dn >= cfg_single.opposite_min:
+                        signal = " 🟡↑"
+                    elif dn <= cfg_single.entry_max and up >= cfg_single.opposite_min:
+                        signal = " 🟡↓"
+                    lines.append(f"`{coin.upper():>4}` UP `{up:.2f}` DN `{dn:.2f}`{signal}")
+                else:
+                    lines.append(f"`{coin.upper():>4}` — no market —")
+            lines.append("")
+
+        # Last 3 paper trades
+        if self.tracker:
+            recent = self.tracker.get_recent_paper_trades(limit=3)
+            if recent:
+                lines.append("*Recent Paper Trades*")
+                for t in recent:
+                    pnl_val = t.get("pnl")
+                    if pnl_val is not None:
+                        emoji = "✅" if pnl_val > 0 else "❌"
+                        pnl_str = f"${pnl_val:+.3f}"
+                    else:
+                        emoji = "🔄"
+                        pnl_str = "open"
+                    lines.append(
+                        f"{emoji} `{t['coin'].upper()}` {t['side'] or 'both'} "
+                        f"@{t['entry_price']:.2f} → {pnl_str}"
+                    )
+
+        lines.append(f"\n_Refreshes every 30s_")
+        return "\n".join(lines)
+
+    async def start_dashboard(self):
+        """Send the live dashboard message and start the refresh loop."""
+        if not self._app or not self.chat_id:
+            return
+        try:
+            msg = await self._app.bot.send_message(
+                chat_id=self.chat_id,
+                text=self._build_dashboard_text(),
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            self._dashboard_message_id = msg.message_id
+            self._dashboard_task = asyncio.create_task(self._dashboard_loop())
+            logger.info("Live dashboard started")
+        except Exception as e:
+            logger.error(f"Failed to start dashboard: {e}")
+
+    async def stop_dashboard(self):
+        """Stop the dashboard refresh loop."""
+        if self._dashboard_task:
+            self._dashboard_task.cancel()
+            self._dashboard_task = None
+
+    async def _dashboard_loop(self):
+        """Refresh the dashboard message every 30 seconds."""
+        while True:
+            await asyncio.sleep(30)
+            await self._refresh_dashboard()
+
+    async def _refresh_dashboard(self):
+        """Edit the existing dashboard message with fresh data and buttons."""
+        if not self._app or not self.chat_id or not self._dashboard_message_id:
+            return
+        try:
+            await self._app.bot.edit_message_text(
+                chat_id=self.chat_id,
+                message_id=self._dashboard_message_id,
+                text=self._build_dashboard_text(),
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+        except Exception as e:
+            logger.warning(f"Dashboard refresh failed: {e}")
+            self._dashboard_message_id = None
 
     async def send_alert(self, message: str, reply_markup=None):
         if not self._app or not self.chat_id:
@@ -266,16 +384,16 @@ class TelegramBot:
                 self.strategy_engine.start_scanning()
             self.risk_manager.resume()
             self.risk_manager.deactivate_kill_switch()
-            await query.answer("▶️ Bot started — scanning markets", show_alert=True)
-            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            await query.answer("▶️ Scanning started", show_alert=False)
+            await self._refresh_dashboard()
             return
 
         if data == "stop":
             if self.strategy_engine:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.pause()
-            await query.answer("⏸ Bot stopped", show_alert=True)
-            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            await query.answer("⏸ Bot stopped", show_alert=False)
+            await self._refresh_dashboard()
             return
 
         if data == "kill":
@@ -283,7 +401,7 @@ class TelegramBot:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.activate_kill_switch("Manual kill via Telegram")
             await query.answer("🛑 Kill switch activated!", show_alert=True)
-            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            await self._refresh_dashboard()
             return
 
         # --- Info buttons (reply below the existing message) ---

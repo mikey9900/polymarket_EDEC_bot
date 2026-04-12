@@ -395,6 +395,20 @@ class DecisionTracker:
     # Paper trading
     # -----------------------------------------------------------------------
 
+    def get_recent_paper_trades(self, limit: int = 3) -> list[dict]:
+        rows = self.conn.execute(
+            """SELECT timestamp, coin, strategy_type, side, entry_price,
+                      target_price, shares, cost, status, pnl
+               FROM paper_trades ORDER BY id DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {"timestamp": r[0], "coin": r[1], "strategy_type": r[2], "side": r[3],
+             "entry_price": r[4], "target_price": r[5], "shares": r[6],
+             "cost": r[7], "status": r[8], "pnl": r[9]}
+            for r in rows
+        ]
+
     def set_paper_capital(self, amount: float):
         """Set (or reset) the paper trading bankroll."""
         self.conn.execute("DELETE FROM paper_capital WHERE id = 1")

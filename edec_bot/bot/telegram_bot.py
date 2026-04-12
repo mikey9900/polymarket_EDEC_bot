@@ -23,7 +23,8 @@ MODE_LABELS = {
 }
 
 
-BUDGET_OPTIONS = [2, 5, 10, 20, 50, 100]
+BUDGET_OPTIONS = [1, 2, 5, 10, 15, 20]
+CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
 
 
 class TelegramBot:
@@ -109,15 +110,30 @@ class TelegramBot:
         status = self.risk_manager.get_status()
         is_running = not status["kill_switch"] and not status["paused"]
         order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
+        is_dry = self.config.execution.dry_run
+        _, capital_balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
 
         return InlineKeyboardMarkup([
+            # Row 1: Run control
             [
                 InlineKeyboardButton(
                     "⏸ Pause" if is_running else "▶️ Resume",
-                    callback_data="stop" if is_running else "start"
+                    callback_data="stop" if is_running else "start",
                 ),
-                InlineKeyboardButton("🛑 Kill", callback_data="kill"),
+                InlineKeyboardButton("🛑 Kill Switch", callback_data="kill"),
             ],
+            # Row 2: Mode toggle
+            [
+                InlineKeyboardButton(
+                    "💧 Dry Run ✅" if is_dry else "💧 Dry Run",
+                    callback_data="noop",
+                ),
+                InlineKeyboardButton(
+                    "🌊 Wet Run 🔒",
+                    callback_data="wet_disabled",
+                ),
+            ],
+            # Row 3: Data
             [
                 InlineKeyboardButton("📊 Stats", callback_data="stats"),
                 InlineKeyboardButton("📈 Status", callback_data="status"),
@@ -126,18 +142,39 @@ class TelegramBot:
                 InlineKeyboardButton("📋 Trades", callback_data="trades"),
                 InlineKeyboardButton("🔍 Filters", callback_data="filters"),
             ],
+            # Row 4: Capital & Budget
             [
+                InlineKeyboardButton(f"🏦 Capital: ${capital_balance:.2f}", callback_data="capital"),
                 InlineKeyboardButton(f"💰 Budget: ${order_size:.0f}", callback_data="budget"),
+            ],
+            # Row 5: Export
+            [
+                InlineKeyboardButton("📤 Export Today", callback_data="export_today"),
+                InlineKeyboardButton("📤 Export All", callback_data="export_all"),
             ],
         ])
 
     def _budget_keyboard(self) -> InlineKeyboardMarkup:
-        """Budget selection keyboard."""
+        """Budget per-trade selection."""
+        order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
         buttons = [
-            InlineKeyboardButton(f"${amt}", callback_data=f"budget_{amt}")
+            InlineKeyboardButton(
+                f"✅ ${amt}" if amt == order_size else f"${amt}",
+                callback_data=f"budget_{amt}",
+            )
             for amt in BUDGET_OPTIONS
         ]
-        # 3 per row
+        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
+        rows.append([InlineKeyboardButton("« Back", callback_data="back")])
+        return InlineKeyboardMarkup(rows)
+
+    def _capital_keyboard(self) -> InlineKeyboardMarkup:
+        """Paper capital selection."""
+        _, balance = self.tracker.get_paper_capital()
+        buttons = [
+            InlineKeyboardButton(f"${amt}", callback_data=f"capital_{amt}")
+            for amt in CAPITAL_OPTIONS
+        ]
         rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
         rows.append([InlineKeyboardButton("« Back", callback_data="back")])
         return InlineKeyboardMarkup(rows)
@@ -152,13 +189,22 @@ class TelegramBot:
 
         data = query.data
 
+        # --- No-op / disabled buttons ---
+        if data in ("noop", "wet_disabled"):
+            await query.answer(
+                "🌊 Wet Run coming soon — currently disabled for safety." if data == "wet_disabled"
+                else "Already in Dry Run mode.",
+                show_alert=True,
+            )
+            return
+
         # --- Budget selection ---
         if data.startswith("budget_"):
             amt = float(data.split("_")[1])
             if self.executor:
                 self.executor.set_order_size(amt)
             await query.edit_message_text(
-                f"💰 Budget updated to *${amt:.0f}* per trade\n\n"
+                f"💰 Budget updated to *${amt:.0f}* per trade\n"
                 f"_All new orders will use this size._",
                 parse_mode="Markdown",
                 reply_markup=self._main_keyboard(),
@@ -168,11 +214,35 @@ class TelegramBot:
         if data == "budget":
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
             await query.edit_message_text(
-                f"💰 *Select Budget Per Trade*\n"
-                f"Current: *${order_size:.0f}*\n\n"
-                f"_This is the USD amount per order leg._",
+                f"💰 *Budget Per Trade*\n"
+                f"Current: *${order_size:.0f}*\n"
+                f"_Amount spent per order leg._",
                 parse_mode="Markdown",
                 reply_markup=self._budget_keyboard(),
+            )
+            return
+
+        # --- Capital selection ---
+        if data.startswith("capital_"):
+            amt = float(data.split("_")[1])
+            if self.tracker:
+                self.tracker.set_paper_capital(amt)
+            await query.edit_message_text(
+                f"🏦 Paper capital set to *${amt:.0f}*\n"
+                f"_Bot will simulate trades against this bankroll._",
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            return
+
+        if data == "capital":
+            _, balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
+            await query.edit_message_text(
+                f"🏦 *Paper Capital*\n"
+                f"Current balance: *${balance:.2f}*\n\n"
+                f"_Select a new bankroll to start fresh:_",
+                parse_mode="Markdown",
+                reply_markup=self._capital_keyboard(),
             )
             return
 
@@ -213,11 +283,17 @@ class TelegramBot:
         # --- Info buttons (reply below the existing message) ---
         if data == "stats":
             stats = self.tracker.get_daily_stats()
+            paper = self.tracker.get_paper_stats()
+            pnl_emoji = "📈" if paper["total_pnl"] >= 0 else "📉"
+            win_rate = f"{paper['win_rate']:.0f}%" if paper["total_trades"] > 0 else "—"
             await query.message.reply_text(
                 f"📊 *Today's Stats ({stats['date']})*\n"
                 f"Evaluations: {stats['total_evaluations']}\n"
-                f"Signals: {stats['signals']} | Skips: {stats['skips']}\n"
-                f"Trades: {stats['trades_executed']} ✅{stats['successful']} ❌{stats['aborted']}",
+                f"Signals: {stats['signals']} | Skips: {stats['skips']}\n\n"
+                f"{pnl_emoji} *Paper Trading*\n"
+                f"Capital: ${paper['current_balance']:.2f} / ${paper['total_capital']:.2f}\n"
+                f"P&L: ${paper['total_pnl']:+.2f} | Win rate: {win_rate}\n"
+                f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}",
                 parse_mode="Markdown",
             )
 
@@ -248,6 +324,23 @@ class TelegramBot:
                         f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}"
                     )
                 await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        elif data in ("export_today", "export_all"):
+            if not self.export_fn:
+                await query.message.reply_text("Export not available.")
+                return
+            await query.message.reply_text("⏳ Generating spreadsheet...")
+            try:
+                path = self.export_fn(today_only=(data == "export_today"))
+                import os
+                with open(path, "rb") as f:
+                    await query.message.reply_document(
+                        document=f,
+                        filename=os.path.basename(path),
+                        caption="📊 EDEC Bot Export — Paper Trades, Decisions, Filter Performance",
+                    )
+            except Exception as e:
+                await query.message.reply_text(f"Export error: {e}")
 
         elif data == "filters":
             stats = self.tracker.get_filter_stats()

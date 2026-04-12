@@ -76,10 +76,34 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
     PRIMARY KEY (decision_id, outcome_id)
 );
 
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    market_slug TEXT NOT NULL,
+    coin TEXT NOT NULL,
+    strategy_type TEXT NOT NULL,
+    side TEXT,
+    entry_price REAL NOT NULL,
+    target_price REAL,
+    shares REAL NOT NULL,
+    cost REAL NOT NULL,
+    fee_total REAL DEFAULT 0,
+    status TEXT DEFAULT 'open',
+    exit_price REAL,
+    pnl REAL
+);
+
+CREATE TABLE IF NOT EXISTS paper_capital (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total_capital REAL NOT NULL,
+    current_balance REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
+CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
 """
 
 
@@ -326,6 +350,119 @@ class DecisionTracker:
             {"filter": name, **counts}
             for name, counts in sorted(filter_counts.items())
         ]
+
+    # -----------------------------------------------------------------------
+    # Paper trading
+    # -----------------------------------------------------------------------
+
+    def set_paper_capital(self, amount: float):
+        """Set (or reset) the paper trading bankroll."""
+        self.conn.execute("DELETE FROM paper_capital WHERE id = 1")
+        self.conn.execute(
+            "INSERT INTO paper_capital (id, total_capital, current_balance) VALUES (1, ?, ?)",
+            (amount, amount),
+        )
+        self.conn.commit()
+        logger.info(f"Paper capital set to ${amount:.2f}")
+
+    def get_paper_capital(self) -> tuple[float, float]:
+        """Return (total_capital, current_balance)."""
+        row = self.conn.execute(
+            "SELECT total_capital, current_balance FROM paper_capital WHERE id = 1"
+        ).fetchone()
+        return (row[0], row[1]) if row else (0.0, 0.0)
+
+    def has_paper_capital(self, cost: float) -> bool:
+        _, balance = self.get_paper_capital()
+        return balance >= cost
+
+    def log_paper_trade(self, market_slug: str, coin: str, strategy_type: str,
+                        side: str, entry_price: float, target_price: float,
+                        shares: float, fee_total: float) -> int:
+        """Open a paper trade and deduct cost from balance."""
+        cost = entry_price * shares
+        cursor = self.conn.execute(
+            """INSERT INTO paper_trades
+               (timestamp, market_slug, coin, strategy_type, side,
+                entry_price, target_price, shares, cost, fee_total, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+            (datetime.utcnow().isoformat(), market_slug, coin, strategy_type,
+             side, entry_price, target_price, shares, cost, fee_total),
+        )
+        # Deduct from paper balance
+        self.conn.execute(
+            "UPDATE paper_capital SET current_balance = current_balance - ? WHERE id = 1",
+            (cost,),
+        )
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def close_paper_trades(self, market_slug: str, winner: str):
+        """Resolve all open paper trades for a market and update balance."""
+        trades = self.conn.execute(
+            """SELECT id, strategy_type, side, entry_price, shares, cost, fee_total
+               FROM paper_trades WHERE market_slug = ? AND status = 'open'""",
+            (market_slug,),
+        ).fetchall()
+
+        for row in trades:
+            trade_id, strategy_type, side, entry_price, shares, cost, fee_total = row
+
+            if strategy_type == "dual_leg":
+                # Both sides always pay out $1 combined
+                pnl = (1.0 - entry_price) * shares - fee_total
+                exit_price = 1.0
+                status = "closed_win"
+            else:
+                # Single leg — check if our side won
+                won = (side == "up" and winner.upper() == "UP") or \
+                      (side == "down" and winner.upper() == "DOWN")
+                if won:
+                    pnl = (1.0 - entry_price) * shares - fee_total
+                    exit_price = 1.0
+                    status = "closed_win"
+                else:
+                    pnl = -cost
+                    exit_price = 0.0
+                    status = "closed_loss"
+
+            self.conn.execute(
+                "UPDATE paper_trades SET status=?, exit_price=?, pnl=? WHERE id=?",
+                (status, exit_price, pnl, trade_id),
+            )
+            # Return cost + profit/loss to balance
+            self.conn.execute(
+                "UPDATE paper_capital SET current_balance = current_balance + ? WHERE id = 1",
+                (cost + pnl,),
+            )
+
+        if trades:
+            self.conn.commit()
+            logger.info(f"Closed {len(trades)} paper trades for {market_slug} → winner: {winner}")
+
+    def get_paper_stats(self) -> dict:
+        """Return paper trading summary."""
+        total, balance = self.get_paper_capital()
+        row = self.conn.execute(
+            """SELECT COUNT(*),
+                      SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
+                      SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END)
+               FROM paper_trades"""
+        ).fetchone()
+        total_trades, wins, losses, open_pos, realized_pnl = row
+        return {
+            "total_capital": total,
+            "current_balance": balance,
+            "total_pnl": balance - total,
+            "realized_pnl": realized_pnl or 0.0,
+            "total_trades": total_trades or 0,
+            "wins": wins or 0,
+            "losses": losses or 0,
+            "open_positions": open_pos or 0,
+            "win_rate": (wins / max(wins + losses, 1)) * 100,
+        }
 
     def close(self):
         self.conn.close()

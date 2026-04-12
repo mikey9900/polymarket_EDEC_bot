@@ -49,10 +49,18 @@ class ExecutionEngine:
             result.total_cost = signal.combined_cost
             result.fee_total = signal.fee_total
             result.shares = self._calc_shares(signal.up_price)
-            logger.info(
-                f"[DRY RUN] Would buy UP@{signal.up_price:.3f} + DOWN@{signal.down_price:.3f} "
-                f"({result.shares:.0f} shares) [{signal.market.coin.upper()}]"
-            )
+            cost = signal.combined_cost * result.shares
+            if self.tracker.has_paper_capital(cost):
+                self.tracker.log_paper_trade(
+                    signal.market.slug, signal.market.coin, "dual_leg", "both",
+                    signal.combined_cost, 1.0, result.shares, signal.fee_total,
+                )
+                logger.info(
+                    f"[DRY RUN] Paper trade: UP@{signal.up_price:.3f} + DOWN@{signal.down_price:.3f} "
+                    f"({result.shares:.0f} shares, cost=${cost:.2f}) [{signal.market.coin.upper()}]"
+                )
+            else:
+                logger.info(f"[DRY RUN] Skipped — insufficient paper capital (need ${cost:.2f})")
             return result
 
         try:
@@ -185,10 +193,18 @@ class ExecutionEngine:
             result.shares = shares
             result.total_cost = signal.entry_price * shares
             result.fee_total = signal.fee_total
-            logger.info(
-                f"[DRY RUN] [{coin}] SINGLE-LEG: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
-                f"→ SELL@{signal.target_sell_price:.3f} | {shares} shares"
-            )
+            cost = signal.entry_price * shares
+            if self.tracker.has_paper_capital(cost):
+                self.tracker.log_paper_trade(
+                    market.slug, market.coin, "single_leg", signal.side,
+                    signal.entry_price, signal.target_sell_price, shares, signal.fee_total,
+                )
+                logger.info(
+                    f"[DRY RUN] [{coin}] Paper trade: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
+                    f"→ SELL@{signal.target_sell_price:.3f} | {shares} shares, cost=${cost:.2f}"
+                )
+            else:
+                logger.info(f"[DRY RUN] [{coin}] Skipped — insufficient paper capital (need ${cost:.2f})")
             return result
 
         if shares < 5:

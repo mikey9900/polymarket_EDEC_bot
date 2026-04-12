@@ -100,7 +100,8 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
                             btc_close=coin_close,
                         )
 
-                        await telegram.alert_resolution(market.slug, outcome, 0)
+                        tracker.close_paper_trades(market.slug, outcome)
+                    await telegram.alert_resolution(market.slug, outcome, 0)
 
             if len(resolved_markets) > 1000:
                 resolved_markets.clear()
@@ -126,6 +127,10 @@ async def main():
     Path("data").mkdir(exist_ok=True)
 
     tracker = DecisionTracker("data/decisions.db")
+    # Init paper capital if not already set
+    total, _ = tracker.get_paper_capital()
+    if total == 0:
+        tracker.set_paper_capital(50.0)  # default $50 paper bankroll
     risk_manager = RiskManager(config)
     price_queue: asyncio.Queue = asyncio.Queue()
     signal_queue: asyncio.Queue = asyncio.Queue()

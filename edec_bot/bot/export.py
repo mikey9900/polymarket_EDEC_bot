@@ -31,19 +31,22 @@ def export_to_excel(db_path: str = "data/decisions.db",
         today = datetime.utcnow().strftime("%Y-%m-%d")
         date_filter = f" WHERE d.timestamp LIKE '{today}%'"
 
-    # Sheet 1: Trades
-    _build_trades_sheet(wb, conn, date_filter)
+    # Sheet 1: Paper Trades (most useful during dry run)
+    _build_paper_trades_sheet(wb, conn, date_filter)
 
-    # Sheet 2: All Decisions
-    _build_decisions_sheet(wb, conn, date_filter)
-
-    # Sheet 3: Skipped Winners
-    _build_skipped_winners_sheet(wb, conn, date_filter)
-
-    # Sheet 4: Daily Summary
+    # Sheet 2: Daily Summary
     _build_daily_summary_sheet(wb, conn)
 
-    # Sheet 5: Filter Performance
+    # Sheet 3: Live Trades (empty in dry run)
+    _build_trades_sheet(wb, conn, date_filter)
+
+    # Sheet 4: All Decisions
+    _build_decisions_sheet(wb, conn, date_filter)
+
+    # Sheet 5: Skipped Winners
+    _build_skipped_winners_sheet(wb, conn, date_filter)
+
+    # Sheet 6: Filter Performance
     _build_filter_performance_sheet(wb, conn, date_filter)
 
     # Remove default empty sheet if we created others
@@ -92,6 +95,70 @@ def _color_pnl_column(ws, col_idx: int, start_row: int = 2):
                 cell.fill = GREEN_FILL if val > 0 else RED_FILL if val < 0 else PatternFill()
             except (ValueError, TypeError):
                 pass
+
+
+def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):
+    ws = wb.create_sheet("Paper Trades 💧")
+    headers = [
+        "Timestamp", "Coin", "Market", "Strategy", "Side",
+        "Entry Price", "Target Price", "Shares", "Cost ($)",
+        "Fees ($)", "Status", "Exit Price", "P&L ($)", "P&L %"
+    ]
+    ws.append(headers)
+
+    date_where = ""
+    if date_filter:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        date_where = f"WHERE timestamp LIKE '{today}%'"
+
+    query = f"""
+        SELECT timestamp, coin, market_slug, strategy_type, side,
+               entry_price, target_price, shares, cost, fee_total,
+               status, exit_price, pnl
+        FROM paper_trades
+        {date_where}
+        ORDER BY id DESC
+        LIMIT 10000
+    """
+    for row in conn.execute(query):
+        r = list(row)
+        # Add P&L %
+        cost = r[8] or 0
+        pnl = r[12]
+        pnl_pct = (pnl / cost * 100) if (pnl is not None and cost > 0) else None
+        r.append(round(pnl_pct, 1) if pnl_pct is not None else None)
+        ws.append(r)
+
+    _style_header(ws, len(headers))
+    _auto_width(ws)
+    _color_pnl_column(ws, 13)   # P&L $
+    _color_pnl_column(ws, 14)   # P&L %
+    ws.auto_filter.ref = ws.dimensions
+
+    # Summary rows at bottom
+    total_row = ws.max_row + 2
+    ws.cell(row=total_row, column=1, value="SUMMARY")
+    ws.cell(row=total_row, column=1).font = Font(bold=True)
+
+    stats = conn.execute("""
+        SELECT COUNT(*),
+               SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
+               SUM(COALESCE(pnl, 0)),
+               SUM(cost)
+        FROM paper_trades
+    """).fetchone()
+
+    if stats:
+        total, wins, losses, open_pos, total_pnl, total_cost = stats
+        ws.cell(row=total_row, column=2, value=f"Total: {total or 0}")
+        ws.cell(row=total_row, column=3, value=f"✅ {wins or 0} wins")
+        ws.cell(row=total_row, column=4, value=f"❌ {losses or 0} losses")
+        ws.cell(row=total_row, column=5, value=f"🔄 {open_pos or 0} open")
+        pnl_cell = ws.cell(row=total_row, column=13, value=round(total_pnl or 0, 4))
+        pnl_cell.font = Font(bold=True)
+        pnl_cell.fill = GREEN_FILL if (total_pnl or 0) > 0 else RED_FILL
 
 
 def _build_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_filter: str):

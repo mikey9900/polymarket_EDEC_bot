@@ -28,6 +28,11 @@ class StrategyEngine:
         self._running = False
         # Runtime mode — controls which strategies are active
         self._mode = "both"  # "dual", "single", "both", "off"
+        # Cooldown: track last signal price per (coin, strategy_type).
+        # Only re-signal if price improves by more than MIN_IMPROVEMENT.
+        # Key = (coin, strategy_type), value = (market_slug, last_entry_price)
+        self._last_signal: dict[tuple, tuple] = {}
+        self.MIN_PRICE_IMPROVEMENT = 0.03  # must be 3c cheaper to re-signal
 
     @property
     def mode(self) -> str:
@@ -74,15 +79,33 @@ class StrategyEngine:
 
             if self.dual_leg_enabled():
                 signal = self._evaluate_dual_leg(coin, market, up_book, down_book, agg)
-                if signal is not None:
+                if signal is not None and self._is_price_improvement("dual_leg", coin, market.slug, signal.combined_cost):
+                    self._last_signal[(coin, "dual_leg")] = (market.slug, signal.combined_cost)
                     signals.append(signal)
 
             if self.single_leg_enabled():
                 signal = self._evaluate_single_leg(coin, market, up_book, down_book, agg)
-                if signal is not None:
+                if signal is not None and self._is_price_improvement("single_leg", coin, market.slug, signal.entry_price):
+                    self._last_signal[(coin, "single_leg")] = (market.slug, signal.entry_price)
                     signals.append(signal)
 
         return signals
+
+    def _is_price_improvement(self, strategy: str, coin: str, slug: str, price: float) -> bool:
+        """
+        Returns True if this is worth signalling:
+        - New market window (different slug) → always signal
+        - Same window but price improved by MIN_PRICE_IMPROVEMENT → signal again
+        - Same window, price same or worse → suppress
+        """
+        key = (coin, strategy)
+        last = self._last_signal.get(key)
+        if last is None:
+            return True                          # first ever signal for this coin/strategy
+        last_slug, last_price = last
+        if last_slug != slug:
+            return True                          # new 5-min window
+        return (last_price - price) >= self.MIN_PRICE_IMPROVEMENT  # price got cheaper
 
     # -----------------------------------------------------------------------
     # Dual-leg filter chain

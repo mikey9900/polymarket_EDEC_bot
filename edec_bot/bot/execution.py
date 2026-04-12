@@ -5,10 +5,10 @@ import logging
 import math
 from datetime import datetime, timezone
 
-from edec_bot.bot.config import Config
-from edec_bot.bot.models import DualOrderState, SingleLegPosition, TradeResult, TradeSignal
-from edec_bot.bot.risk_manager import RiskManager
-from edec_bot.bot.tracker import DecisionTracker
+from bot.config import Config
+from bot.models import DualOrderState, SingleLegPosition, TradeResult, TradeSignal
+from bot.risk_manager import RiskManager
+from bot.tracker import DecisionTracker
 
 logger = logging.getLogger(__name__)
 

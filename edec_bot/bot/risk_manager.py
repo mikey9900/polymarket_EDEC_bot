@@ -4,8 +4,8 @@ import logging
 from collections import deque
 from datetime import datetime, timedelta
 
-from edec_bot.bot.config import Config
-from edec_bot.bot.models import TradeResult
+from bot.config import Config
+from bot.models import TradeResult
 
 logger = logging.getLogger(__name__)
 

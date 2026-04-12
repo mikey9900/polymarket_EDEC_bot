@@ -8,8 +8,8 @@ from datetime import datetime, timezone
 
 import httpx
 
-from edec_bot.bot.config import Config
-from edec_bot.bot.models import MarketInfo, OrderBookSnapshot
+from bot.config import Config
+from bot.models import MarketInfo, OrderBookSnapshot
 
 logger = logging.getLogger(__name__)
 

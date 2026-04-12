@@ -8,9 +8,9 @@ from datetime import datetime
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-from edec_bot.bot.config import Config
-from edec_bot.bot.tracker import DecisionTracker
-from edec_bot.bot.risk_manager import RiskManager
+from bot.config import Config
+from bot.tracker import DecisionTracker
+from bot.risk_manager import RiskManager
 
 logger = logging.getLogger(__name__)
 

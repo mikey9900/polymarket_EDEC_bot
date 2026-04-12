@@ -108,7 +108,7 @@ class TelegramBot:
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         """Main control keyboard."""
         status = self.risk_manager.get_status()
-        is_running = not status["kill_switch"] and not status["paused"]
+        is_running = self.strategy_engine.is_active if self.strategy_engine else False
         order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
         is_dry = self.config.execution.dry_run
         _, capital_balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
@@ -262,19 +262,25 @@ class TelegramBot:
 
         # --- Start / Stop / Kill ---
         if data == "start":
+            if self.strategy_engine:
+                self.strategy_engine.start_scanning()
             self.risk_manager.resume()
             self.risk_manager.deactivate_kill_switch()
-            await query.answer("▶️ Trading resumed", show_alert=True)
+            await query.answer("▶️ Bot started — scanning markets", show_alert=True)
             await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
             return
 
         if data == "stop":
+            if self.strategy_engine:
+                self.strategy_engine.stop_scanning()
             self.risk_manager.pause()
-            await query.answer("⏸ Trading paused", show_alert=True)
+            await query.answer("⏸ Bot stopped", show_alert=True)
             await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
             return
 
         if data == "kill":
+            if self.strategy_engine:
+                self.strategy_engine.stop_scanning()
             self.risk_manager.activate_kill_switch("Manual kill via Telegram")
             await query.answer("🛑 Kill switch activated!", show_alert=True)
             await query.edit_message_reply_markup(reply_markup=self._main_keyboard())

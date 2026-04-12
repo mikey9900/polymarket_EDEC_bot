@@ -114,6 +114,46 @@ class DecisionTracker:
         self.conn = sqlite3.connect(db_path)
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
+        self._migrate()
+        self.conn.commit()
+
+    def _migrate(self):
+        """Add any columns/tables that didn't exist in older DB versions."""
+        # Ensure paper tables exist (added in v1.0.8)
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                market_slug TEXT NOT NULL,
+                coin TEXT NOT NULL,
+                strategy_type TEXT NOT NULL,
+                side TEXT,
+                entry_price REAL NOT NULL,
+                target_price REAL,
+                shares REAL NOT NULL,
+                cost REAL NOT NULL,
+                fee_total REAL DEFAULT 0,
+                status TEXT DEFAULT 'open',
+                exit_price REAL,
+                pnl REAL
+            );
+            CREATE TABLE IF NOT EXISTS paper_capital (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                total_capital REAL NOT NULL,
+                current_balance REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
+        """)
+        # Add coin/strategy_type columns to decisions if missing (added in v1.0.5)
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(decisions)")}
+        if "coin" not in existing:
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN coin TEXT NOT NULL DEFAULT 'btc'")
+        if "strategy_type" not in existing:
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'dual_leg'")
+        if "coin_velocity_30s" not in existing:
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_30s REAL")
+        if "coin_velocity_60s" not in existing:
+            self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_60s REAL")
         self.conn.commit()
 
     def log_decision(self, decision: Decision) -> int:

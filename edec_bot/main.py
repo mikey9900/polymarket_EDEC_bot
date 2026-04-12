@@ -193,15 +193,14 @@ async def main():
         ))
 
         coins_str = ", ".join(c.upper() for c in config.coins)
-        mode_str = "DRY RUN 👀" if config.execution.dry_run else "LIVE 🔴"
+        run_type = "💧 Dry Run" if config.execution.dry_run else "🌊 Wet Run"
+        _, paper_balance = tracker.get_paper_capital()
         logger.info(f"Sending startup Telegram message to chat_id={config.telegram_chat_id}")
         await telegram.send_alert(
-            f"🤖 *EDEC Bot started*\n"
-            f"Mode: {mode_str}\n"
+            f"🤖 *EDEC Bot ready* — {run_type}\n"
             f"Coins: {coins_str}\n"
-            f"Dual-leg: ≤{config.dual_leg.max_combined_cost} combined\n"
-            f"Single-leg: entry ≤{config.single_leg.entry_max} → sell @{config.single_leg.target_sell}\n\n"
-            f"_Alerts only on live trades. Use buttons for data._",
+            f"Paper capital: ${paper_balance:.2f}\n\n"
+            f"⏹ *Bot is stopped. Press ▶️ Start to begin scanning.*",
             reply_markup=telegram._main_keyboard(),
         )
 

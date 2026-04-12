@@ -26,8 +26,9 @@ class StrategyEngine:
         self.tracker = tracker
         self.risk_manager = risk_manager
         self._running = False
-        # Runtime mode — controls which strategies are active
-        self._mode = "both"  # "dual", "single", "both", "off"
+        # Start in "off" mode — user must press Start in Telegram to begin
+        self._mode = "off"
+        self._active = False  # scanning on/off
         # Cooldown: track last signal price per (coin, strategy_type).
         # Only re-signal if price improves by more than MIN_IMPROVEMENT.
         # Key = (coin, strategy_type), value = (market_slug, last_entry_price)
@@ -43,27 +44,47 @@ class StrategyEngine:
         if mode not in VALID_MODES:
             return False
         self._mode = mode
+        self._active = (mode != "off")
         logger.info(f"Strategy mode set to: {mode}")
         return True
 
+    def start_scanning(self):
+        """Start scanning — restores last mode or defaults to 'both'."""
+        if self._mode == "off":
+            self._mode = "both"
+        self._active = True
+        logger.info(f"Scanning started (mode={self._mode})")
+
+    def stop_scanning(self):
+        """Stop scanning — preserves mode setting for next start."""
+        self._active = False
+        logger.info("Scanning stopped")
+
+    @property
+    def is_active(self) -> bool:
+        return self._active
+
     def dual_leg_enabled(self) -> bool:
-        return self._mode in ("dual", "both") and self.config.dual_leg.enabled
+        return self._active and self._mode in ("dual", "both") and self.config.dual_leg.enabled
 
     def single_leg_enabled(self) -> bool:
-        return self._mode in ("single", "both") and self.config.single_leg.enabled
+        return self._active and self._mode in ("single", "both") and self.config.single_leg.enabled
 
     async def run(self, signal_queue: asyncio.Queue):
-        """Main strategy loop — evaluate all coins every second."""
+        """Main strategy loop — evaluates when active, sleeps when stopped."""
         self._running = True
         while self._running:
             try:
-                if self._mode != "off":
+                if self._active:
                     signals = self._evaluate_all()
                     for signal in signals:
                         await signal_queue.put(signal)
+                    await asyncio.sleep(1)
+                else:
+                    await asyncio.sleep(2)  # idle — just wait for start command
             except Exception as e:
                 logger.error(f"Strategy evaluation error: {e}")
-            await asyncio.sleep(1)
+                await asyncio.sleep(1)
 
     def stop(self):
         self._running = False

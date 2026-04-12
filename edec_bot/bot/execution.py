@@ -22,6 +22,9 @@ class ExecutionEngine:
         self.tracker = tracker
         self.state = DualOrderState.IDLE
 
+        # Runtime overrides (set via Telegram without restart)
+        self._order_size_usd: float | None = None  # None = use config default
+
         # Open single-leg positions, keyed by buy_order_id
         self._open_positions: dict[str, SingleLegPosition] = {}
 
@@ -174,7 +177,7 @@ class ExecutionEngine:
         else:
             token_id = market.down_token_id
 
-        order_size = self.config.single_leg.order_size_usd
+        order_size = self.order_size_usd
         shares = math.floor(order_size / signal.entry_price)
 
         if self.config.execution.dry_run:
@@ -367,10 +370,18 @@ class ExecutionEngine:
             logger.critical(f"Abort sell exception: {e}")
             return entry_price * shares
 
+    @property
+    def order_size_usd(self) -> float:
+        return self._order_size_usd if self._order_size_usd is not None else self.config.execution.order_size_usd
+
+    def set_order_size(self, usd: float):
+        self._order_size_usd = usd
+        logger.info(f"Order size set to ${usd:.2f}")
+
     def _calc_shares(self, price: float) -> float:
         if price <= 0:
             return 0
-        return math.floor(self.config.execution.order_size_usd / price)
+        return math.floor(self.order_size_usd / price)
 
     @staticmethod
     def _is_filled(response: dict) -> bool:

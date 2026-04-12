@@ -31,33 +31,36 @@ def setup_logging(config):
 
 async def execution_loop(executor: ExecutionEngine, signal_queue: asyncio.Queue,
                          tracker: DecisionTracker, telegram: TelegramBot, config):
-    """Consume trade signals and execute them."""
+    """Consume trade signals and execute them. Only alert on live trades, not dry-run."""
     while True:
         try:
             signal_data = await signal_queue.get()
             result = await executor.execute(signal_data)
 
-            dry = result.status == "dry_run"
+            # Dry-run: silent — data is tracked in DB, check via /stats or /trades
+            if result.status == "dry_run":
+                continue
+
             coin = signal_data.market.coin
             slug = signal_data.market.slug
 
             if signal_data.strategy_type == "dual_leg":
-                if result.status in ("dry_run", "success"):
+                if result.status == "success":
                     await telegram.alert_dual_leg(
                         slug, coin,
                         signal_data.up_price, signal_data.down_price,
                         signal_data.combined_cost, signal_data.expected_profit,
-                        result.shares, dry_run=dry,
+                        result.shares,
                     )
                 elif result.status in ("aborted", "partial_abort"):
                     await telegram.alert_abort(slug, result.error, result.abort_cost)
 
             elif signal_data.strategy_type == "single_leg":
-                if result.status in ("dry_run", "open"):
+                if result.status == "open":
                     await telegram.alert_single_leg(
                         slug, coin, signal_data.side,
                         signal_data.entry_price, signal_data.target_sell_price,
-                        result.shares, signal_data.expected_profit, dry_run=dry,
+                        result.shares, signal_data.expected_profit,
                     )
 
         except asyncio.CancelledError:
@@ -161,6 +164,7 @@ async def main():
         export_fn=do_export,
         scanner=scanner,
         strategy_engine=strategy,
+        executor=executor,
     )
 
     feed_pairs = []
@@ -184,13 +188,16 @@ async def main():
         ))
 
         coins_str = ", ".join(c.upper() for c in config.coins)
-        mode_str = "DRY RUN" if config.execution.dry_run else "LIVE"
+        mode_str = "DRY RUN 👀" if config.execution.dry_run else "LIVE 🔴"
+        logger.info(f"Sending startup Telegram message to chat_id={config.telegram_chat_id}")
         await telegram.send_alert(
-            f"🤖 EDEC Bot started\n"
-            f"Mode: {mode_str} | Strategy: BOTH\n"
+            f"🤖 *EDEC Bot started*\n"
+            f"Mode: {mode_str}\n"
             f"Coins: {coins_str}\n"
-            f"Dual-leg max: {config.dual_leg.max_combined_cost} | "
-            f"Single-leg entry: ≤{config.single_leg.entry_max}"
+            f"Dual-leg: ≤{config.dual_leg.max_combined_cost} combined\n"
+            f"Single-leg: entry ≤{config.single_leg.entry_max} → sell @{config.single_leg.target_sell}\n\n"
+            f"_Alerts only on live trades. Use buttons for data._",
+            reply_markup=telegram._main_keyboard(),
         )
 
         logger.info("All systems running. Press Ctrl+C to stop.")

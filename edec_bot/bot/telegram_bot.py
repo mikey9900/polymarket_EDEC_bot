@@ -5,8 +5,8 @@ import logging
 import os
 from datetime import datetime
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from bot.config import Config
 from bot.tracker import DecisionTracker
@@ -23,16 +23,20 @@ MODE_LABELS = {
 }
 
 
+BUDGET_OPTIONS = [2, 5, 10, 20, 50, 100]
+
+
 class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None,
-                 scanner=None, strategy_engine=None):
+                 scanner=None, strategy_engine=None, executor=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
         self.export_fn = export_fn
-        self.scanner = scanner              # MarketScanner (for per-coin book prices)
-        self.strategy_engine = strategy_engine  # StrategyEngine (for mode control)
+        self.scanner = scanner
+        self.strategy_engine = strategy_engine
+        self.executor = executor
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
 
@@ -65,6 +69,9 @@ class TelegramBot:
         for cmd, handler in handlers:
             self._app.add_handler(CommandHandler(cmd, handler))
 
+        # Inline button callbacks
+        self._app.add_handler(CallbackQueryHandler(self._handle_button))
+
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -83,17 +90,177 @@ class TelegramBot:
     # Alert methods (called by other components)
     # -----------------------------------------------------------------------
 
-    async def send_alert(self, message: str):
+    async def send_alert(self, message: str, reply_markup=None):
         if not self._app or not self.chat_id:
+            logger.warning(f"Telegram not configured — skipping message: {message[:50]}")
             return
         try:
             await self._app.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
                 parse_mode="Markdown",
+                reply_markup=reply_markup,
             )
         except Exception as e:
-            logger.error(f"Telegram send error: {e}")
+            logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
+
+    def _main_keyboard(self) -> InlineKeyboardMarkup:
+        """Main control keyboard."""
+        status = self.risk_manager.get_status()
+        is_running = not status["kill_switch"] and not status["paused"]
+        order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
+
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton(
+                    "⏸ Pause" if is_running else "▶️ Resume",
+                    callback_data="stop" if is_running else "start"
+                ),
+                InlineKeyboardButton("🛑 Kill", callback_data="kill"),
+            ],
+            [
+                InlineKeyboardButton("📊 Stats", callback_data="stats"),
+                InlineKeyboardButton("📈 Status", callback_data="status"),
+            ],
+            [
+                InlineKeyboardButton("📋 Trades", callback_data="trades"),
+                InlineKeyboardButton("🔍 Filters", callback_data="filters"),
+            ],
+            [
+                InlineKeyboardButton(f"💰 Budget: ${order_size:.0f}", callback_data="budget"),
+            ],
+        ])
+
+    def _budget_keyboard(self) -> InlineKeyboardMarkup:
+        """Budget selection keyboard."""
+        buttons = [
+            InlineKeyboardButton(f"${amt}", callback_data=f"budget_{amt}")
+            for amt in BUDGET_OPTIONS
+        ]
+        # 3 per row
+        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
+        rows.append([InlineKeyboardButton("« Back", callback_data="back")])
+        return InlineKeyboardMarkup(rows)
+
+    async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle inline keyboard button presses."""
+        query = update.callback_query
+        await query.answer()
+
+        if not self._auth(update):
+            return
+
+        data = query.data
+
+        # --- Budget selection ---
+        if data.startswith("budget_"):
+            amt = float(data.split("_")[1])
+            if self.executor:
+                self.executor.set_order_size(amt)
+            await query.edit_message_text(
+                f"💰 Budget updated to *${amt:.0f}* per trade\n\n"
+                f"_All new orders will use this size._",
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            return
+
+        if data == "budget":
+            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
+            await query.edit_message_text(
+                f"💰 *Select Budget Per Trade*\n"
+                f"Current: *${order_size:.0f}*\n\n"
+                f"_This is the USD amount per order leg._",
+                parse_mode="Markdown",
+                reply_markup=self._budget_keyboard(),
+            )
+            return
+
+        if data == "back":
+            status = self.risk_manager.get_status()
+            mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
+            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
+            await query.edit_message_text(
+                f"🤖 *EDEC Bot*\n"
+                f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
+                f"Mode: {MODE_LABELS.get(mode, mode)}\n"
+                f"Budget: ${order_size:.0f}/trade | P&L: ${status['daily_pnl']:+.2f}",
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            return
+
+        # --- Start / Stop / Kill ---
+        if data == "start":
+            self.risk_manager.resume()
+            self.risk_manager.deactivate_kill_switch()
+            await query.answer("▶️ Trading resumed", show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            return
+
+        if data == "stop":
+            self.risk_manager.pause()
+            await query.answer("⏸ Trading paused", show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            return
+
+        if data == "kill":
+            self.risk_manager.activate_kill_switch("Manual kill via Telegram")
+            await query.answer("🛑 Kill switch activated!", show_alert=True)
+            await query.edit_message_reply_markup(reply_markup=self._main_keyboard())
+            return
+
+        # --- Info buttons (reply below the existing message) ---
+        if data == "stats":
+            stats = self.tracker.get_daily_stats()
+            await query.message.reply_text(
+                f"📊 *Today's Stats ({stats['date']})*\n"
+                f"Evaluations: {stats['total_evaluations']}\n"
+                f"Signals: {stats['signals']} | Skips: {stats['skips']}\n"
+                f"Trades: {stats['trades_executed']} ✅{stats['successful']} ❌{stats['aborted']}",
+                parse_mode="Markdown",
+            )
+
+        elif data == "status":
+            status = self.risk_manager.get_status()
+            mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
+            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
+            await query.message.reply_text(
+                f"📈 *Status*\n"
+                f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
+                f"Mode: {MODE_LABELS.get(mode, mode)}\n"
+                f"Budget: ${order_size:.0f}/trade\n"
+                f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}",
+                parse_mode="Markdown",
+            )
+
+        elif data == "trades":
+            trades = self.tracker.get_recent_trades(limit=5)
+            if not trades:
+                await query.message.reply_text("No trades yet.")
+            else:
+                lines = ["📋 *Recent Trades*\n"]
+                for t in trades:
+                    pnl = t.get("actual_profit")
+                    pnl_str = f"${pnl:+.4f}" if pnl is not None else "pending"
+                    emoji = "✅" if t["status"] == "success" else "❌"
+                    lines.append(
+                        f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}"
+                    )
+                await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+        elif data == "filters":
+            stats = self.tracker.get_filter_stats()
+            if not stats:
+                await query.message.reply_text("No filter data yet.")
+            else:
+                lines = ["🔍 *Filter Performance*\n"]
+                for s in stats:
+                    total = s["passed"] + s["failed"]
+                    fail_pct = (s["failed"] / total * 100) if total > 0 else 0
+                    bar = "🟩" * int((100 - fail_pct) / 20) + "🟥" * int(fail_pct / 20)
+                    lines.append(f"`{s['filter']:18s}` {bar} {fail_pct:.0f}% fail")
+                await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def alert_dual_leg(self, market_slug: str, coin: str, up_price: float,
                              down_price: float, combined: float, profit: float,

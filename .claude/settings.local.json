@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile bot/price_feeds.py)",
+      "Bash(python -m py_compile bot/price_aggregator.py)",
+      "Bash(python -m py_compile bot/market_scanner.py)",
+      "Bash(python -m py_compile bot/strategy.py)",
+      "Bash(python -m py_compile bot/execution.py)",
+      "Bash(pip --version)",
+      "Bash(python -m venv .venv)"
+    ]
+  }
+}

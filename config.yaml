@@ -1,0 +1,76 @@
+# EDEC Bot Configuration
+
+# Coins to monitor (all run 5-min up/down markets simultaneously)
+coins:
+  - btc
+  - eth
+  - sol
+  - xrp
+  - bnb
+  - doge
+  - hype
+
+# Dual-leg arbitrage: buy BOTH sides when combined asks < 1.00 (rare but guaranteed profit)
+dual_leg:
+  enabled: true
+  price_threshold: 0.45        # Max ask per side
+  max_combined_cost: 0.92      # YES ask + NO ask must be below this (after fees need ~0.05 edge)
+  min_edge_after_fees: 0.05    # Minimum net profit per share
+  min_time_remaining_s: 60     # Skip if less than this many seconds left
+  max_velocity_30s: 0.15       # Skip if coin moved >X% in 30s (trending against dual-leg)
+  max_velocity_60s: 0.25
+  min_book_depth_usd: 10.0     # Min USD depth at target price on each side
+
+# Single-leg momentum: buy the cheap side, sell when it reprices
+single_leg:
+  enabled: true
+  entry_max: 0.35              # Buy when one side's ask is at or below this
+  opposite_min: 0.60           # Other side must be >= this (confirms real directional move)
+  target_sell: 0.52            # Place GTC sell at this price (~50% gross gain)
+  min_time_remaining_s: 90     # Need time for reprice before market closes
+  min_book_depth_usd: 5.0      # Min USD depth at entry price
+  hold_if_unfilled: true       # If sell order not filled at close, hold to resolution
+  order_size_usd: 2.0          # Dollar amount per trade
+
+# Execution
+execution:
+  order_size_usd: 2.0          # Dual-leg: dollar amount per side
+  abort_timeout_s: 2.0         # Max wait before aborting partial dual-leg fill
+  max_slippage: 0.02
+  dry_run: true                # true = log signals only, no real orders
+
+# Risk management
+risk:
+  max_daily_loss_usd: 20.0     # Kill switch trigger
+  max_open_positions: 5        # Max concurrent positions (across both strategies)
+  max_trades_per_hour: 30
+  session_profit_target: 0     # Stop after this profit (0 = disabled)
+
+# Price feeds
+feeds:
+  # Binance WebSocket symbols for each coin (used for velocity tracking)
+  binance_symbols:
+    btc: btcusdt
+    eth: ethusdt
+    sol: solusdt
+    xrp: xrpusdt
+    bnb: bnbusdt
+    doge: dogeusdt
+    hype: null                 # Not on Binance — use order book price movement as proxy
+  coinbase_product: "BTC-USD"
+  coingecko_poll_interval_s: 30
+  price_staleness_max_s: 5
+
+# Polymarket API
+polymarket:
+  clob_base_url: "https://clob.polymarket.com"
+  gamma_base_url: "https://gamma-api.polymarket.com"
+  chain_id: 137
+  tick_size: "0.01"
+  neg_risk: false
+
+# Logging
+logging:
+  level: "INFO"
+  file: "bot.log"
+  trade_log: "data/trades.jsonl"

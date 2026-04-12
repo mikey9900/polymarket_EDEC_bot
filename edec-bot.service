@@ -1,0 +1,17 @@
+[Unit]
+Description=EDEC Polymarket Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=homeassistant
+WorkingDirectory=/srv/edec_bot
+ExecStart=/srv/edec_bot/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

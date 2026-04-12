@@ -88,10 +88,24 @@ class Config:
     telegram_chat_id: str
 
 
+def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
+    """Read credentials from HA add-on options file if it exists."""
+    import json
+    try:
+        with open(ha_options_path, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
 def load_config(config_path: str = "config.yaml") -> Config:
-    """Load configuration from YAML file and environment variables."""
+    """Load configuration from YAML file, HA options, or .env."""
+    # Load .env first (local dev fallback)
     env_path = Path(config_path).parent / ".env"
     load_dotenv(env_path)
+
+    # HA add-on options override .env if present
+    ha = _load_ha_options()
 
     with open(config_path, "r") as f:
         raw = yaml.safe_load(f)
@@ -105,7 +119,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         feeds=FeedsConfig(**raw["feeds"]),
         polymarket=PolymarketConfig(**raw["polymarket"]),
         logging=LoggingConfig(**raw["logging"]),
-        private_key=os.getenv("PRIVATE_KEY", ""),
-        telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
-        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", ""),
+        private_key=ha.get("private_key") or os.getenv("PRIVATE_KEY", ""),
+        telegram_bot_token=ha.get("telegram_bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        telegram_chat_id=ha.get("telegram_chat_id") or os.getenv("TELEGRAM_CHAT_ID", ""),
     )

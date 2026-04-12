@@ -1,6 +1,8 @@
 .env
 data/*
 !data/.gitkeep
+edec_bot/data/*
+!edec_bot/data/.gitkeep
 __pycache__/
 *.pyc
 *.pyo
@@ -11,3 +13,4 @@ build/
 venv/
 *.xlsx
 bot.log
+edec_bot/bot.log

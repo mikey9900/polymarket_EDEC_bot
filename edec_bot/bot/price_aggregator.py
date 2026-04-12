@@ -5,7 +5,7 @@ import logging
 import time
 from collections import deque
 
-from bot.models import AggregatedPrice, PriceTick
+from edec_bot.bot.models import AggregatedPrice, PriceTick
 
 logger = logging.getLogger(__name__)
 

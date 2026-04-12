@@ -6,7 +6,7 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from bot.models import Decision, FilterResult, TradeResult
+from edec_bot.bot.models import Decision, FilterResult, TradeResult
 
 logger = logging.getLogger(__name__)
 

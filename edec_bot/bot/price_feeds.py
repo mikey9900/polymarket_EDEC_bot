@@ -7,7 +7,7 @@ import time
 
 import websockets
 
-from bot.models import PriceTick
+from edec_bot.bot.models import PriceTick
 
 logger = logging.getLogger(__name__)
 

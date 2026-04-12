@@ -6,16 +6,16 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from bot.config import load_config
-from bot.export import export_to_excel
-from bot.market_scanner import MarketScanner
-from bot.price_aggregator import PriceAggregator
-from bot.price_feeds import start_all_feeds
-from bot.risk_manager import RiskManager
-from bot.strategy import StrategyEngine
-from bot.execution import ExecutionEngine
-from bot.tracker import DecisionTracker
-from bot.telegram_bot import TelegramBot
+from edec_bot.bot.config import load_config
+from edec_bot.bot.export import export_to_excel
+from edec_bot.bot.market_scanner import MarketScanner
+from edec_bot.bot.price_aggregator import PriceAggregator
+from edec_bot.bot.price_feeds import start_all_feeds
+from edec_bot.bot.risk_manager import RiskManager
+from edec_bot.bot.strategy import StrategyEngine
+from edec_bot.bot.execution import ExecutionEngine
+from edec_bot.bot.tracker import DecisionTracker
+from edec_bot.bot.telegram_bot import TelegramBot
 
 logger = logging.getLogger("edec")
 

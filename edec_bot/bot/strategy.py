@@ -4,11 +4,11 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from bot.config import Config
-from bot.models import Decision, FilterResult, TradeSignal
-from bot.price_aggregator import PriceAggregator
-from bot.market_scanner import MarketScanner
-from bot.tracker import DecisionTracker
+from edec_bot.bot.config import Config
+from edec_bot.bot.models import Decision, FilterResult, TradeSignal
+from edec_bot.bot.price_aggregator import PriceAggregator
+from edec_bot.bot.market_scanner import MarketScanner
+from edec_bot.bot.tracker import DecisionTracker
 
 logger = logging.getLogger(__name__)
 

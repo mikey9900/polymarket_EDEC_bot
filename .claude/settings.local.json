@@ -7,7 +7,9 @@
       "Bash(python -m py_compile bot/strategy.py)",
       "Bash(python -m py_compile bot/execution.py)",
       "Bash(pip --version)",
-      "Bash(python -m venv .venv)"
+      "Bash(python -m venv .venv)",
+      "Bash(cmd.exe /c \"dir /s /b C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot\")",
+      "Bash(cmd.exe /c \"tree C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot /F\")"
     ]
   }
 }

@@ -3,10 +3,10 @@ set -e
 
 CONFIG_PATH=/data/options.json
 
-# Read credentials from HA add-on options and write .env
-PRIVATE_KEY=$(jq --raw-output '.private_key' $CONFIG_PATH)
-TELEGRAM_BOT_TOKEN=$(jq --raw-output '.telegram_bot_token' $CONFIG_PATH)
-TELEGRAM_CHAT_ID=$(jq --raw-output '.telegram_chat_id' $CONFIG_PATH)
+# Use Python to read HA options (jq not available in slim image)
+PRIVATE_KEY=$(python3 -c "import json; d=json.load(open('$CONFIG_PATH')); print(d['private_key'])")
+TELEGRAM_BOT_TOKEN=$(python3 -c "import json; d=json.load(open('$CONFIG_PATH')); print(d['telegram_bot_token'])")
+TELEGRAM_CHAT_ID=$(python3 -c "import json; d=json.load(open('$CONFIG_PATH')); print(d['telegram_chat_id'])")
 
 cat > /app/.env << EOF
 PRIVATE_KEY=${PRIVATE_KEY}

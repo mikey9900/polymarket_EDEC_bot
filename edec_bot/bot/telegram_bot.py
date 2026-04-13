@@ -76,6 +76,7 @@ class TelegramBot:
             ("set", self._cmd_set),
             ("filters", self._cmd_filters),
             ("help", self._cmd_help),
+            ("clean", self._cmd_clean),
         ]
         for cmd, handler in handlers:
             self._app.add_handler(CommandHandler(cmd, handler))
@@ -335,8 +336,7 @@ class TelegramBot:
             logger.error(f"Failed to re-post dashboard: {e}")
 
     async def _do_cleanup(self):
-        """Delete all tracked ephemeral messages, then refresh the dashboard in-place.
-        Never deletes or reposts the dashboard — it stays at its current position."""
+        """Delete tracked ephemeral messages, then refresh the dashboard in-place."""
         if not self._app or not self.chat_id:
             return
 
@@ -348,6 +348,33 @@ class TelegramBot:
                 await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
             except Exception as e:
                 logger.debug(f"Could not delete message {msg_id}: {e}")
+
+        await self._refresh_dashboard()
+
+    async def _deep_clean(self):
+        """Sweep the last 250 message IDs before the dashboard and delete any bot messages.
+        Catches old messages whose IDs were never tracked (e.g. from previous runs)."""
+        if not self._app or not self.chat_id:
+            return
+
+        # Collect tracked IDs + range sweep around current dashboard
+        ids: set[int] = set(self._ephemeral_msgs)
+        self._ephemeral_msgs.clear()
+        self._clear_ephemeral_log()
+
+        if self._dashboard_message_id:
+            lo = max(1, self._dashboard_message_id - 250)
+            hi = self._dashboard_message_id  # don't delete the dashboard itself
+            ids.update(range(lo, hi))
+
+        if ids:
+            results = await asyncio.gather(
+                *[self._app.bot.delete_message(chat_id=self.chat_id, message_id=mid)
+                  for mid in ids],
+                return_exceptions=True,
+            )
+            deleted = sum(1 for r in results if not isinstance(r, Exception))
+            logger.info(f"Deep clean: deleted {deleted}/{len(ids)} messages")
 
         await self._refresh_dashboard()
 
@@ -593,8 +620,8 @@ class TelegramBot:
             return
 
         if data == "refresh":
-            await query.answer()
-            await self._do_cleanup()
+            await query.answer("🧹 Cleaning up...", show_alert=False)
+            await self._deep_clean()
             return
 
         if data == "reset_stats":
@@ -1034,6 +1061,18 @@ class TelegramBot:
             "/export today — Today only\n"
             "/config — Show all settings\n"
             "/filters — Filter pass/fail rates\n"
+            "/clean — Delete old chat messages\n"
             "/help — This message"
         )
         self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
+
+    async def _cmd_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Delete old bot messages by sweeping recent message IDs."""
+        if not self._auth(update):
+            return
+        # Delete the user's /clean command too
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+        await self._deep_clean()

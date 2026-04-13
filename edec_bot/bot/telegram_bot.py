@@ -12,7 +12,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from bot.config import Config
 from bot.tracker import DecisionTracker
 from bot.risk_manager import RiskManager
-from main import __version__
+from version import __version__
 
 logger = logging.getLogger(__name__)
 

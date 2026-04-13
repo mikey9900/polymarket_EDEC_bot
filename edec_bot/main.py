@@ -1,6 +1,6 @@
 """EDEC Bot — Main entry point. Wires all components and runs the event loop."""
 
-__version__ = "1.2.6"
+from version import __version__  # noqa: F401
 
 import asyncio
 import logging

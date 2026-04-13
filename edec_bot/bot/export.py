@@ -1,353 +1,767 @@
-"""Export SQLite data to Excel (.xlsx) with multiple analysis sheets."""
+"""Export SQLite data to color-coded Excel workbook with full analysis sheets."""
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, numbers
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 logger = logging.getLogger(__name__)
 
-GREEN_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-HEADER_FILL = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-HEADER_FONT = Font(color="FFFFFF", bold=True)
+# ---------------------------------------------------------------------------
+# Color palette
+# ---------------------------------------------------------------------------
 
+# Row status fills
+WIN_FILL   = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")  # soft green
+LOSS_FILL  = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")  # soft pink
+OPEN_FILL  = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")  # soft blue
+ZEBRA_FILL = PatternFill(start_color="F5F5F5", end_color="F5F5F5", fill_type="solid")  # off-white
+
+# Exit reason cell fills (applied to exit_reason column only)
+REASON_FILLS = {
+    "profit_target":   PatternFill(start_color="A9D18E", end_color="A9D18E", fill_type="solid"),  # medium green
+    "high_confidence": PatternFill(start_color="9DC3E6", end_color="9DC3E6", fill_type="solid"),  # medium blue
+    "loss_cut":        PatternFill(start_color="F4B183", end_color="F4B183", fill_type="solid"),  # orange
+    "near_close":      PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid"),  # yellow
+    "dead_leg":        PatternFill(start_color="C9B1D9", end_color="C9B1D9", fill_type="solid"),  # lavender
+    "resolution":      PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid"),  # gray
+    "manual":          PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid"),  # light gray
+}
+
+# Header fills
+HEADER_FILL  = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")  # navy
+SUBHEAD_FILL = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")  # pale blue
+SUMMARY_FILL = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # light yellow
+
+HEADER_FONT  = Font(color="FFFFFF", bold=True, size=11)
+SUBHEAD_FONT = Font(bold=True, size=10)
+
+WIN_FONT  = Font(bold=True, color="375623")   # dark green text
+LOSS_FONT = Font(bold=True, color="9C0006")   # dark red text
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def export_to_excel(db_path: str = "data/decisions.db",
                     output_dir: str = "data",
                     today_only: bool = False) -> str:
-    """Generate an Excel workbook from the SQLite database. Returns the file path."""
+    """Generate a color-coded Excel workbook. Returns the file path."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
     wb = Workbook()
-
-    # Pass date string only — each sheet builds its own WHERE clause safely
     date_str = datetime.utcnow().strftime("%Y-%m-%d") if today_only else None
 
-    # Sheet 1: Paper Trades (most useful during dry run)
     _build_paper_trades_sheet(wb, conn, date_str)
-
-    # Sheet 2: Daily Summary
+    _build_exit_reason_sheet(wb, conn, date_str)
+    _build_coin_performance_sheet(wb, conn, date_str)
+    _build_strategy_breakdown_sheet(wb, conn, date_str)
+    _build_time_remaining_sheet(wb, conn, date_str)
+    _build_price_level_sheet(wb, conn, date_str)
     _build_daily_summary_sheet(wb, conn)
-
-    # Sheet 3: Live Trades (empty in dry run)
     _build_trades_sheet(wb, conn, date_str)
-
-    # Sheet 4: All Decisions
     _build_decisions_sheet(wb, conn, date_str)
-
-    # Sheet 5: Skipped Winners
+    _build_filter_performance_sheet(wb, conn, date_str)
     _build_skipped_winners_sheet(wb, conn, date_str)
 
-    # Sheet 6: Filter Performance
-    _build_filter_performance_sheet(wb, conn, date_str)
-
-    # Remove default empty sheet if we created others
     if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
         del wb["Sheet"]
 
-    # Save
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"edec_export_{timestamp}.xlsx"
-    filepath = str(Path(output_dir) / filename)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filepath = str(Path(output_dir) / f"edec_export_{ts}.xlsx")
     wb.save(filepath)
     conn.close()
-
     logger.info(f"Excel export saved: {filepath}")
     return filepath
 
 
-def _style_header(ws, num_cols: int):
-    """Apply header styling to the first row."""
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _style_header(ws, num_cols: int, row: int = 1):
     for col in range(1, num_cols + 1):
-        cell = ws.cell(row=1, column=col)
-        cell.fill = HEADER_FILL
-        cell.font = HEADER_FONT
-        cell.alignment = Alignment(horizontal="center")
+        c = ws.cell(row=row, column=col)
+        c.fill = HEADER_FILL
+        c.font = HEADER_FONT
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[row].height = 18
 
 
-def _auto_width(ws):
-    """Auto-fit column widths."""
+def _auto_width(ws, cap: int = 42):
     for col_cells in ws.columns:
-        max_len = 0
-        col_letter = get_column_letter(col_cells[0].column)
-        for cell in col_cells:
-            if cell.value:
-                max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col_letter].width = min(max_len + 3, 40)
+        max_len = max((len(str(c.value)) for c in col_cells if c.value), default=0)
+        ws.column_dimensions[get_column_letter(col_cells[0].column)].width = min(max_len + 3, cap)
 
 
-def _color_pnl_column(ws, col_idx: int, start_row: int = 2):
-    """Color P&L cells green/red."""
-    for row in ws.iter_rows(min_row=start_row, min_col=col_idx, max_col=col_idx):
-        cell = row[0]
-        if cell.value is not None:
-            try:
-                val = float(cell.value)
-                cell.fill = GREEN_FILL if val > 0 else RED_FILL if val < 0 else PatternFill()
-            except (ValueError, TypeError):
-                pass
+def _pnl_cell(cell):
+    """Color and bold a P&L cell based on sign."""
+    try:
+        val = float(cell.value)
+        if val > 0:
+            cell.fill = WIN_FILL
+            cell.font = WIN_FONT
+        elif val < 0:
+            cell.fill = LOSS_FILL
+            cell.font = LOSS_FONT
+    except (TypeError, ValueError):
+        pass
 
 
-def _build_paper_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
-    ws = wb.create_sheet("Paper Trades 💧")
+def _pnl_col(ws, col: int, start: int = 2):
+    for row in ws.iter_rows(min_row=start, min_col=col, max_col=col):
+        _pnl_cell(row[0])
+
+
+def _reason_cell(cell):
+    """Color an exit_reason cell using REASON_FILLS palette."""
+    fill = REASON_FILLS.get(str(cell.value or "").lower())
+    if fill:
+        cell.fill = fill
+        cell.font = Font(bold=True)
+
+
+def _zebra(ws, row: int, num_cols: int):
+    if row % 2 == 0:
+        for col in range(1, num_cols + 1):
+            c = ws.cell(row=row, column=col)
+            if not c.fill or c.fill.patternType is None:
+                c.fill = ZEBRA_FILL
+
+
+def _freeze(ws):
+    ws.freeze_panes = "A2"
+
+
+def _summary(ws, start_row: int, items: list):
+    """Append a labeled summary block below data. items = [(label, value), ...]"""
+    ws.cell(row=start_row, column=1, value="-- SUMMARY --").font = Font(bold=True, italic=True)
+    for i, (label, value) in enumerate(items):
+        r = start_row + 1 + i
+        lc = ws.cell(row=r, column=1, value=label)
+        lc.font = Font(bold=True)
+        lc.fill = SUMMARY_FILL
+        vc = ws.cell(row=r, column=2, value=value)
+        vc.fill = SUMMARY_FILL
+        _pnl_cell(vc)
+
+
+def _win_rate(wins, losses):
+    return round((wins or 0) / max((wins or 0) + (losses or 0), 1) * 100, 1)
+
+
+# ---------------------------------------------------------------------------
+# Sheet 1: Paper Trades
+# ---------------------------------------------------------------------------
+
+def _build_paper_trades_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Paper Trades")
     headers = [
-        "Timestamp", "Coin", "Market", "Strategy", "Side",
-        "Entry Price", "Target Price", "Shares", "Cost ($)",
-        "Fees ($)", "Status", "Exit Price", "P&L ($)", "P&L %"
+        "ID", "Opened At", "Coin", "Market Slug", "Strategy", "Side",
+        "Entry $", "Target $", "Shares", "Cost $", "Fees $",
+        "Status", "Exit Reason", "Exit Price $", "Bid At Exit $",
+        "P&L $", "P&L %", "Time Left At Exit (s)", "Hold Duration (s)",
+        "Market End Time",
     ]
     ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
 
     where = "WHERE timestamp LIKE ?" if date_str else ""
     params = (f"{date_str}%",) if date_str else ()
-    query = f"""
-        SELECT timestamp, coin, market_slug, strategy_type, side,
+    rows = conn.execute(f"""
+        SELECT id, timestamp, coin, market_slug, strategy_type, side,
                entry_price, target_price, shares, cost, fee_total,
-               status, exit_price, pnl
-        FROM paper_trades
-        {where}
-        ORDER BY id DESC
-        LIMIT 10000
-    """
-    for row in conn.execute(query, params):
+               status, exit_reason, exit_price, bid_at_exit, pnl,
+               time_remaining_s, exit_timestamp, market_end_time
+        FROM paper_trades {where}
+        ORDER BY id DESC LIMIT 10000
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
         r = list(row)
-        # Add P&L %
-        cost = r[8] or 0
-        pnl = r[12]
-        pnl_pct = (pnl / cost * 100) if (pnl is not None and cost > 0) else None
-        r.append(round(pnl_pct, 1) if pnl_pct is not None else None)
-        ws.append(r)
+        cost, pnl = r[9] or 0, r[15]
+        pnl_pct = round(pnl / cost * 100, 1) if (pnl is not None and cost > 0) else None
+        # Hold duration
+        hold_s = None
+        if r[1] and r[17]:
+            try:
+                o = datetime.fromisoformat(str(r[1]).replace("Z", ""))
+                e = datetime.fromisoformat(str(r[17]).replace("Z", ""))
+                hold_s = round((e - o).total_seconds(), 1)
+            except Exception:
+                pass
+        out = r[:16] + [pnl_pct, r[16], hold_s, r[18]]
+        ws.append(out)
 
-    _style_header(ws, len(headers))
-    _auto_width(ws)
-    _color_pnl_column(ws, 13)   # P&L $
-    _color_pnl_column(ws, 14)   # P&L %
-    ws.auto_filter.ref = ws.dimensions
+        status = str(r[11] or "").lower()
+        row_fill = WIN_FILL if status == "closed_win" else (
+                   LOSS_FILL if status == "closed_loss" else (
+                   OPEN_FILL if status == "open" else None))
+        if row_fill:
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=ri, column=col).fill = row_fill
 
-    # Summary rows at bottom
-    total_row = ws.max_row + 2
-    ws.cell(row=total_row, column=1, value="SUMMARY")
-    ws.cell(row=total_row, column=1).font = Font(bold=True)
+        _reason_cell(ws.cell(row=ri, column=13))   # exit_reason col
+        _pnl_cell(ws.cell(row=ri, column=16))       # P&L $
+        _pnl_cell(ws.cell(row=ri, column=17))       # P&L %
 
+    # Summary
     stats = conn.execute("""
-        SELECT COUNT(*),
-               SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
-               SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
-               SUM(COALESCE(pnl, 0)),
-               SUM(cost)
+        SELECT
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(entry_price), 4),
+            ROUND(AVG(CASE WHEN status IN ('closed_win','closed_loss') THEN exit_price END), 4),
+            ROUND(AVG(CASE WHEN status='closed_win' AND cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(CASE WHEN status='closed_loss' AND cost>0 THEN pnl/cost*100 END), 2)
         FROM paper_trades
     """).fetchone()
-
     if stats:
-        total, wins, losses, open_pos, total_pnl, total_cost = stats
-        ws.cell(row=total_row, column=2, value=f"Total: {total or 0}")
-        ws.cell(row=total_row, column=3, value=f"✅ {wins or 0} wins")
-        ws.cell(row=total_row, column=4, value=f"❌ {losses or 0} losses")
-        ws.cell(row=total_row, column=5, value=f"🔄 {open_pos or 0} open")
-        pnl_cell = ws.cell(row=total_row, column=13, value=round(total_pnl or 0, 4))
-        pnl_cell.font = Font(bold=True)
-        pnl_cell.fill = GREEN_FILL if (total_pnl or 0) > 0 else RED_FILL
+        total, wins, losses, open_pos, total_pnl, avg_buy, avg_sell, avg_win_pct, avg_loss_pct = stats
+        sr = ws.max_row + 2
+        _summary(ws, sr, [
+            ("Total Trades", total or 0),
+            ("Wins", wins or 0),
+            ("Losses", losses or 0),
+            ("Open", open_pos or 0),
+            ("Win Rate %", _win_rate(wins, losses)),
+            ("Total P&L $", round(total_pnl or 0, 4)),
+            ("Avg Entry Price", avg_buy or 0),
+            ("Avg Exit Price (closed)", avg_sell or 0),
+            ("Avg Win %", avg_win_pct or 0),
+            ("Avg Loss %", avg_loss_pct or 0),
+        ])
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
 
 
-def _build_trades_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
+# ---------------------------------------------------------------------------
+# Sheet 2: Exit Reason Analysis
+# ---------------------------------------------------------------------------
+
+def _build_exit_reason_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Exit Reason Analysis")
+    headers = [
+        "Exit Reason", "Trades", "Wins", "Losses", "Win Rate %",
+        "Total P&L $", "Avg P&L $", "Avg P&L %",
+        "Avg Time Remaining (s)", "Avg Entry $", "Avg Exit $",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    extra = "AND timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT
+            COALESCE(exit_reason, 'unknown') as reason,
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(COALESCE(pnl,0)), 4),
+            ROUND(AVG(CASE WHEN cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(time_remaining_s), 1),
+            ROUND(AVG(entry_price), 4),
+            ROUND(AVG(exit_price), 4)
+        FROM paper_trades
+        WHERE status IN ('closed_win','closed_loss') {extra}
+        GROUP BY reason ORDER BY total_pnl DESC
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
+        r = list(row)
+        wins, losses = r[2] or 0, r[3] or 0
+        out = [r[0], r[1], wins, losses, _win_rate(wins, losses),
+               r[4], r[5], r[6], r[7], r[8], r[9]]
+        ws.append(out)
+        _reason_cell(ws.cell(row=ri, column=1))
+        _pnl_cell(ws.cell(row=ri, column=6))
+        _pnl_cell(ws.cell(row=ri, column=7))
+        _pnl_cell(ws.cell(row=ri, column=8))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 3: Coin Performance
+# ---------------------------------------------------------------------------
+
+def _build_coin_performance_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Coin Performance")
+    headers = [
+        "Coin", "Trades", "Wins", "Losses", "Open",
+        "Win Rate %", "Total P&L $", "Avg P&L $", "Avg P&L %",
+        "Avg Entry $", "Avg Exit $", "Best Trade $", "Worst Trade $",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    where = "WHERE timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT
+            coin,
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(COALESCE(pnl,0)), 4),
+            ROUND(AVG(CASE WHEN cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(entry_price), 4),
+            ROUND(AVG(CASE WHEN status IN ('closed_win','closed_loss') THEN exit_price END), 4),
+            ROUND(MAX(COALESCE(pnl,0)), 4),
+            ROUND(MIN(COALESCE(pnl,0)), 4)
+        FROM paper_trades {where}
+        GROUP BY coin ORDER BY total_pnl DESC
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
+        r = list(row)
+        wins, losses = r[2] or 0, r[3] or 0
+        out = [r[0], r[1], wins, losses, r[4], _win_rate(wins, losses),
+               r[5], r[6], r[7], r[8], r[9], r[10], r[11]]
+        ws.append(out)
+        for col in (7, 8, 9, 12, 13):
+            _pnl_cell(ws.cell(row=ri, column=col))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 4: Strategy Breakdown
+# ---------------------------------------------------------------------------
+
+def _build_strategy_breakdown_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Strategy Breakdown")
+    headers = [
+        "Strategy", "Exit Reason", "Trades", "Wins", "Losses",
+        "Win Rate %", "Total P&L $", "Avg P&L $", "Avg P&L %",
+        "Avg Entry $", "Avg Time Remaining (s)",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    extra = "AND timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT
+            strategy_type,
+            COALESCE(exit_reason, 'unknown'),
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(COALESCE(pnl,0)), 4),
+            ROUND(AVG(CASE WHEN cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(entry_price), 4),
+            ROUND(AVG(time_remaining_s), 1)
+        FROM paper_trades
+        WHERE status IN ('closed_win','closed_loss') {extra}
+        GROUP BY strategy_type, exit_reason
+        ORDER BY strategy_type, total_pnl DESC
+    """, params)
+
+    last_strat = None
+    for ri, row in enumerate(rows, start=2):
+        r = list(row)
+        wins, losses = r[3] or 0, r[4] or 0
+        out = [r[0], r[1], r[2], wins, losses, _win_rate(wins, losses),
+               r[5], r[6], r[7], r[8], r[9]]
+        ws.append(out)
+        if r[0] != last_strat and last_strat is not None:
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=ri, column=col).fill = SUBHEAD_FILL
+        last_strat = r[0]
+        _reason_cell(ws.cell(row=ri, column=2))
+        for col in (7, 8, 9):
+            _pnl_cell(ws.cell(row=ri, column=col))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 5: Time Remaining Analysis
+# ---------------------------------------------------------------------------
+
+def _build_time_remaining_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Time At Exit Analysis")
+    headers = [
+        "Time Bucket", "Trades", "Wins", "Losses", "Win Rate %",
+        "Total P&L $", "Avg P&L $", "Avg P&L %", "Avg Entry $",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    extra = "AND timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT
+            CASE
+                WHEN time_remaining_s IS NULL THEN 'Market Resolution'
+                WHEN time_remaining_s <= 0    THEN '0s (at close)'
+                WHEN time_remaining_s <= 30   THEN '1-30s'
+                WHEN time_remaining_s <= 60   THEN '31-60s'
+                WHEN time_remaining_s <= 90   THEN '61-90s'
+                WHEN time_remaining_s <= 120  THEN '91-120s'
+                ELSE '120s+'
+            END as bucket,
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(COALESCE(pnl,0)), 4),
+            ROUND(AVG(CASE WHEN cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(entry_price), 4)
+        FROM paper_trades
+        WHERE status IN ('closed_win','closed_loss') {extra}
+        GROUP BY bucket
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
+        r = list(row)
+        wins, losses = r[2] or 0, r[3] or 0
+        out = [r[0], r[1], wins, losses, _win_rate(wins, losses),
+               r[4], r[5], r[6], r[7]]
+        ws.append(out)
+        for col in (6, 7, 8):
+            _pnl_cell(ws.cell(row=ri, column=col))
+        _zebra(ws, ri, len(headers))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 6: Entry Price Level Analysis
+# ---------------------------------------------------------------------------
+
+def _build_price_level_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Entry Price Analysis")
+    headers = [
+        "Entry Price Bucket", "Trades", "Wins", "Losses", "Win Rate %",
+        "Total P&L $", "Avg P&L $", "Avg P&L %", "Avg Exit $",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    extra = "AND timestamp LIKE ?" if date_str else ""
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT
+            CASE
+                WHEN entry_price < 0.15 THEN 'Under 0.15'
+                WHEN entry_price < 0.25 THEN '0.15 - 0.25'
+                WHEN entry_price < 0.35 THEN '0.25 - 0.35'
+                WHEN entry_price < 0.45 THEN '0.35 - 0.45'
+                WHEN entry_price < 0.55 THEN '0.45 - 0.55'
+                ELSE '0.55+'
+            END as bucket,
+            COUNT(*),
+            SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+            SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+            ROUND(SUM(COALESCE(pnl,0)), 4),
+            ROUND(AVG(COALESCE(pnl,0)), 4),
+            ROUND(AVG(CASE WHEN cost>0 THEN pnl/cost*100 END), 2),
+            ROUND(AVG(CASE WHEN status IN ('closed_win','closed_loss') THEN exit_price END), 4)
+        FROM paper_trades
+        WHERE status IN ('closed_win','closed_loss') {extra}
+        GROUP BY bucket ORDER BY MIN(entry_price)
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
+        r = list(row)
+        wins, losses = r[2] or 0, r[3] or 0
+        out = [r[0], r[1], wins, losses, _win_rate(wins, losses),
+               r[4], r[5], r[6], r[7]]
+        ws.append(out)
+        for col in (6, 7, 8):
+            _pnl_cell(ws.cell(row=ri, column=col))
+        _zebra(ws, ri, len(headers))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 7: Daily Summary
+# ---------------------------------------------------------------------------
+
+def _build_daily_summary_sheet(wb, conn):
+    ws = wb.create_sheet("Daily Summary")
+    headers = [
+        "Date", "Evaluations", "Signals", "Skips",
+        "Paper Trades", "Paper Wins", "Paper Losses", "Paper Win Rate %", "Paper P&L $", "Open Positions",
+        "Live Trades", "Live Successful", "Live Aborted", "Live P&L $",
+        "Missed Profit $ (Skipped Winners)",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    dates = conn.execute("""
+        SELECT DATE(timestamp) FROM decisions GROUP BY DATE(timestamp) ORDER BY DATE(timestamp) DESC
+    """).fetchall()
+
+    for ri, (date,) in enumerate(dates, start=2):
+        dec = conn.execute("""
+            SELECT COUNT(*),
+                   SUM(CASE WHEN action IN ('TRADE','DRY_RUN_SIGNAL') THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN action='SKIP' THEN 1 ELSE 0 END)
+            FROM decisions WHERE DATE(timestamp) = ?
+        """, (date,)).fetchone()
+
+        paper = conn.execute("""
+            SELECT COUNT(*),
+                   SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
+                   ROUND(SUM(COALESCE(pnl,0)), 4),
+                   SUM(CASE WHEN status='open' THEN 1 ELSE 0 END)
+            FROM paper_trades WHERE DATE(timestamp) = ?
+        """, (date,)).fetchone()
+
+        live = conn.execute("""
+            SELECT COUNT(*),
+                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status IN ('aborted','partial_abort') THEN 1 ELSE 0 END),
+                   ROUND(COALESCE(SUM(do.actual_profit), 0), 4)
+            FROM trades t
+            LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
+            WHERE DATE(t.timestamp) = ?
+        """, (date,)).fetchone()
+
+        missed = conn.execute("""
+            SELECT ROUND(COALESCE(SUM(do.hypothetical_profit), 0), 4)
+            FROM decisions d
+            JOIN decision_outcomes do ON do.decision_id = d.id
+            WHERE DATE(d.timestamp) = ? AND d.action='SKIP' AND do.would_have_profited=1
+        """, (date,)).fetchone()
+
+        p_total, p_wins, p_losses, p_pnl, p_open = paper or (0, 0, 0, 0, 0)
+        l_total, l_win, l_abort, l_pnl = live or (0, 0, 0, 0)
+
+        row = [
+            date, dec[0], dec[1], dec[2],
+            p_total or 0, p_wins or 0, p_losses or 0,
+            _win_rate(p_wins, p_losses), round(p_pnl or 0, 4), p_open or 0,
+            l_total or 0, l_win or 0, l_abort or 0, round(l_pnl or 0, 4),
+            missed[0] if missed else 0,
+        ]
+        ws.append(row)
+        _pnl_cell(ws.cell(row=ri, column=9))    # Paper P&L
+        _pnl_cell(ws.cell(row=ri, column=14))   # Live P&L
+        _zebra(ws, ri, len(headers))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 8: Live Trades
+# ---------------------------------------------------------------------------
+
+def _build_trades_sheet(wb, conn, date_str):
     ws = wb.create_sheet("Live Trades")
     headers = [
         "Timestamp", "Coin", "Strategy", "Side", "Market",
-        "UP Price", "DOWN Price", "Entry Price", "Target Price",
-        "Combined Cost", "Fees", "Shares", "Status", "Abort Cost", "Actual P&L"
+        "UP Price $", "DOWN Price $", "Entry $", "Target $",
+        "Combined Cost", "Fees $", "Shares", "Status", "Abort Cost $", "Actual P&L $",
     ]
     ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
 
     where = "WHERE t.timestamp LIKE ?" if date_str else ""
     params = (f"{date_str}%",) if date_str else ()
-    query = f"""
+    for ri, row in enumerate(conn.execute(f"""
         SELECT t.timestamp, t.coin, t.strategy_type, t.side, t.market_slug,
                t.up_price, t.down_price, t.entry_price, t.target_price,
                t.combined_cost, t.fee_total, t.shares, t.status, t.abort_cost,
                do.actual_profit
         FROM trades t
         LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
-        {where}
-        ORDER BY t.id DESC
-    """
-    for row in conn.execute(query, params):
-        ws.append(list(row))
+        {where} ORDER BY t.id DESC
+    """, params), start=2):
+        r = list(row)
+        ws.append(r)
+        status = str(r[12] or "").lower()
+        row_fill = (WIN_FILL if status == "success" else
+                    LOSS_FILL if status in ("aborted", "partial_abort", "failed") else None)
+        if row_fill:
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=ri, column=col).fill = row_fill
+        _pnl_cell(ws.cell(row=ri, column=15))
 
-    _style_header(ws, len(headers))
     _auto_width(ws)
-    _color_pnl_column(ws, 15)  # Actual P&L column
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_decisions_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
-    ws = wb.create_sheet("Decisions")
+# ---------------------------------------------------------------------------
+# Sheet 9: All Decisions
+# ---------------------------------------------------------------------------
+
+def _build_decisions_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("All Decisions")
     headers = [
-        "Timestamp", "Coin", "Strategy", "Market", "UP Ask", "DOWN Ask", "Combined",
-        "Price", "Velocity 30s", "Velocity 60s",
-        "UP Depth", "DOWN Depth", "Time Left (s)",
+        "Timestamp", "Coin", "Strategy", "Market",
+        "UP Ask", "DOWN Ask", "Combined",
+        "Coin Price $", "Velocity 30s %", "Velocity 60s %",
+        "UP Depth $", "DOWN Depth $", "Time Left (s)",
         "Feeds", "Passed Filters", "Failed Filters",
-        "Action", "Reason", "Would Have Profited", "Hypothetical P&L"
+        "Action", "Reason", "Would Have Profited", "Hypothetical P&L $",
     ]
     ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
 
     where = "WHERE d.timestamp LIKE ?" if date_str else ""
     params = (f"{date_str}%",) if date_str else ()
-    query = f"""
+    for ri, row in enumerate(conn.execute(f"""
         SELECT d.timestamp, d.coin, d.strategy_type, d.market_slug,
-               d.up_best_ask, d.down_best_ask,
-               d.combined_cost, d.btc_price, d.coin_velocity_30s, d.coin_velocity_60s,
+               d.up_best_ask, d.down_best_ask, d.combined_cost,
+               d.btc_price, d.coin_velocity_30s, d.coin_velocity_60s,
                d.up_depth_usd, d.down_depth_usd, d.time_remaining_s,
                d.feed_count, d.filter_passed, d.filter_failed,
                d.action, d.reason,
                do.would_have_profited, do.hypothetical_profit
         FROM decisions d
         LEFT JOIN decision_outcomes do ON do.decision_id = d.id
-        {where}
-        ORDER BY d.id DESC
-        LIMIT 10000
-    """
-    for row in conn.execute(query, params):
-        ws.append(list(row))
+        {where} ORDER BY d.id DESC LIMIT 10000
+    """, params), start=2):
+        r = list(row)
+        ws.append(r)
+        action = str(r[16] or "").upper()
+        if action in ("TRADE", "DRY_RUN_SIGNAL"):
+            for col in range(1, len(headers) + 1):
+                ws.cell(row=ri, column=col).fill = WIN_FILL
+        _pnl_cell(ws.cell(row=ri, column=20))
 
-    _style_header(ws, len(headers))
     _auto_width(ws)
-    _color_pnl_column(ws, 20)  # Hypothetical P&L column
     ws.auto_filter.ref = ws.dimensions
 
 
-def _build_skipped_winners_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
-    ws = wb.create_sheet("Skipped Winners")
-    headers = [
-        "Timestamp", "Coin", "Market", "UP Ask", "DOWN Ask", "Combined",
-        "Failed Filters", "Reason", "Hypothetical P&L", "Winner"
-    ]
-    ws.append(headers)
+# ---------------------------------------------------------------------------
+# Sheet 10: Filter Performance
+# ---------------------------------------------------------------------------
 
-    where = "WHERE d.action = 'SKIP' AND do.would_have_profited = 1"
-    params = []
-    if date_str:
-        where += " AND d.timestamp LIKE ?"
-        params.append(f"{date_str}%")
-
-    query = f"""
-        SELECT d.timestamp, d.coin, d.market_slug, d.up_best_ask, d.down_best_ask,
-               d.combined_cost, d.filter_failed, d.reason,
-               do.hypothetical_profit, o.winner
-        FROM decisions d
-        JOIN decision_outcomes do ON do.decision_id = d.id
-        JOIN outcomes o ON do.outcome_id = o.id
-        {where}
-        ORDER BY do.hypothetical_profit DESC
-        LIMIT 5000
-    """
-    for row in conn.execute(query, params):
-        ws.append(list(row))
-
-    _style_header(ws, len(headers))
-    _auto_width(ws)
-    _color_pnl_column(ws, 9)  # Hypothetical P&L
-    ws.auto_filter.ref = ws.dimensions
-
-
-def _build_daily_summary_sheet(wb: Workbook, conn: sqlite3.Connection):
-    ws = wb.create_sheet("Daily Summary")
-    headers = [
-        "Date", "Evaluations", "Signals", "Skips", "Trades",
-        "Successful", "Aborted", "Total P&L", "Missed Profit (Skipped Winners)"
-    ]
-    ws.append(headers)
-
-    query = """
-        SELECT
-            DATE(d.timestamp) as date,
-            COUNT(*) as evaluations,
-            SUM(CASE WHEN d.action IN ('TRADE', 'DRY_RUN_SIGNAL') THEN 1 ELSE 0 END) as signals,
-            SUM(CASE WHEN d.action = 'SKIP' THEN 1 ELSE 0 END) as skips,
-            (SELECT COUNT(*) FROM trades t WHERE DATE(t.timestamp) = DATE(d.timestamp)) as trades,
-            (SELECT COUNT(*) FROM trades t WHERE DATE(t.timestamp) = DATE(d.timestamp) AND t.status = 'success') as successful,
-            (SELECT COUNT(*) FROM trades t WHERE DATE(t.timestamp) = DATE(d.timestamp) AND t.status IN ('aborted', 'partial_abort')) as aborted,
-            (SELECT COALESCE(SUM(do2.actual_profit), 0) FROM decision_outcomes do2
-             JOIN decisions d2 ON do2.decision_id = d2.id
-             WHERE DATE(d2.timestamp) = DATE(d.timestamp) AND do2.actual_profit IS NOT NULL) as total_pnl,
-            (SELECT COALESCE(SUM(do3.hypothetical_profit), 0) FROM decision_outcomes do3
-             JOIN decisions d3 ON do3.decision_id = d3.id
-             WHERE DATE(d3.timestamp) = DATE(d.timestamp) AND d3.action = 'SKIP' AND do3.would_have_profited = 1) as missed
-        FROM decisions d
-        GROUP BY DATE(d.timestamp)
-        ORDER BY date DESC
-    """
-    for row in conn.execute(query):
-        ws.append(list(row))
-
-    _style_header(ws, len(headers))
-    _auto_width(ws)
-    _color_pnl_column(ws, 8)  # Total P&L
-    ws.auto_filter.ref = ws.dimensions
-
-
-def _build_filter_performance_sheet(wb: Workbook, conn: sqlite3.Connection, date_str):
+def _build_filter_performance_sheet(wb, conn, date_str):
     ws = wb.create_sheet("Filter Performance")
     headers = [
         "Filter", "Times Passed", "Times Failed", "Reject Rate %",
-        "Correct Rejections", "Missed Winners", "Accuracy %"
+        "Correct Rejections", "Missed Winners", "Accuracy %",
     ]
     ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
 
     where = "WHERE timestamp LIKE ?" if date_str else ""
     params = (f"{date_str}%",) if date_str else ()
     rows = conn.execute(
-        f"SELECT filter_passed, filter_failed, action FROM decisions {where}", params
+        f"SELECT filter_passed, filter_failed FROM decisions {where}", params
     ).fetchall()
 
-    filter_counts: dict[str, dict] = {}
-    for passed_str, failed_str, action in rows:
+    counts: dict[str, dict] = {}
+    for passed_str, failed_str in rows:
         for name in (passed_str or "").split(","):
             name = name.strip()
             if name:
-                filter_counts.setdefault(name, {"passed": 0, "failed": 0})
-                filter_counts[name]["passed"] += 1
+                counts.setdefault(name, {"passed": 0, "failed": 0})
+                counts[name]["passed"] += 1
         for name in (failed_str or "").split(","):
             name = name.strip()
             if name:
-                filter_counts.setdefault(name, {"passed": 0, "failed": 0})
-                filter_counts[name]["failed"] += 1
+                counts.setdefault(name, {"passed": 0, "failed": 0})
+                counts[name]["failed"] += 1
 
-    for fname in filter_counts:
-        date_clause = "AND d.timestamp LIKE ?" if date_str else ""
+    for fname in counts:
+        extra = "AND d.timestamp LIKE ?" if date_str else ""
         acc_params = [f"%{fname}%"] + ([f"{date_str}%"] if date_str else [])
-        query = f"""
+        result = conn.execute(f"""
             SELECT
-                SUM(CASE WHEN do.would_have_profited = 0 THEN 1 ELSE 0 END),
-                SUM(CASE WHEN do.would_have_profited = 1 THEN 1 ELSE 0 END)
+                SUM(CASE WHEN do.would_have_profited=0 THEN 1 ELSE 0 END),
+                SUM(CASE WHEN do.would_have_profited=1 THEN 1 ELSE 0 END)
             FROM decisions d
-            JOIN decision_outcomes do ON do.decision_id = d.id
-            WHERE d.filter_failed LIKE ? {date_clause}
-        """
-        result = conn.execute(query, acc_params).fetchone()
-        if result:
-            filter_counts[fname]["correct"] = result[0] or 0
-            filter_counts[fname]["missed"] = result[1] or 0
-        else:
-            filter_counts[fname]["correct"] = 0
-            filter_counts[fname]["missed"] = 0
+            JOIN decision_outcomes do ON do.decision_id=d.id
+            WHERE d.filter_failed LIKE ? {extra}
+        """, acc_params).fetchone()
+        counts[fname]["correct"] = result[0] or 0 if result else 0
+        counts[fname]["missed"]  = result[1] or 0 if result else 0
 
-    for name, counts in sorted(filter_counts.items()):
-        total = counts["passed"] + counts["failed"]
-        reject_pct = (counts["failed"] / total * 100) if total > 0 else 0
-        correct = counts.get("correct", 0)
-        missed = counts.get("missed", 0)
-        accuracy_total = correct + missed
-        accuracy = (correct / accuracy_total * 100) if accuracy_total > 0 else 0
-        ws.append([name, counts["passed"], counts["failed"], round(reject_pct, 1),
-                    correct, missed, round(accuracy, 1)])
+    for ri, (name, c) in enumerate(sorted(counts.items()), start=2):
+        total = c["passed"] + c["failed"]
+        reject_pct = round(c["failed"] / total * 100, 1) if total else 0
+        correct, missed = c.get("correct", 0), c.get("missed", 0)
+        acc_total = correct + missed
+        accuracy = round(correct / acc_total * 100, 1) if acc_total else 0
+        ws.append([name, c["passed"], c["failed"], reject_pct, correct, missed, accuracy])
+        acc_cell = ws.cell(row=ri, column=7)
+        if accuracy >= 70:
+            acc_cell.fill = WIN_FILL
+            acc_cell.font = WIN_FONT
+        elif accuracy < 50 and acc_total > 0:
+            acc_cell.fill = LOSS_FILL
+            acc_cell.font = LOSS_FONT
+        _zebra(ws, ri, len(headers))
 
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 11: Skipped Winners
+# ---------------------------------------------------------------------------
+
+def _build_skipped_winners_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Skipped Winners")
+    headers = [
+        "Timestamp", "Coin", "Market", "UP Ask", "DOWN Ask", "Combined $",
+        "Failed Filters", "Reason", "Hypothetical P&L $", "Winner",
+    ]
+    ws.append(headers)
     _style_header(ws, len(headers))
+    _freeze(ws)
+
+    params = []
+    date_clause = ""
+    if date_str:
+        date_clause = "AND d.timestamp LIKE ?"
+        params.append(f"{date_str}%")
+
+    for ri, row in enumerate(conn.execute(f"""
+        SELECT d.timestamp, d.coin, d.market_slug,
+               d.up_best_ask, d.down_best_ask, d.combined_cost,
+               d.filter_failed, d.reason,
+               do.hypothetical_profit, o.winner
+        FROM decisions d
+        JOIN decision_outcomes do ON do.decision_id=d.id
+        JOIN outcomes o ON do.outcome_id=o.id
+        WHERE d.action='SKIP' AND do.would_have_profited=1 {date_clause}
+        ORDER BY do.hypothetical_profit DESC LIMIT 5000
+    """, params), start=2):
+        ws.append(list(row))
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=ri, column=col).fill = LOSS_FILL   # missed = shown red
+        _pnl_cell(ws.cell(row=ri, column=9))
+
     _auto_width(ws)
     ws.auto_filter.ref = ws.dimensions

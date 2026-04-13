@@ -90,7 +90,12 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     fee_total REAL DEFAULT 0,
     status TEXT DEFAULT 'open',
     exit_price REAL,
-    pnl REAL
+    pnl REAL,
+    exit_reason TEXT,
+    exit_timestamp TEXT,
+    time_remaining_s REAL,
+    bid_at_exit REAL,
+    market_end_time TEXT
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -135,7 +140,12 @@ class DecisionTracker:
                 fee_total REAL DEFAULT 0,
                 status TEXT DEFAULT 'open',
                 exit_price REAL,
-                pnl REAL
+                pnl REAL,
+                exit_reason TEXT,
+                exit_timestamp TEXT,
+                time_remaining_s REAL,
+                bid_at_exit REAL,
+                market_end_time TEXT
             );
             CREATE TABLE IF NOT EXISTS paper_capital (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -158,6 +168,18 @@ class DecisionTracker:
         cap_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_capital)")}
         if "reset_at" not in cap_cols:
             self.conn.execute("ALTER TABLE paper_capital ADD COLUMN reset_at TEXT")
+        # Add new paper_trades columns (added in v1.3.3)
+        pt_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_trades)")}
+        new_pt_cols = {
+            "exit_reason": "TEXT",
+            "exit_timestamp": "TEXT",
+            "time_remaining_s": "REAL",
+            "bid_at_exit": "REAL",
+            "market_end_time": "TEXT",
+        }
+        for col, col_type in new_pt_cols.items():
+            if col not in pt_cols:
+                self.conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_type}")
         self.conn.commit()
 
     def log_decision(self, decision: Decision) -> int:
@@ -436,16 +458,17 @@ class DecisionTracker:
 
     def log_paper_trade(self, market_slug: str, coin: str, strategy_type: str,
                         side: str, entry_price: float, target_price: float,
-                        shares: float, fee_total: float) -> int:
+                        shares: float, fee_total: float,
+                        market_end_time: str | None = None) -> int:
         """Open a paper trade and deduct cost from balance."""
         cost = entry_price * shares
         cursor = self.conn.execute(
             """INSERT INTO paper_trades
                (timestamp, market_slug, coin, strategy_type, side,
-                entry_price, target_price, shares, cost, fee_total, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')""",
+                entry_price, target_price, shares, cost, fee_total, status, market_end_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
             (datetime.utcnow().isoformat(), market_slug, coin, strategy_type,
-             side, entry_price, target_price, shares, cost, fee_total),
+             side, entry_price, target_price, shares, cost, fee_total, market_end_time),
         )
         # Deduct from paper balance
         self.conn.execute(
@@ -484,9 +507,13 @@ class DecisionTracker:
                     exit_price = 0.0
                     status = "closed_loss"
 
+            now = datetime.utcnow().isoformat()
             self.conn.execute(
-                "UPDATE paper_trades SET status=?, exit_price=?, pnl=? WHERE id=?",
-                (status, exit_price, pnl, trade_id),
+                """UPDATE paper_trades
+                   SET status=?, exit_price=?, pnl=?,
+                       exit_reason='resolution', exit_timestamp=?
+                   WHERE id=?""",
+                (status, exit_price, pnl, now, trade_id),
             )
             # Return cost + profit/loss to balance
             self.conn.execute(
@@ -499,7 +526,10 @@ class DecisionTracker:
             logger.info(f"Closed {len(trades)} paper trades for {market_slug} → winner: {winner}")
 
     def close_paper_trade_early(self, trade_id: int, exit_price: float,
-                                pnl: float, status: str):
+                                pnl: float, status: str,
+                                exit_reason: str = "manual",
+                                time_remaining_s: float | None = None,
+                                bid_at_exit: float | None = None):
         """Close a paper trade early (profit-take or stop-loss) before market resolution."""
         row = self.conn.execute(
             "SELECT cost FROM paper_trades WHERE id = ? AND status = 'open'",
@@ -508,9 +538,13 @@ class DecisionTracker:
         if not row:
             return  # Already closed or not found
         cost = row[0]
+        now = datetime.utcnow().isoformat()
         self.conn.execute(
-            "UPDATE paper_trades SET status=?, exit_price=?, pnl=? WHERE id=?",
-            (status, exit_price, pnl, trade_id),
+            """UPDATE paper_trades
+               SET status=?, exit_price=?, pnl=?,
+                   exit_reason=?, exit_timestamp=?, time_remaining_s=?, bid_at_exit=?
+               WHERE id=?""",
+            (status, exit_price, pnl, exit_reason, now, time_remaining_s, bid_at_exit, trade_id),
         )
         self.conn.execute(
             "UPDATE paper_capital SET current_balance = current_balance + ? WHERE id = 1",
@@ -518,7 +552,8 @@ class DecisionTracker:
         )
         self.conn.commit()
         logger.info(
-            f"Paper trade {trade_id} closed early: exit@{exit_price:.3f} pnl=${pnl:+.4f} [{status}]"
+            f"Paper trade {trade_id} closed early: exit@{exit_price:.3f} pnl=${pnl:+.4f} "
+            f"[{status}] reason={exit_reason} t_remaining={time_remaining_s}"
         )
 
     def reset_paper_stats(self):

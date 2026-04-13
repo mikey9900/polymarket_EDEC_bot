@@ -34,6 +34,9 @@ class SingleLegConfig:
     min_velocity_30s: float = 0.08   # coin must be actually moving (not a thin-book artifact)
     profit_take_pct: float = 0.50    # close paper position when profit >= 50%
     min_profit_near_close: float = 0.20  # near expiry, take any >=20% profit
+    loss_cut_pct: float = 0.40       # exit if loss exceeds this fraction of entry cost
+    high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this (nearly resolved)
+    time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,10 @@ class SwingLegConfig:
     min_time_remaining_s: float
     min_book_depth_usd: float
     order_size_usd: float
+    loss_cut_pct: float = 0.40       # exit first leg if loss exceeds this fraction
+    high_confidence_bid: float = 0.82  # hold to resolution if first leg bid exceeds this
+    time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
+    dead_leg_threshold: float = 0.05  # sell a leg early if its bid drops below this (dual → single)
 
 
 @dataclass(frozen=True)

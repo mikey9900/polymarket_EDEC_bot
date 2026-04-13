@@ -13,7 +13,15 @@
       "Bash(xargs sed:*)",
       "Bash(xargs wc:*)",
       "Bash(python -c ':*)",
-      "Bash(.venv/Scripts/python -c ':*)"
+      "Bash(.venv/Scripts/python -c ':*)",
+      "WebFetch(domain:docs.polymarket.com)",
+      "WebFetch(domain:github.com)",
+      "WebSearch",
+      "WebFetch(domain:nautilustrader.io)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:www.polytrackhq.app)",
+      "WebFetch(domain:agentbets.ai)",
+      "Bash(python -c \"from bot.execution import ExecutionEngine; from bot.config import load_config; print\\('OK'\\)\")"
     ]
   }
 }

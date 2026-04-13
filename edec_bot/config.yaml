@@ -32,6 +32,9 @@ single_leg:
   hold_if_unfilled: true       # If sell order not filled at close, hold to resolution
   order_size_usd: 2.0          # Dollar amount per trade
   min_velocity_30s: 0.08       # Coin must have moved >=0.08% in 30s (proves real directional move, not just thin book)
+  loss_cut_pct: 0.40           # Exit if loss exceeds this % of entry (dynamic — shrinks near close)
+  high_confidence_bid: 0.82    # Stop monitoring, hold to resolution if bid exceeds this
+  time_pressure_s: 90.0        # Loss threshold scales down linearly below this seconds remaining
 
 # Lead-lag: buy the winning side BEFORE Polymarket books fully reprice
 # When a coin moves fast on Binance/Coinbase, Polymarket lags by ~5-30s.
@@ -57,6 +60,10 @@ swing_leg:
   min_time_remaining_s: 120   # Need time to wait for second leg to dip
   min_book_depth_usd: 5.0
   order_size_usd: 2.0
+  loss_cut_pct: 0.40          # Exit first leg if loss exceeds this % (dynamic — shrinks near close)
+  high_confidence_bid: 0.82   # Hold to resolution if first leg bid exceeds this
+  time_pressure_s: 90.0       # Loss threshold scales down linearly below this seconds remaining
+  dead_leg_threshold: 0.05    # In dual position: sell a leg if its bid drops below this (dual → single)
 
 # Execution
 execution:

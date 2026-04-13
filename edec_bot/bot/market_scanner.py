@@ -10,6 +10,7 @@ import httpx
 
 from bot.config import Config
 from bot.models import MarketInfo, OrderBookSnapshot
+from bot.clob_ws_feed import ClobWebSocketFeed
 
 logger = logging.getLogger(__name__)
 
@@ -27,17 +28,22 @@ class MarketScanner:
         # Markets that have ended but not yet had their outcome resolved
         self._expired_markets: list[MarketInfo] = []
 
+        # Real-time WebSocket book feed
+        self._ws_feed = ClobWebSocketFeed()
+
         self._running = False
         self._http = httpx.AsyncClient(timeout=10.0)
 
     async def run(self):
-        """Launch parallel monitoring tasks for all coins."""
+        """Launch WebSocket feed + parallel monitoring tasks for all coins."""
         self._running = True
-        tasks = [asyncio.create_task(self._monitor_coin(coin)) for coin in self.coins]
+        tasks = [asyncio.create_task(self._ws_feed.run())]
+        tasks += [asyncio.create_task(self._monitor_coin(coin)) for coin in self.coins]
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def stop(self):
         self._running = False
+        self._ws_feed.stop()
 
     # --- Public accessors ---
 
@@ -46,6 +52,10 @@ class MarketScanner:
 
     def get_books(self, coin: str) -> tuple[OrderBookSnapshot | None, OrderBookSnapshot | None]:
         return self._up_books.get(coin), self._down_books.get(coin)
+
+    def get_book_for_token(self, token_id: str) -> OrderBookSnapshot | None:
+        """Return the live WebSocket-cached book for any token ID."""
+        return self._ws_feed.get_book(token_id)
 
     def pop_expired_markets(self) -> list[MarketInfo]:
         """Return and clear all markets that have ended but not yet been resolved."""
@@ -167,7 +177,12 @@ class MarketScanner:
             return None
 
     async def _poll_books_until_end(self, coin: str, market: MarketInfo):
-        """Poll order books every second until the market window closes."""
+        """Subscribe to WebSocket book updates until the market window closes.
+        Falls back to HTTP polling until the WebSocket delivers the first snapshot."""
+        token_ids = [market.up_token_id, market.down_token_id]
+        await self._ws_feed.subscribe(token_ids)
+        logger.info(f"[{coin.upper()}] WS subscribed for {market.slug}")
+
         while self._running:
             now = datetime.now(timezone.utc)
             if now >= market.end_time:
@@ -176,22 +191,31 @@ class MarketScanner:
                 self._markets[coin] = None
                 self._up_books[coin] = None
                 self._down_books[coin] = None
+                await self._ws_feed.unsubscribe(token_ids)
                 break
 
-            try:
-                up_book, down_book = await asyncio.gather(
-                    self._fetch_book(market.up_token_id),
-                    self._fetch_book(market.down_token_id),
-                    return_exceptions=True,
-                )
-                if isinstance(up_book, OrderBookSnapshot):
-                    self._up_books[coin] = up_book
-                if isinstance(down_book, OrderBookSnapshot):
-                    self._down_books[coin] = down_book
-            except Exception as e:
-                logger.warning(f"[{coin.upper()}] Book fetch error: {e}")
+            # Sync from WebSocket cache (real-time)
+            up_book = self._ws_feed.get_book(market.up_token_id)
+            down_book = self._ws_feed.get_book(market.down_token_id)
 
-            await asyncio.sleep(1)
+            if up_book:
+                self._up_books[coin] = up_book
+            if down_book:
+                self._down_books[coin] = down_book
+
+            # HTTP fallback — only fires until WebSocket delivers first snapshot
+            if not up_book or not down_book:
+                try:
+                    if not up_book:
+                        fetched = await self._fetch_book(market.up_token_id)
+                        self._up_books[coin] = fetched
+                    if not down_book:
+                        fetched = await self._fetch_book(market.down_token_id)
+                        self._down_books[coin] = fetched
+                except Exception as e:
+                    logger.warning(f"[{coin.upper()}] HTTP book fallback error: {e}")
+
+            await asyncio.sleep(0.1)
 
     async def _fetch_book(self, token_id: str) -> OrderBookSnapshot:
         """Fetch order book for one token. Polymarket sorts outside-in (worst first)."""

@@ -166,7 +166,7 @@ async def main():
             logger.error(f"Failed to initialize CLOB client: {e}")
             logger.warning("Falling back to dry-run mode")
 
-    executor = ExecutionEngine(config, clob_client, risk_manager, tracker)
+    executor = ExecutionEngine(config, clob_client, risk_manager, tracker, scanner=scanner)
 
     def do_export(today_only: bool = False) -> str:
         return export_to_excel("data/decisions.db", "data", today_only)

@@ -245,25 +245,68 @@ class MarketScanner:
         )
 
     async def get_market_outcome(self, market: MarketInfo) -> str | None:
-        """Query resolved outcome for a market."""
-        try:
-            url = f"{self.config.polymarket.gamma_base_url}/markets/{market.condition_id}"
-            resp = await self._http.get(url)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("resolved"):
-                    outcomes = data.get("outcomes", [])
-                    prices = data.get("outcomePrices", [])
-                    if isinstance(outcomes, str):
-                        outcomes = json.loads(outcomes)
-                    if isinstance(prices, str):
-                        prices = json.loads(prices)
-                    for i, price in enumerate(prices):
-                        if float(price) >= 0.99 and i < len(outcomes):
-                            return outcomes[i]
+        """Query resolved outcome for a market. Returns 'UP' or 'DOWN', or None if not yet resolved."""
+
+        def _parse_winner(data) -> str | None:
+            """Extract normalized UP/DOWN winner from a market dict."""
+            if not isinstance(data, dict):
+                return None
+            if not data.get("resolved"):
+                return None
+            outcomes = data.get("outcomes", [])
+            prices = data.get("outcomePrices", [])
+            if isinstance(outcomes, str):
+                try:
+                    outcomes = json.loads(outcomes)
+                except Exception:
+                    return None
+            if isinstance(prices, str):
+                try:
+                    prices = json.loads(prices)
+                except Exception:
+                    return None
+            for i, price in enumerate(prices):
+                try:
+                    if float(price) >= 0.99 and i < len(outcomes):
+                        raw = str(outcomes[i]).lower()
+                        if raw in ("up", "yes"):
+                            return "UP"
+                        elif raw in ("down", "no"):
+                            return "DOWN"
+                        else:
+                            return str(outcomes[i]).upper()
+                except (ValueError, TypeError):
+                    continue
             return None
+
+        try:
+            # Primary: query individual market by condition_id
+            if market.condition_id:
+                url = f"{self.config.polymarket.gamma_base_url}/markets/{market.condition_id}"
+                resp = await self._http.get(url, timeout=8.0)
+                if resp.status_code == 200:
+                    winner = _parse_winner(resp.json())
+                    if winner:
+                        logger.debug(f"[{market.slug}] Outcome resolved via markets endpoint: {winner}")
+                        return winner
+
+            # Fallback: re-query the events endpoint (same one used for discovery)
+            url = f"{self.config.polymarket.gamma_base_url}/events"
+            resp = await self._http.get(url, params={"slug": market.slug, "limit": 1}, timeout=8.0)
+            if resp.status_code == 200:
+                events = resp.json()
+                if isinstance(events, list) and events:
+                    for mkt in events[0].get("markets", []):
+                        winner = _parse_winner(mkt)
+                        if winner:
+                            logger.debug(f"[{market.slug}] Outcome resolved via events fallback: {winner}")
+                            return winner
+
+            logger.debug(f"[{market.slug}] Outcome not yet available (condition_id={market.condition_id!r})")
+            return None
+
         except Exception as e:
-            logger.error(f"Outcome query error: {e}")
+            logger.error(f"Outcome query error for {market.slug}: {e}")
             return None
 
     @staticmethod

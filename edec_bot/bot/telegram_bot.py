@@ -252,6 +252,30 @@ class TelegramBot:
             await asyncio.sleep(300)
             await self._do_cleanup()
 
+    async def _repost_dashboard(self):
+        """Delete old dashboard and re-post at the bottom, leaving ephemeral messages intact."""
+        if not self._app or not self.chat_id:
+            return
+        if self._dashboard_message_id:
+            try:
+                await self._app.bot.delete_message(
+                    chat_id=self.chat_id, message_id=self._dashboard_message_id
+                )
+            except Exception:
+                pass
+            self._dashboard_message_id = None
+        try:
+            text = self._build_dashboard_text()
+            msg = await self._app.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            self._dashboard_message_id = msg.message_id
+        except Exception as e:
+            logger.error(f"Failed to re-post dashboard: {e}")
+
     async def _do_cleanup(self):
         """Delete all tracked messages and re-post a fresh dashboard at the bottom."""
         if not self._app or not self.chat_id:
@@ -289,8 +313,14 @@ class TelegramBot:
             logger.error(f"Failed to re-post dashboard during cleanup: {e}")
 
     async def _refresh_dashboard(self):
-        """Edit the existing dashboard message with fresh data."""
-        if not self._app or not self.chat_id or not self._dashboard_message_id:
+        """Edit the existing dashboard message with fresh data.
+        Falls back to re-posting if the message ID is lost."""
+        if not self._app or not self.chat_id:
+            return
+
+        # No known message — re-create from scratch
+        if not self._dashboard_message_id:
+            await self._do_cleanup()
             return
 
         # Build text first — surface content errors before touching Telegram
@@ -455,7 +485,7 @@ class TelegramBot:
             if self.executor:
                 self.executor.set_order_size(amt)
             await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "budget":
@@ -476,7 +506,7 @@ class TelegramBot:
             if self.tracker:
                 self.tracker.set_paper_capital(amt)
             await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "capital":
@@ -493,7 +523,7 @@ class TelegramBot:
 
         if data == "back":
             await query.answer()
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         # --- Start / Stop / Kill ---
@@ -503,7 +533,7 @@ class TelegramBot:
             self.risk_manager.resume()
             self.risk_manager.deactivate_kill_switch()
             await query.answer("▶️ Scanning started", show_alert=False)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "stop":
@@ -511,7 +541,7 @@ class TelegramBot:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.pause()
             await query.answer("⏸ Bot stopped", show_alert=False)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "kill":
@@ -519,22 +549,22 @@ class TelegramBot:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.activate_kill_switch("Manual kill via Telegram")
             await query.answer("🛑 Kill switch activated!", show_alert=True)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "refresh":
             await query.answer()
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
         if data == "reset_stats":
             if self.tracker:
                 self.tracker.reset_paper_stats()
             await query.answer("🗑 Stats reset!", show_alert=True)
-            await self._refresh_dashboard()
+            await self._do_cleanup()
             return
 
-        # --- Info buttons (reply below the existing message) ---
+        # --- Info buttons (send reply, then re-post dashboard below it) ---
         await query.answer()
         if data == "stats":
             stats = self.tracker.get_daily_stats()
@@ -551,6 +581,7 @@ class TelegramBot:
                 f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}",
                 parse_mode="Markdown",
             ))
+            await self._repost_dashboard()
 
         elif data == "status":
             status = self.risk_manager.get_status()
@@ -564,6 +595,7 @@ class TelegramBot:
                 f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}",
                 parse_mode="Markdown",
             ))
+            await self._repost_dashboard()
 
         elif data == "trades":
             trades = self.tracker.get_recent_trades(limit=5)
@@ -579,10 +611,12 @@ class TelegramBot:
                         f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}"
                     )
                 self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+            await self._repost_dashboard()
 
         elif data in ("export_today", "export_all"):
             if not self.export_fn:
                 self._track(await query.message.reply_text("Export not available."))
+                await self._repost_dashboard()
                 return
             wait_msg = await query.message.reply_text("⏳ Generating spreadsheet...")
             self._track(wait_msg)
@@ -597,6 +631,7 @@ class TelegramBot:
                     ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))
+            await self._repost_dashboard()
 
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
@@ -610,6 +645,7 @@ class TelegramBot:
                     bar = "🟩" * int((100 - fail_pct) / 20) + "🟥" * int(fail_pct / 20)
                     lines.append(f"`{s['filter']:18s}` {bar} {fail_pct:.0f}% fail")
                 self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+            await self._repost_dashboard()
 
     async def alert_dual_leg(self, market_slug: str, coin: str, up_price: float,
                              down_price: float, combined: float, profit: float,

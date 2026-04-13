@@ -337,19 +337,18 @@ class TelegramBot:
             logger.error(f"Failed to re-post dashboard: {e}")
 
     async def _do_cleanup(self):
-        """Delete tracked ephemeral messages, then refresh the dashboard in-place."""
+        """Delete tracked ephemeral messages in parallel, then refresh the dashboard."""
         if not self._app or not self.chat_id:
             return
-
         msgs_to_delete = self._ephemeral_msgs[:]
         self._ephemeral_msgs.clear()
         self._clear_ephemeral_log()
-        for msg_id in msgs_to_delete:
-            try:
-                await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
-            except Exception as e:
-                logger.debug(f"Could not delete message {msg_id}: {e}")
-
+        if msgs_to_delete:
+            await asyncio.gather(
+                *[self._app.bot.delete_message(chat_id=self.chat_id, message_id=mid)
+                  for mid in msgs_to_delete],
+                return_exceptions=True,
+            )
         await self._refresh_dashboard()
 
     async def _deep_clean(self):
@@ -554,9 +553,9 @@ class TelegramBot:
         # --- Budget selection ---
         if data.startswith("budget_"):
             amt = float(data.split("_")[1])
+            await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
             if self.executor:
                 self.executor.set_order_size(amt)
-            await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
             await self._do_cleanup()
             return
 
@@ -575,9 +574,9 @@ class TelegramBot:
         # --- Capital selection ---
         if data.startswith("capital_"):
             amt = float(data.split("_")[1])
+            await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
             if self.tracker:
                 self.tracker.set_paper_capital(amt)
-            await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
             await self._do_cleanup()
             return
 
@@ -600,27 +599,27 @@ class TelegramBot:
 
         # --- Start / Stop / Kill ---
         if data == "start":
+            await query.answer("▶️ Scanning started", show_alert=False)
             if self.strategy_engine:
                 self.strategy_engine.start_scanning()
             self.risk_manager.resume()
             self.risk_manager.deactivate_kill_switch()
-            await query.answer("▶️ Scanning started", show_alert=False)
             await self._do_cleanup()
             return
 
         if data == "stop":
+            await query.answer("⏸ Bot stopped", show_alert=False)
             if self.strategy_engine:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.pause()
-            await query.answer("⏸ Bot stopped", show_alert=False)
             await self._do_cleanup()
             return
 
         if data == "kill":
+            await query.answer("🛑 Kill switch activated!", show_alert=True)
             if self.strategy_engine:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.activate_kill_switch("Manual kill via Telegram")
-            await query.answer("🛑 Kill switch activated!", show_alert=True)
             await self._do_cleanup()
             return
 
@@ -630,9 +629,9 @@ class TelegramBot:
             return
 
         if data == "reset_stats":
+            await query.answer("🗑 Stats reset!", show_alert=False)
             if self.tracker:
                 self.tracker.reset_paper_stats()
-            await query.answer("🗑 Stats reset!", show_alert=True)
             await self._do_cleanup()
             return
 
@@ -684,7 +683,7 @@ class TelegramBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data in ("export_today", "export_all"):
-            # Export sends a document — can't do that in-place, so send as a reply
+            # Export sends a document — run in thread pool so it never blocks the event loop
             if not self.export_fn:
                 self._track(await query.message.reply_text("Export not available."))
                 await self._repost_dashboard()
@@ -692,7 +691,9 @@ class TelegramBot:
             wait_msg = await query.message.reply_text("⏳ Generating spreadsheet...")
             self._track(wait_msg)
             try:
-                path = self.export_fn(today_only=(data == "export_today"))
+                loop = asyncio.get_event_loop()
+                today_only = (data == "export_today")
+                path = await loop.run_in_executor(None, lambda: self.export_fn(today_only=today_only))
                 import os
                 with open(path, "rb") as f:
                     self._track(await query.message.reply_document(
@@ -712,7 +713,8 @@ class TelegramBot:
             wait_msg = await query.message.reply_text("⏳ Building last 25 trades...")
             self._track(wait_msg)
             try:
-                path = self.export_recent_fn()
+                loop = asyncio.get_event_loop()
+                path = await loop.run_in_executor(None, self.export_recent_fn)
                 import os
                 with open(path, "rb") as f:
                     self._track(await query.message.reply_document(

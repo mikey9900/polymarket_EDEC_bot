@@ -278,7 +278,7 @@ def _build_exit_reason_sheet(wb, conn, date_str):
             ROUND(AVG(exit_price), 4)
         FROM paper_trades
         WHERE status IN ('closed_win','closed_loss') {extra}
-        GROUP BY reason ORDER BY total_pnl DESC
+        GROUP BY reason ORDER BY 5 DESC
     """, params)
 
     for ri, row in enumerate(rows, start=2):
@@ -328,7 +328,7 @@ def _build_coin_performance_sheet(wb, conn, date_str):
             ROUND(MAX(COALESCE(pnl,0)), 4),
             ROUND(MIN(COALESCE(pnl,0)), 4)
         FROM paper_trades {where}
-        GROUP BY coin ORDER BY total_pnl DESC
+        GROUP BY coin ORDER BY 6 DESC
     """, params)
 
     for ri, row in enumerate(rows, start=2):
@@ -376,7 +376,7 @@ def _build_strategy_breakdown_sheet(wb, conn, date_str):
         FROM paper_trades
         WHERE status IN ('closed_win','closed_loss') {extra}
         GROUP BY strategy_type, exit_reason
-        ORDER BY strategy_type, total_pnl DESC
+        ORDER BY strategy_type, 6 DESC
     """, params)
 
     last_strat = None

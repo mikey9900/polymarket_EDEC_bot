@@ -215,6 +215,7 @@ class TelegramBot:
         return "\n".join(lines)
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
+    _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
 
     def _save_msg_id(self) -> None:
         try:
@@ -230,12 +231,42 @@ class TelegramBot:
         except Exception:
             return None
 
+    def _persist_ephemeral(self, msg_id: int) -> None:
+        """Append a sent message ID to the persistent log so it survives restarts."""
+        try:
+            with open(self._EPHEMERAL_LOG, "a") as f:
+                f.write(f"{msg_id}\n")
+        except Exception:
+            pass
+
+    def _load_persisted_ephemerals(self) -> list[int]:
+        try:
+            with open(self._EPHEMERAL_LOG) as f:
+                return [int(line.strip()) for line in f if line.strip().isdigit()]
+        except Exception:
+            return []
+
+    def _clear_ephemeral_log(self) -> None:
+        try:
+            open(self._EPHEMERAL_LOG, "w").close()
+        except Exception:
+            pass
+
     async def start_dashboard(self):
         """Send the live dashboard message and start the refresh + cleanup loops."""
         if not self._app or not self.chat_id:
             return
 
-        # Delete leftover messages from previous run
+        # Delete all messages from the previous run immediately on startup
+        old_msgs = self._load_persisted_ephemerals()
+        self._clear_ephemeral_log()
+        for msg_id in old_msgs:
+            try:
+                await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
+            except Exception as e:
+                logger.debug(f"Could not delete old message {msg_id}: {e}")
+
+        # Delete leftover dashboard from previous run
         old_id = self._load_msg_id()
         if old_id:
             try:
@@ -273,9 +304,9 @@ class TelegramBot:
             await self._refresh_dashboard()
 
     async def _cleanup_loop(self):
-        """Every 5 minutes: delete ephemeral messages and re-post the dashboard at the bottom."""
+        """Every 60 seconds: delete ephemeral messages and re-post the dashboard at the bottom."""
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(60)
             await self._do_cleanup()
 
     async def _repost_dashboard(self):
@@ -308,14 +339,15 @@ class TelegramBot:
         if not self._app or not self.chat_id:
             return
 
-        # Delete all ephemeral messages (alerts, info replies, user commands)
+        # Delete all ephemeral messages (alerts, trade notifications)
         msgs_to_delete = self._ephemeral_msgs[:]
         self._ephemeral_msgs.clear()
+        self._clear_ephemeral_log()
         for msg_id in msgs_to_delete:
             try:
                 await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Could not delete message {msg_id}: {e}")
 
         # Delete old dashboard and re-send at the bottom of the chat
         if self._dashboard_message_id:
@@ -401,6 +433,7 @@ class TelegramBot:
                 reply_markup=reply_markup,
             )
             self._ephemeral_msgs.append(sent.message_id)
+            self._persist_ephemeral(sent.message_id)
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
@@ -408,6 +441,7 @@ class TelegramBot:
         """Track a sent message for cleanup."""
         if msg:
             self._ephemeral_msgs.append(msg.message_id)
+            self._persist_ephemeral(msg.message_id)
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         """Main control keyboard."""
@@ -550,7 +584,7 @@ class TelegramBot:
 
         if data == "back":
             await query.answer()
-            await self._do_cleanup()
+            await self._refresh_dashboard()
             return
 
         # --- Start / Stop / Kill ---
@@ -591,56 +625,55 @@ class TelegramBot:
             await self._do_cleanup()
             return
 
-        # --- Info buttons (send reply, then re-post dashboard below it) ---
+        # --- Info buttons (edit dashboard in-place — no new messages, no chat clutter) ---
+        _back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="back")]])
         await query.answer()
+
         if data == "stats":
             stats = self.tracker.get_daily_stats()
             paper = self.tracker.get_paper_stats()
             pnl_emoji = "📈" if paper["total_pnl"] >= 0 else "📉"
             win_rate = f"{paper['win_rate']:.0f}%" if paper["total_trades"] > 0 else "—"
-            self._track(await query.message.reply_text(
+            text = (
                 f"📊 *Today's Stats ({stats['date']})*\n"
                 f"Evaluations: {stats['total_evaluations']}\n"
                 f"Signals: {stats['signals']} | Skips: {stats['skips']}\n\n"
                 f"{pnl_emoji} *Paper Trading*\n"
                 f"Capital: ${paper['current_balance']:.2f} / ${paper['total_capital']:.2f}\n"
                 f"P&L: ${paper['total_pnl']:+.2f} | Win rate: {win_rate}\n"
-                f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}",
-                parse_mode="Markdown",
-            ))
-            await self._repost_dashboard()
+                f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}"
+            )
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data == "status":
             status = self.risk_manager.get_status()
             mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-            self._track(await query.message.reply_text(
+            text = (
                 f"📈 *Status*\n"
                 f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
                 f"Mode: {MODE_LABELS.get(mode, mode)}\n"
                 f"Budget: ${order_size:.0f}/trade\n"
-                f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}",
-                parse_mode="Markdown",
-            ))
-            await self._repost_dashboard()
+                f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}"
+            )
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data == "trades":
             trades = self.tracker.get_recent_trades(limit=5)
             if not trades:
-                self._track(await query.message.reply_text("No trades yet."))
+                text = "No trades yet."
             else:
                 lines = ["📋 *Recent Trades*\n"]
                 for t in trades:
                     pnl = t.get("actual_profit")
                     pnl_str = f"${pnl:+.4f}" if pnl is not None else "pending"
                     emoji = "✅" if t["status"] == "success" else "❌"
-                    lines.append(
-                        f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}"
-                    )
-                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-            await self._repost_dashboard()
+                    lines.append(f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}")
+                text = "\n".join(lines)
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data in ("export_today", "export_all"):
+            # Export sends a document — can't do that in-place, so send as a reply
             if not self.export_fn:
                 self._track(await query.message.reply_text("Export not available."))
                 await self._repost_dashboard()
@@ -663,7 +696,7 @@ class TelegramBot:
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
             if not stats:
-                self._track(await query.message.reply_text("No filter data yet."))
+                text = "No filter data yet."
             else:
                 lines = ["🔍 *Filter Performance*\n"]
                 for s in stats:
@@ -671,8 +704,8 @@ class TelegramBot:
                     fail_pct = (s["failed"] / total * 100) if total > 0 else 0
                     bar = "🟩" * int((100 - fail_pct) / 20) + "🟥" * int(fail_pct / 20)
                     lines.append(f"`{s['filter']:18s}` {bar} {fail_pct:.0f}% fail")
-                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-            await self._repost_dashboard()
+                text = "\n".join(lines)
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
     async def alert_dual_leg(self, market_slug: str, coin: str, up_price: float,
                              down_price: float, combined: float, profit: float,

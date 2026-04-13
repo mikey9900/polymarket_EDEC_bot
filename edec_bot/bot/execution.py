@@ -909,9 +909,19 @@ class ExecutionEngine:
                 logger.debug(f"[{coin}] Paper monitor error: {e}")
 
     async def _wait_book_update(self):
-        """Suspend until the next WebSocket book push — falls back to 1s sleep if no scanner."""
+        """Suspend until the next WebSocket book push, or at most 1 second.
+
+        The 1s cap is critical: when a market closes the WS feed unsubscribes
+        and no further events fire. Without a timeout the monitor would block
+        forever and never reach the near-close or loss-cut checks.
+        """
         if self.scanner and self.scanner._ws_feed.is_connected():
-            await self.scanner._ws_feed.wait_any_update()
+            try:
+                await asyncio.wait_for(
+                    self.scanner._ws_feed.wait_any_update(), timeout=1.0
+                )
+            except asyncio.TimeoutError:
+                pass
         else:
             await asyncio.sleep(1)
 

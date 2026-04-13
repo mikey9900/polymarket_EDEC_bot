@@ -30,7 +30,7 @@ class ExecutionEngine:
 
     async def execute(self, signal: TradeSignal, decision_id: int = 0) -> TradeResult:
         """Dispatch to the appropriate execution path based on strategy type."""
-        if signal.strategy_type == "single_leg":
+        if signal.strategy_type in ("single_leg", "lead_lag"):
             return await self.execute_single_leg(signal, decision_id)
         return await self._execute_dual_leg(signal, decision_id)
 

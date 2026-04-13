@@ -170,6 +170,7 @@ async def main():
         scanner=scanner,
         strategy_engine=strategy,
         executor=executor,
+        aggregator=aggregator,
     )
 
     feed_pairs = []

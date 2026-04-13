@@ -6,6 +6,7 @@ import os
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import RetryAfter
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from bot.config import Config
@@ -16,10 +17,11 @@ logger = logging.getLogger(__name__)
 
 # Mode labels for display
 MODE_LABELS = {
-    "both": "🟢 BOTH (dual + single)",
+    "both": "🟢 ALL (dual + single + lead-lag)",
     "dual": "🔵 DUAL-LEG only",
     "single": "🟡 SINGLE-LEG only",
-    "off": "🔴 OFF (no trading)",
+    "lead": "🟠 LEAD-LAG only",
+    "off": "🔴 OFF",
 }
 
 
@@ -30,7 +32,7 @@ CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
 class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None,
-                 scanner=None, strategy_engine=None, executor=None):
+                 scanner=None, strategy_engine=None, executor=None, aggregator=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -38,6 +40,7 @@ class TelegramBot:
         self.scanner = scanner
         self.strategy_engine = strategy_engine
         self.executor = executor
+        self.aggregator = aggregator
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -97,71 +100,98 @@ class TelegramBot:
     # Live dashboard
     # -----------------------------------------------------------------------
 
-    def _build_dashboard_text(self) -> str:
-        """Build the live dashboard message text."""
-        now = datetime.utcnow().strftime("%H:%M:%S UTC")
-        is_active = self.strategy_engine.is_active if self.strategy_engine else False
-        status = self.risk_manager.get_status()
-        paper = self.tracker.get_paper_stats() if self.tracker else {}
-        _, capital = self.tracker.get_paper_capital() if self.tracker else (0, 0)
+    @staticmethod
+    def _format_usd(price: float) -> str:
+        """Format a USD price appropriately for its magnitude."""
+        if price >= 10000:
+            return f"${price:,.0f}"
+        elif price >= 1000:
+            return f"${price:,.0f}"
+        elif price >= 100:
+            return f"${price:.1f}"
+        elif price >= 10:
+            return f"${price:.2f}"
+        elif price >= 1:
+            return f"${price:.3f}"
+        else:
+            return f"${price:.4f}"
 
-        state = "🟢 SCANNING" if is_active else "⏹ STOPPED"
+    def _build_dashboard_text(self) -> str:
+        """Build the live dashboard message text with live prices and resolution history."""
+        now_str = datetime.utcnow().strftime("%H:%M:%S UTC")
+        is_active = self.strategy_engine.is_active if self.strategy_engine else False
+        paper = self.tracker.get_paper_stats() if self.tracker else {}
+
+        state_icon = "🟢" if is_active else "⏹"
+        state_label = "SCANNING" if is_active else "STOPPED"
+
         pnl = paper.get("total_pnl", 0)
         pnl_emoji = "📈" if pnl >= 0 else "📉"
         wins = paper.get("wins", 0)
         losses = paper.get("losses", 0)
         open_pos = paper.get("open_positions", 0)
+        balance = paper.get("current_balance", 0)
+        total_cap = paper.get("total_capital", 0)
         win_rate = f"{paper.get('win_rate', 0):.0f}%" if (wins + losses) > 0 else "—"
 
         lines = [
-            f"📡 *EDEC Live Dashboard* — {now}",
-            f"Status: {state} | 💧 Dry Run",
-            "",
-            f"🏦 Capital: `${capital:.2f}` | {pnl_emoji} P&L: `${pnl:+.2f}`",
-            f"✅ {wins} wins | ❌ {losses} losses | 🔄 {open_pos} open | 🎯 {win_rate}",
-            "",
+            f"📡 *EDEC Bot*  {state_icon} {state_label}  💧 Dry  _{now_str}_",
+            "─────────────────────────────",
         ]
 
-        # Per-coin prices
-        if self.scanner:
-            lines.append("*Coin Prices*")
-            snapshot = self.scanner.get_status_snapshot()
-            cfg_single = self.config.single_leg
+        # Per-coin row: COIN  $PRICE  ⬆️⬇️⬆️⬆️  UP/DN
+        if self.scanner or self.aggregator:
+            snapshot = self.scanner.get_status_snapshot() if self.scanner else {}
             for coin in self.config.coins:
+                # Live USD price from aggregator
+                usd_str = "—"
+                if self.aggregator:
+                    agg = self.aggregator.get_aggregated_price(coin)
+                    if agg:
+                        usd_str = self._format_usd(agg.price)
+
+                # Last 4 resolution outcomes
+                history_icons = ""
+                if self.tracker:
+                    outcomes = self.tracker.get_coin_recent_outcomes(coin, limit=4)
+                    icons = []
+                    for o in outcomes:
+                        icons.append("⬆️" if o == "UP" else "⬇️")
+                    # Pad to 4 with dots if fewer than 4
+                    while len(icons) < 4:
+                        icons.insert(0, "·")
+                    history_icons = "".join(icons)
+
+                # Order book prices
                 data = snapshot.get(coin)
                 if data:
-                    up = data["up_ask"]
-                    dn = data["down_ask"]
+                    up_ask = data.get("up_ask", 0)
+                    dn_ask = data.get("down_ask", 0)
+                    book_str = f"↑{up_ask:.2f} ↓{dn_ask:.2f}"
                     # Signal indicator
-                    signal = ""
-                    if up <= cfg_single.entry_max and dn >= cfg_single.opposite_min:
-                        signal = " 🟡↑"
-                    elif dn <= cfg_single.entry_max and up >= cfg_single.opposite_min:
-                        signal = " 🟡↓"
-                    lines.append(f"`{coin.upper():>4}` UP `{up:.2f}` DN `{dn:.2f}`{signal}")
+                    cfg_sl = self.config.single_leg
+                    cfg_ll = self.config.lead_lag
+                    if up_ask <= cfg_sl.entry_max and dn_ask >= cfg_sl.opposite_min:
+                        book_str += " 🟡"
+                    elif dn_ask <= cfg_sl.entry_max and up_ask >= cfg_sl.opposite_min:
+                        book_str += " 🟡"
+                    elif cfg_ll.min_entry <= up_ask <= cfg_ll.max_entry:
+                        book_str += " 🟠"
+                    elif cfg_ll.min_entry <= dn_ask <= cfg_ll.max_entry:
+                        book_str += " 🟠"
                 else:
-                    lines.append(f"`{coin.upper():>4}` — no market —")
-            lines.append("")
+                    book_str = "no market"
 
-        # Last 3 paper trades
-        if self.tracker:
-            recent = self.tracker.get_recent_paper_trades(limit=3)
-            if recent:
-                lines.append("*Recent Paper Trades*")
-                for t in recent:
-                    pnl_val = t.get("pnl")
-                    if pnl_val is not None:
-                        emoji = "✅" if pnl_val > 0 else "❌"
-                        pnl_str = f"${pnl_val:+.3f}"
-                    else:
-                        emoji = "🔄"
-                        pnl_str = "open"
-                    lines.append(
-                        f"{emoji} `{t['coin'].upper()}` {t['side'] or 'both'} "
-                        f"@{t['entry_price']:.2f} → {pnl_str}"
-                    )
+                coin_label = f"`{coin.upper():<4}`"
+                price_col = f"{usd_str:>10}"
+                lines.append(f"{coin_label} {price_col}  {history_icons}  {book_str}")
 
-        lines.append(f"\n_Refreshes every 30s_")
+        lines += [
+            "─────────────────────────────",
+            f"💰 `${balance:.2f}` / `${total_cap:.0f}`  {pnl_emoji} P&L: `${pnl:+.2f}`",
+            f"✅ {wins}  ❌ {losses}  🔄 {open_pos}  🎯 {win_rate}",
+        ]
+
         return "\n".join(lines)
 
     async def start_dashboard(self):
@@ -188,13 +218,13 @@ class TelegramBot:
             self._dashboard_task = None
 
     async def _dashboard_loop(self):
-        """Refresh the dashboard message every 30 seconds."""
+        """Refresh the dashboard message every 10 seconds."""
         while True:
-            await asyncio.sleep(30)
+            await asyncio.sleep(10)
             await self._refresh_dashboard()
 
     async def _refresh_dashboard(self):
-        """Edit the existing dashboard message with fresh data and buttons."""
+        """Edit the existing dashboard message with fresh data."""
         if not self._app or not self.chat_id or not self._dashboard_message_id:
             return
         try:
@@ -205,9 +235,17 @@ class TelegramBot:
                 parse_mode="Markdown",
                 reply_markup=self._main_keyboard(),
             )
+        except RetryAfter as e:
+            logger.warning(f"Telegram rate limit — retry in {e.retry_after}s")
+            await asyncio.sleep(e.retry_after)
         except Exception as e:
-            logger.warning(f"Dashboard refresh failed: {e}")
-            self._dashboard_message_id = None
+            err_str = str(e).lower()
+            if "message is not modified" in err_str:
+                pass  # identical content, not an error
+            elif "message to edit not found" in err_str:
+                self._dashboard_message_id = None  # message was deleted
+            else:
+                logger.warning(f"Dashboard refresh failed: {e}")
 
     async def send_alert(self, message: str, reply_markup=None):
         if not self._app or not self.chat_id:
@@ -265,7 +303,11 @@ class TelegramBot:
                 InlineKeyboardButton(f"🏦 Capital: ${capital_balance:.2f}", callback_data="capital"),
                 InlineKeyboardButton(f"💰 Budget: ${order_size:.0f}", callback_data="budget"),
             ],
-            # Row 5: Export
+            # Row 5: Refresh
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
+            ],
+            # Row 6: Export
             [
                 InlineKeyboardButton("📤 Export Today", callback_data="export_today"),
                 InlineKeyboardButton("📤 Export All", callback_data="export_all"),
@@ -401,6 +443,10 @@ class TelegramBot:
                 self.strategy_engine.stop_scanning()
             self.risk_manager.activate_kill_switch("Manual kill via Telegram")
             await query.answer("🛑 Kill switch activated!", show_alert=True)
+            await self._refresh_dashboard()
+            return
+
+        if data == "refresh":
             await self._refresh_dashboard()
             return
 

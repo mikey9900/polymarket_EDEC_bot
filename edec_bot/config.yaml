@@ -24,13 +24,27 @@ dual_leg:
 # Single-leg momentum: buy the cheap side, sell when it reprices
 single_leg:
   enabled: true
-  entry_max: 0.35              # Buy when one side's ask is at or below this
-  opposite_min: 0.60           # Other side must be >= this (confirms real directional move)
+  entry_max: 0.32              # Buy when one side's ask is at or below this (tighter = better EV)
+  opposite_min: 0.62           # Other side must be >= this (confirms real directional move)
   target_sell: 0.52            # Place GTC sell at this price (~50% gross gain)
   min_time_remaining_s: 90     # Need time for reprice before market closes
   min_book_depth_usd: 5.0      # Min USD depth at entry price
   hold_if_unfilled: true       # If sell order not filled at close, hold to resolution
   order_size_usd: 2.0          # Dollar amount per trade
+  min_velocity_30s: 0.08       # Coin must have moved >=0.08% in 30s (proves real directional move, not just thin book)
+
+# Lead-lag: buy the winning side BEFORE Polymarket books fully reprice
+# When a coin moves fast on Binance/Coinbase, Polymarket lags by ~5-30s.
+# We buy the side that *should* win (momentum-following) at the still-cheap price.
+lead_lag:
+  enabled: true
+  min_velocity_30s: 0.15      # Coin must move >=0.15% in 30s to trigger
+  min_entry: 0.48             # Winning-side ask must be >=0.48 (some repricing has begun)
+  max_entry: 0.60             # Must be <=0.60 (still room to grow toward 0.65-0.70)
+  target_sell: 0.67           # Exit price when books have fully repriced
+  min_time_remaining_s: 60    # Need time for repricing to propagate
+  min_book_depth_usd: 5.0
+  order_size_usd: 2.0
 
 # Execution
 execution:

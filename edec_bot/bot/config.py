@@ -31,6 +31,19 @@ class SingleLegConfig:
     min_book_depth_usd: float
     hold_if_unfilled: bool
     order_size_usd: float
+    min_velocity_30s: float = 0.08  # coin must be actually moving (not a thin-book artifact)
+
+
+@dataclass(frozen=True)
+class LeadLagConfig:
+    enabled: bool
+    min_velocity_30s: float
+    min_entry: float
+    max_entry: float
+    target_sell: float
+    min_time_remaining_s: float
+    min_book_depth_usd: float
+    order_size_usd: float
 
 
 @dataclass(frozen=True)
@@ -78,6 +91,7 @@ class Config:
     coins: tuple              # ("btc", "eth", "sol", ...)
     dual_leg: DualLegConfig
     single_leg: SingleLegConfig
+    lead_lag: LeadLagConfig
     execution: ExecutionConfig
     risk: RiskConfig
     feeds: FeedsConfig
@@ -114,6 +128,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         coins=tuple(raw.get("coins", ["btc"])),
         dual_leg=DualLegConfig(**raw["dual_leg"]),
         single_leg=SingleLegConfig(**raw["single_leg"]),
+        lead_lag=LeadLagConfig(**raw["lead_lag"]),
         execution=ExecutionConfig(**raw["execution"]),
         risk=RiskConfig(**raw["risk"]),
         feeds=FeedsConfig(**raw["feeds"]),

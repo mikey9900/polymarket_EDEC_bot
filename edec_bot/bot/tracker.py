@@ -518,5 +518,16 @@ class DecisionTracker:
             "win_rate": (wins / max(wins + losses, 1)) * 100,
         }
 
+    def get_coin_recent_outcomes(self, coin: str, limit: int = 4) -> list[str]:
+        """Get last N resolution winners for a coin (oldest first for display)."""
+        rows = self.conn.execute(
+            """SELECT winner FROM outcomes
+               WHERE market_slug LIKE ?
+               ORDER BY id DESC LIMIT ?""",
+            (f"{coin}-updown-5m-%", limit),
+        ).fetchall()
+        # Reverse so oldest is on left, newest is on right
+        return [r[0].upper() for r in reversed(rows)]
+
     def close(self):
         self.conn.close()

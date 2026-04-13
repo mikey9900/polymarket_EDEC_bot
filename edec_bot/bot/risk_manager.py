@@ -78,6 +78,16 @@ class RiskManager:
         self.kill_switch_active = False
         logger.info("Kill switch deactivated")
 
+    def reset_daily_stats(self):
+        """Reset in-memory P&L and risk counters — called when user resets paper stats."""
+        self.daily_pnl = 0.0
+        self.session_pnl = 0.0
+        self.trades_this_hour.clear()
+        self.open_positions.clear()
+        self.kill_switch_active = False
+        self._paused = False
+        logger.info("Risk manager daily stats reset")
+
     def pause(self):
         self._paused = True
         logger.info("Trading paused")

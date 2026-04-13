@@ -632,6 +632,7 @@ class TelegramBot:
             await query.answer("🗑 Stats reset!", show_alert=False)
             if self.tracker:
                 self.tracker.reset_paper_stats()
+            self.risk_manager.reset_daily_stats()
             await self._do_cleanup()
             return
 

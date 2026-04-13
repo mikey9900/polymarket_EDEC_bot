@@ -323,18 +323,14 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             d.time_remaining_s    AS entry_remaining,
             d.reason              AS decision_reason
         FROM paper_trades pt
-        LEFT JOIN decisions d ON
-            d.market_slug    = pt.market_slug
-            AND d.strategy_type = pt.strategy_type
-            AND d.action        != 'SKIP'
-            AND d.id = (
-                SELECT id FROM decisions d2
-                WHERE d2.market_slug    = pt.market_slug
-                  AND d2.strategy_type  = pt.strategy_type
-                  AND d2.action        != 'SKIP'
-                ORDER BY ABS(julianday(d2.timestamp) - julianday(pt.timestamp))
-                LIMIT 1
-            )
+        LEFT JOIN (
+            SELECT market_slug, strategy_type, MAX(id) AS best_id
+            FROM decisions
+            WHERE action != 'SKIP'
+            GROUP BY market_slug, strategy_type
+        ) top_d ON top_d.market_slug   = pt.market_slug
+               AND top_d.strategy_type = pt.strategy_type
+        LEFT JOIN decisions d ON d.id = top_d.best_id
         WHERE pt.status = ? {extra}
         ORDER BY pt.timestamp DESC
     """, params).fetchall()

@@ -30,14 +30,14 @@ single_leg:
   min_time_remaining_s: 90     # Need time for reprice before market closes
   min_book_depth_usd: 5.0      # Min USD depth at entry price
   hold_if_unfilled: true       # If sell order not filled at close, hold to resolution
-  order_size_usd: 2.0          # Dollar amount per trade
+  order_size_usd: 3.0          # Dollar amount per trade
   min_velocity_30s: 0.08       # Coin must have moved >=0.08% in 30s (proves real directional move, not just thin book)
   loss_cut_pct: 0.25           # Exit if loss exceeds this % of entry (tightened from 0.40 — data showed 40% cut too wide)
   high_confidence_bid: 0.82    # Stop monitoring, hold to resolution if bid exceeds this
   time_pressure_s: 90.0        # Loss threshold scales down linearly below this seconds remaining
   max_time_remaining_s: 200.0  # Skip entries if >200s remain — wait for first 100s to establish direction
   max_vel_divergence: 0.03     # Reject if vel60s opposes trade direction by >0.03% (counter-trend divergence)
-  entry_min: 0.15              # Skip if ask already below this — market near-resolved, recovery unreachable
+  entry_min: 0.12              # Skip if ask already below this — market near-resolved, recovery unreachable
 
 # Lead-lag: buy the winning side BEFORE Polymarket books fully reprice
 # When a coin moves fast on Binance/Coinbase, Polymarket lags by ~5-30s.
@@ -50,7 +50,7 @@ lead_lag:
   target_sell: 0.67           # Exit price when books have fully repriced
   min_time_remaining_s: 60    # Need time for repricing to propagate
   min_book_depth_usd: 5.0
-  order_size_usd: 2.0
+  order_size_usd: 3.0
 
 # Swing dual-leg: buy one side when cheap, wait for the other to also dip, complete the arb.
 # If the second leg never dips, sell the first leg at exit price for a small gain.
@@ -62,7 +62,7 @@ swing_leg:
   max_velocity_30s: 0.20      # Skip if coin trending too hard (reversal less likely)
   min_time_remaining_s: 120   # Need time to wait for second leg to dip
   min_book_depth_usd: 5.0
-  order_size_usd: 2.0
+  order_size_usd: 3.0
   loss_cut_pct: 0.25          # Exit first leg if loss exceeds this % (tightened from 0.40)
   high_confidence_bid: 0.82   # Hold to resolution if first leg bid exceeds this
   time_pressure_s: 90.0       # Loss threshold scales down linearly below this seconds remaining
@@ -72,7 +72,7 @@ swing_leg:
 
 # Execution
 execution:
-  order_size_usd: 2.0          # Dual-leg: dollar amount per side
+  order_size_usd: 3.0          # Dual-leg: dollar amount per side
   abort_timeout_s: 2.0         # Max wait before aborting partial dual-leg fill
   max_slippage: 0.02
   dry_run: true                # true = log signals only, no real orders

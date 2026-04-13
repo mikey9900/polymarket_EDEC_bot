@@ -690,12 +690,15 @@ class ExecutionEngine:
                     self._open_swing_positions.pop(position.market.coin, None)
                     return
 
-                # Priority 4: Target hit → sell first leg at profit
-                if bid >= cfg.first_leg_exit:
-                    fee_val = (1.0 - bid) * position.market.fee_rate * position.first_shares
-                    pnl = (bid - position.first_entry_price) * position.first_shares - fee_val
+                # Priority 4: Any net-positive exit after fees → sell first leg
+                fee_buy = (1.0 - position.first_entry_price) * position.market.fee_rate
+                fee_sell = (1.0 - bid) * position.market.fee_rate
+                net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
+                if net_pnl > 0:
+                    fee_val = fee_sell * position.first_shares
+                    pnl = net_pnl
                     logger.info(
-                        f"[{coin}] SWING TARGET EXIT @{bid:.3f} pnl=${pnl:+.4f}"
+                        f"[{coin}] SWING NET-POSITIVE EXIT @{bid:.3f} pnl=${pnl:+.4f}"
                     )
                     if is_dry and position.first_paper_trade_id:
                         self.tracker.close_paper_trade_early(
@@ -818,10 +821,10 @@ class ExecutionEngine:
         """Watch a paper trade's live bid — progressive loss cutting and smart profit taking.
 
         Priority order each cycle:
-        1. High-confidence bid (≥ high_confidence_bid) → stop monitoring, hold to resolution
-        2. Profit target hit → close_paper_trade_early at current bid
+        1. High-confidence bid (≥ high_confidence_bid) → hold to resolution for $1
+        2. Any net-positive exit (fee-adjusted) → sell now, don't wait for a big move
         3. Progressive loss cut → exit based on dynamic time-based threshold
-        4. Near-close partial profit (last resort at ≤30s)
+        4. Near-close fallback → exit if any profit at ≤30s remaining
         """
         cfg = self.config.single_leg
         coin = market.coin.upper()
@@ -842,7 +845,6 @@ class ExecutionEngine:
                     continue
 
                 loss_pct = (entry_price - bid) / entry_price      # positive = losing
-                profit_pct = (bid - entry_price) / entry_price    # positive = gaining
 
                 # ── 1. High-confidence: nearly decided — let resolution pay $1 ──
                 if bid >= cfg.high_confidence_bid:
@@ -852,17 +854,19 @@ class ExecutionEngine:
                     )
                     return  # outcome tracker closes this at $1 (or $0 if surprised)
 
-                # ── 2. Full profit target ──
-                if bid >= target_sell:
-                    fee = (1.0 - bid) * market.fee_rate
-                    pnl = (bid - entry_price) * shares - fee * shares
+                # ── 2. Any net-positive exit — sell as soon as we're ahead after fees ──
+                # Don't wait for the fixed target_sell price. A small confirmed profit
+                # is always better than risking a loss by holding longer.
+                fee_buy = (1.0 - entry_price) * market.fee_rate
+                fee_sell = (1.0 - bid) * market.fee_rate
+                net_pnl = (bid - entry_price - fee_buy - fee_sell) * shares
+                if net_pnl > 0:
                     self.tracker.close_paper_trade_early(
-                        trade_id, bid, pnl, "closed_win",
+                        trade_id, bid, net_pnl, "closed_win",
                         exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
                     )
                     logger.info(
-                        f"[{coin}] Paper PROFIT TARGET @{bid:.3f} "
-                        f"({profit_pct:.0%} gain) pnl=${pnl:+.4f}"
+                        f"[{coin}] Paper SELL @{bid:.3f} (net pnl=${net_pnl:+.4f}, {remaining:.0f}s left)"
                     )
                     return
 
@@ -887,17 +891,17 @@ class ExecutionEngine:
                     )
                     return
 
-                # ── 4. Near-close partial profit (last resort) ──
-                if remaining <= 30 and profit_pct >= cfg.min_profit_near_close:
+                # ── 4. Near-close fallback: exit any position at ≤30s to avoid unknown outcome ──
+                if remaining <= 30:
                     fee = (1.0 - bid) * market.fee_rate
                     pnl = (bid - entry_price) * shares - fee * shares
+                    status = "closed_win" if pnl > 0 else "closed_loss"
                     self.tracker.close_paper_trade_early(
-                        trade_id, bid, pnl, "closed_win",
+                        trade_id, bid, pnl, status,
                         exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
                     )
                     logger.info(
-                        f"[{coin}] Paper NEAR-CLOSE profit-take @{bid:.3f} "
-                        f"({profit_pct:.0%}) pnl=${pnl:+.4f}"
+                        f"[{coin}] Paper NEAR-CLOSE exit @{bid:.3f} pnl=${pnl:+.4f}"
                     )
                     return
 

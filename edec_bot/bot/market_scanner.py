@@ -24,6 +24,9 @@ class MarketScanner:
         self._up_books: dict[str, OrderBookSnapshot | None] = {c: None for c in self.coins}
         self._down_books: dict[str, OrderBookSnapshot | None] = {c: None for c in self.coins}
 
+        # Markets that have ended but not yet had their outcome resolved
+        self._expired_markets: list[MarketInfo] = []
+
         self._running = False
         self._http = httpx.AsyncClient(timeout=10.0)
 
@@ -43,6 +46,12 @@ class MarketScanner:
 
     def get_books(self, coin: str) -> tuple[OrderBookSnapshot | None, OrderBookSnapshot | None]:
         return self._up_books.get(coin), self._down_books.get(coin)
+
+    def pop_expired_markets(self) -> list[MarketInfo]:
+        """Return and clear all markets that have ended but not yet been resolved."""
+        expired = self._expired_markets.copy()
+        self._expired_markets.clear()
+        return expired
 
     def get_all_active(self) -> dict[str, MarketInfo]:
         """Return all coins that currently have an active market."""
@@ -162,7 +171,8 @@ class MarketScanner:
         while self._running:
             now = datetime.now(timezone.utc)
             if now >= market.end_time:
-                logger.info(f"[{coin.upper()}] Market {market.slug} ended")
+                logger.info(f"[{coin.upper()}] Market {market.slug} ended — queued for outcome check")
+                self._expired_markets.append(market)
                 self._markets[coin] = None
                 self._up_books[coin] = None
                 self._down_books[coin] = None

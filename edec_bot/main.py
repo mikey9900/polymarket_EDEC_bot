@@ -74,36 +74,41 @@ async def execution_loop(executor: ExecutionEngine, signal_queue: asyncio.Queue,
 async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
                                 aggregator: PriceAggregator, risk_manager: RiskManager,
                                 telegram: TelegramBot):
-    """Periodically check all coins for resolved markets and backfill outcomes."""
+    """Drain the expired-market queue and resolve outcomes."""
     resolved_markets: set[str] = set()
 
     while True:
         try:
-            await asyncio.sleep(30)
+            await asyncio.sleep(15)
 
-            active = scanner.get_all_active()
-            now = datetime.now(timezone.utc)
+            expired = scanner.pop_expired_markets()
+            for market in expired:
+                if market.slug in resolved_markets:
+                    continue
 
-            for coin, market in list(active.items()):
-                if now > market.end_time and market.slug not in resolved_markets:
-                    await asyncio.sleep(10)
+                # Give Polymarket a moment to settle the result
+                await asyncio.sleep(10)
 
-                    outcome = await scanner.get_market_outcome(market)
-                    if outcome:
-                        resolved_markets.add(market.slug)
+                outcome = await scanner.get_market_outcome(market)
+                if outcome:
+                    resolved_markets.add(market.slug)
 
-                        agg = aggregator.get_aggregated_price(coin)
-                        coin_close = agg.price if agg else 0
+                    agg = aggregator.get_aggregated_price(market.coin)
+                    coin_close = agg.price if agg else 0
 
-                        tracker.log_outcome(
-                            market_slug=market.slug,
-                            winner=outcome,
-                            btc_open=0,
-                            btc_close=coin_close,
-                        )
-
-                        tracker.close_paper_trades(market.slug, outcome)
+                    tracker.log_outcome(
+                        market_slug=market.slug,
+                        winner=outcome,
+                        btc_open=0,
+                        btc_close=coin_close,
+                    )
+                    tracker.close_paper_trades(market.slug, outcome)
                     await telegram.alert_resolution(market.slug, outcome, 0)
+                    logger.info(f"Resolved {market.slug} → {outcome}")
+                else:
+                    # Outcome not ready yet — put it back and retry next cycle
+                    scanner._expired_markets.append(market)
+                    logger.debug(f"Outcome not ready for {market.slug}, will retry")
 
             if len(resolved_markets) > 1000:
                 resolved_markets.clear()

@@ -157,7 +157,7 @@ class TelegramBot:
                     outcomes = self.tracker.get_coin_recent_outcomes(coin, limit=4)
                     icons = []
                     for o in outcomes:
-                        icons.append("🟢" if o == "UP" else "🔴")
+                        icons.append("✅" if o == "UP" else "❌")
                     # Pad to 4 with dots if fewer than 4
                     while len(icons) < 4:
                         icons.insert(0, "·")

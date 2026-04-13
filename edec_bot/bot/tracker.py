@@ -154,6 +154,10 @@ class DecisionTracker:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_30s REAL")
         if "coin_velocity_60s" not in existing:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_60s REAL")
+        # Add reset_at to paper_capital if missing (added in v1.2.7)
+        cap_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_capital)")}
+        if "reset_at" not in cap_cols:
+            self.conn.execute("ALTER TABLE paper_capital ADD COLUMN reset_at TEXT")
         self.conn.commit()
 
     def log_decision(self, decision: Decision) -> int:
@@ -494,9 +498,27 @@ class DecisionTracker:
             self.conn.commit()
             logger.info(f"Closed {len(trades)} paper trades for {market_slug} → winner: {winner}")
 
+    def reset_paper_stats(self):
+        """Reset displayed stats to zero without deleting trade history."""
+        now = datetime.utcnow().isoformat()
+        # Restore balance to total_capital and record the reset timestamp
+        self.conn.execute(
+            """UPDATE paper_capital
+               SET current_balance = total_capital, reset_at = ?
+               WHERE id = 1""",
+            (now,),
+        )
+        self.conn.commit()
+        logger.info(f"Paper stats reset at {now}")
+
     def get_paper_stats(self) -> dict:
-        """Return paper trading summary."""
+        """Return paper trading summary (only trades since last reset)."""
         total, balance = self.get_paper_capital()
+        reset_at = self.conn.execute(
+            "SELECT reset_at FROM paper_capital WHERE id = 1"
+        ).fetchone()
+        reset_at = reset_at[0] if reset_at and reset_at[0] else "1970-01-01"
+
         row = self.conn.execute(
             """SELECT COUNT(*),
                       SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
@@ -506,7 +528,8 @@ class DecisionTracker:
                       AVG(entry_price),
                       SUM(CASE WHEN status IN ('closed_win','closed_loss') THEN 1 ELSE 0 END),
                       AVG(CASE WHEN status IN ('closed_win','closed_loss') THEN exit_price END)
-               FROM paper_trades"""
+               FROM paper_trades WHERE timestamp >= ?""",
+            (reset_at,),
         ).fetchone()
         total_trades, wins, losses, open_pos, realized_pnl, avg_buy, sells, avg_sell = row
         return {

@@ -310,9 +310,10 @@ class TelegramBot:
                 InlineKeyboardButton(f"🏦 Capital: ${capital_balance:.2f}", callback_data="capital"),
                 InlineKeyboardButton(f"💰 Budget: ${order_size:.0f}", callback_data="budget"),
             ],
-            # Row 5: Refresh
+            # Row 5: Refresh / Reset
             [
                 InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
+                InlineKeyboardButton("🗑 Reset Stats", callback_data="reset_stats"),
             ],
             # Row 6: Export
             [
@@ -454,6 +455,29 @@ class TelegramBot:
             return
 
         if data == "refresh":
+            await self._refresh_dashboard()
+            return
+
+        if data == "reset_stats":
+            await query.edit_message_text(
+                "🗑 *Reset Stats*\n\n"
+                "This will zero out wins, losses, P&L and restore balance to full capital.\n"
+                "_Trade history is kept — exports are unaffected._\n\n"
+                "Are you sure?",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Yes, reset", callback_data="reset_stats_confirm"),
+                        InlineKeyboardButton("❌ Cancel", callback_data="back"),
+                    ]
+                ]),
+            )
+            return
+
+        if data == "reset_stats_confirm":
+            if self.tracker:
+                self.tracker.reset_paper_stats()
+            await query.answer("🗑 Stats reset!", show_alert=False)
             await self._refresh_dashboard()
             return
 

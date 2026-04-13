@@ -165,27 +165,29 @@ class TelegramBot:
 
                 # Order book prices
                 data = snapshot.get(coin)
+                signal_icon = ""
                 if data:
                     up_ask = data.get("up_ask", 0)
                     dn_ask = data.get("down_ask", 0)
                     book_str = f"↑{up_ask:.2f} ↓{dn_ask:.2f}"
-                    # Signal indicator
+                    # Signal indicator (kept outside the box)
                     cfg_sl = self.config.single_leg
                     cfg_ll = self.config.lead_lag
                     if up_ask <= cfg_sl.entry_max and dn_ask >= cfg_sl.opposite_min:
-                        book_str += " 🟡"
+                        signal_icon = " 🟡"
                     elif dn_ask <= cfg_sl.entry_max and up_ask >= cfg_sl.opposite_min:
-                        book_str += " 🟡"
+                        signal_icon = " 🟡"
                     elif cfg_ll.min_entry <= up_ask <= cfg_ll.max_entry:
-                        book_str += " 🟠"
+                        signal_icon = " 🟠"
                     elif cfg_ll.min_entry <= dn_ask <= cfg_ll.max_entry:
-                        book_str += " 🟠"
+                        signal_icon = " 🟠"
                 else:
                     book_str = "no market"
 
                 coin_label = f"`{coin.upper():<4}`"
-                price_col = f"{usd_str:>10}"
-                lines.append(f"{coin_label} {price_col}  {history_icons}  {book_str}")
+                price_col = f"`{usd_str:>10}`"
+                history_col = f"`{history_icons}`" if history_icons else "`····`"
+                lines.append(f"{coin_label} {price_col}  {history_col}  `{book_str}`{signal_icon}")
 
         buys = paper.get("buys", 0)
         sells = paper.get("sells", 0)

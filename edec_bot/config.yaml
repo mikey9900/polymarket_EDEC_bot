@@ -46,6 +46,18 @@ lead_lag:
   min_book_depth_usd: 5.0
   order_size_usd: 2.0
 
+# Swing dual-leg: buy one side when cheap, wait for the other to also dip, complete the arb.
+# If the second leg never dips, sell the first leg at exit price for a small gain.
+swing_leg:
+  enabled: true
+  first_leg_max: 0.40         # Buy first leg when ask <= this
+  second_leg_max: 0.45        # Buy second leg when it also dips to <= this
+  first_leg_exit: 0.52        # Sell first leg at bid >= this if no second leg comes
+  max_velocity_30s: 0.20      # Skip if coin trending too hard (reversal less likely)
+  min_time_remaining_s: 120   # Need time to wait for second leg to dip
+  min_book_depth_usd: 5.0
+  order_size_usd: 2.0
+
 # Execution
 execution:
   order_size_usd: 2.0          # Dual-leg: dollar amount per side

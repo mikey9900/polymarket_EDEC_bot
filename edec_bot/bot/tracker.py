@@ -498,6 +498,29 @@ class DecisionTracker:
             self.conn.commit()
             logger.info(f"Closed {len(trades)} paper trades for {market_slug} → winner: {winner}")
 
+    def close_paper_trade_early(self, trade_id: int, exit_price: float,
+                                pnl: float, status: str):
+        """Close a paper trade early (profit-take or stop-loss) before market resolution."""
+        row = self.conn.execute(
+            "SELECT cost FROM paper_trades WHERE id = ? AND status = 'open'",
+            (trade_id,),
+        ).fetchone()
+        if not row:
+            return  # Already closed or not found
+        cost = row[0]
+        self.conn.execute(
+            "UPDATE paper_trades SET status=?, exit_price=?, pnl=? WHERE id=?",
+            (status, exit_price, pnl, trade_id),
+        )
+        self.conn.execute(
+            "UPDATE paper_capital SET current_balance = current_balance + ? WHERE id = 1",
+            (cost + pnl,),
+        )
+        self.conn.commit()
+        logger.info(
+            f"Paper trade {trade_id} closed early: exit@{exit_price:.3f} pnl=${pnl:+.4f} [{status}]"
+        )
+
     def reset_paper_stats(self):
         """Reset displayed stats to zero without deleting trade history."""
         now = datetime.utcnow().isoformat()

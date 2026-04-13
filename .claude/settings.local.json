@@ -11,7 +11,9 @@
       "Bash(cmd.exe /c \"dir /s /b C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot\")",
       "Bash(cmd.exe /c \"tree C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot /F\")",
       "Bash(xargs sed:*)",
-      "Bash(xargs wc:*)"
+      "Bash(xargs wc:*)",
+      "Bash(python -c ':*)",
+      "Bash(.venv/Scripts/python -c ':*)"
     ]
   }
 }

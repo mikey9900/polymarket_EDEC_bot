@@ -13,7 +13,7 @@ from bot.tracker import DecisionTracker
 logger = logging.getLogger(__name__)
 
 # Valid runtime modes
-VALID_MODES = {"dual", "single", "both", "lead", "off"}
+VALID_MODES = {"dual", "single", "both", "lead", "swing", "off"}
 
 
 class StrategyEngine:
@@ -74,6 +74,10 @@ class StrategyEngine:
         return (self._active and self._mode in ("lead", "both")
                 and self.config.lead_lag.enabled)
 
+    def swing_leg_enabled(self) -> bool:
+        return (self._active and self._mode in ("swing", "both")
+                and self.config.swing_leg.enabled)
+
     async def run(self, signal_queue: asyncio.Queue):
         """Main strategy loop — evaluates when active, sleeps when stopped."""
         self._running = True
@@ -120,6 +124,12 @@ class StrategyEngine:
                     self._last_signal[(coin, "lead_lag")] = (market.slug, signal.entry_price)
                     signals.append(signal)
 
+            if self.swing_leg_enabled():
+                signal = self._evaluate_swing_leg(coin, market, up_book, down_book, agg)
+                if signal is not None and self._is_price_improvement("swing_leg", coin, market.slug, signal.entry_price):
+                    self._last_signal[(coin, "swing_leg")] = (market.slug, signal.entry_price)
+                    signals.append(signal)
+
         return signals
 
     def _is_price_improvement(self, strategy: str, coin: str, slug: str, price: float) -> bool:
@@ -138,7 +148,7 @@ class StrategyEngine:
         last_slug, last_price = last
         if last_slug != slug:
             return True                          # new 5-min window — always evaluate
-        if strategy in ("single_leg", "lead_lag"):
+        if strategy in ("single_leg", "lead_lag", "swing_leg"):
             return False  # one trade per window per coin
         return (last_price - price) >= self.MIN_PRICE_IMPROVEMENT  # dual-leg: price got cheaper
 
@@ -558,6 +568,161 @@ class StrategyEngine:
             f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
             f"LEAD-LAG SIGNAL [{coin.upper()}]: BUY {side.upper()}@{entry_price:.3f} "
             f"(vel={vel:+.3f}%) → SELL@{target_sell:.3f} | Est profit: ${expected_profit:.4f}"
+        )
+        return signal
+
+    # -----------------------------------------------------------------------
+    # Swing dual-leg filter chain
+    # -----------------------------------------------------------------------
+
+    def _evaluate_swing_leg(self, coin, market, up_book, down_book, agg) -> TradeSignal | None:
+        """
+        Swing dual-leg strategy: buy one cheap side and wait for the other to also dip.
+        Once both legs are bought below 50c each, the combined payout guarantees profit.
+        If the second leg never dips, exit the first leg at the exit price for a small gain.
+        """
+        cfg = self.config.swing_leg
+        filters: list[FilterResult] = []
+        failed_reason = ""
+
+        # Filter 1: Market accepting orders
+        f = FilterResult("market_active", market.accepting_orders,
+                         str(market.accepting_orders), "True")
+        filters.append(f)
+        if not f.passed:
+            failed_reason = "Market not accepting orders"
+
+        # Filter 2: Time remaining — need enough runway to wait for second leg
+        now = datetime.now(timezone.utc)
+        remaining = (market.end_time - now).total_seconds()
+        f = FilterResult("time_remaining", remaining > cfg.min_time_remaining_s,
+                         f"{remaining:.0f}s", f">{cfg.min_time_remaining_s}s")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Only {remaining:.0f}s left — not enough time to leg in"
+
+        # Filter 3: Books available
+        books_ok = up_book is not None and down_book is not None
+        f = FilterResult("books_available", books_ok,
+                         f"up={'yes' if up_book else 'no'}, down={'yes' if down_book else 'no'}",
+                         "both available")
+        filters.append(f)
+        if not books_ok:
+            if not failed_reason:
+                failed_reason = "Order books not available"
+            self._log_decision(coin, market, up_book, down_book, agg, remaining,
+                               filters, "SKIP", failed_reason, "swing_leg")
+            return None
+
+        # Filter 4: One side must be cheap enough to enter as first leg
+        up_cheap = up_book.best_ask <= cfg.first_leg_max
+        dn_cheap = down_book.best_ask <= cfg.first_leg_max
+        entry_ok = up_cheap or dn_cheap
+
+        if up_cheap and not dn_cheap:
+            side = "up"
+            entry_price = up_book.best_ask
+            entry_depth = up_book.ask_depth_usd
+        elif dn_cheap and not up_cheap:
+            side = "down"
+            entry_price = down_book.best_ask
+            entry_depth = down_book.ask_depth_usd
+        elif up_cheap and dn_cheap:
+            # Both cheap — pick cheaper one as first leg
+            if up_book.best_ask <= down_book.best_ask:
+                side = "up"
+                entry_price = up_book.best_ask
+                entry_depth = up_book.ask_depth_usd
+            else:
+                side = "down"
+                entry_price = down_book.best_ask
+                entry_depth = down_book.ask_depth_usd
+        else:
+            side = ""
+            entry_price = 0.0
+            entry_depth = 0.0
+
+        f = FilterResult("first_leg_price", entry_ok,
+                         f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f}",
+                         f"one side<={cfg.first_leg_max}")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Neither side cheap enough: "
+                             f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f} "
+                             f"(need one <={cfg.first_leg_max})")
+
+        # Filter 5: Skip if already an outright arb (dual-leg handles that case)
+        combined = up_book.best_ask + down_book.best_ask
+        not_already_arb = combined > self.config.dual_leg.max_combined_cost
+        f = FilterResult("not_already_arb", not_already_arb,
+                         f"combined={combined:.3f}",
+                         f">{self.config.dual_leg.max_combined_cost} (dual-leg handles cheaper)")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Already in arb range ({combined:.3f}) — dual-leg preferred"
+
+        # Filter 6: Velocity not extreme — trending markets are bad for mean-reversion
+        if agg is not None:
+            vel_ok = abs(agg.velocity_30s) <= cfg.max_velocity_30s
+            f = FilterResult("coin_velocity", vel_ok,
+                             f"30s={agg.velocity_30s:.3f}%",
+                             f"<={cfg.max_velocity_30s}%")
+        else:
+            f = FilterResult("coin_velocity", False, "no price data", "price data required")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"{coin.upper()} trending too hard: {f.value}"
+
+        # Filter 7: Liquidity depth
+        f = FilterResult("liquidity_depth", entry_depth >= cfg.min_book_depth_usd,
+                         f"${entry_depth:.1f}", f">=${cfg.min_book_depth_usd}")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Thin liquidity: ${entry_depth:.1f}"
+
+        # Filter 8: Feed count
+        source_count = agg.source_count if agg else 0
+        f = FilterResult("feed_count", source_count >= 2, str(source_count), ">=2")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Only {source_count} live feed(s)"
+
+        # Filter 9: Risk limits
+        risk_ok = self.risk_manager.can_trade() if self.risk_manager else True
+        f = FilterResult("risk_limits", risk_ok, "ok" if risk_ok else "blocked", "ok")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = "Risk limits breached"
+
+        all_passed = all(f.passed for f in filters)
+        action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
+        reason = (f"Swing {side.upper()}@{entry_price:.3f} — waiting for other leg"
+                  if all_passed else failed_reason)
+
+        self._log_decision(coin, market, up_book, down_book, agg, remaining,
+                           filters, action, reason, "swing_leg")
+
+        if not all_passed:
+            return None
+
+        signal = TradeSignal(
+            market=market,
+            strategy_type="swing_leg",
+            side=side,
+            entry_price=entry_price,
+            target_sell_price=cfg.first_leg_exit,
+            fee_total=(1.0 - entry_price) * market.fee_rate,
+            expected_profit=0.0,   # unknown until second leg is secured
+            time_remaining_s=remaining,
+            up_book=up_book,
+            down_book=down_book,
+            filter_results=filters,
+        )
+        logger.info(
+            f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
+            f"SWING SIGNAL [{coin.upper()}]: BUY {side.upper()}@{entry_price:.3f} "
+            f"| other leg={combined - entry_price:.3f} "
+            f"| exit if no 2nd leg @{cfg.first_leg_exit:.2f}"
         )
         return signal
 

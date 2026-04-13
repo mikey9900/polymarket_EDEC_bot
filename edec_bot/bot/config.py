@@ -31,7 +31,21 @@ class SingleLegConfig:
     min_book_depth_usd: float
     hold_if_unfilled: bool
     order_size_usd: float
-    min_velocity_30s: float = 0.08  # coin must be actually moving (not a thin-book artifact)
+    min_velocity_30s: float = 0.08   # coin must be actually moving (not a thin-book artifact)
+    profit_take_pct: float = 0.50    # close paper position when profit >= 50%
+    min_profit_near_close: float = 0.20  # near expiry, take any >=20% profit
+
+
+@dataclass(frozen=True)
+class SwingLegConfig:
+    enabled: bool
+    first_leg_max: float       # Buy first leg when ask <= this (e.g., 0.40)
+    second_leg_max: float      # Buy second leg when ask <= this (e.g., 0.45)
+    first_leg_exit: float      # Sell first leg at bid >= this if no second leg (e.g., 0.52)
+    max_velocity_30s: float    # Skip if coin trending too hard (reversal less likely)
+    min_time_remaining_s: float
+    min_book_depth_usd: float
+    order_size_usd: float
 
 
 @dataclass(frozen=True)
@@ -92,6 +106,7 @@ class Config:
     dual_leg: DualLegConfig
     single_leg: SingleLegConfig
     lead_lag: LeadLagConfig
+    swing_leg: SwingLegConfig
     execution: ExecutionConfig
     risk: RiskConfig
     feeds: FeedsConfig
@@ -129,6 +144,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         dual_leg=DualLegConfig(**raw["dual_leg"]),
         single_leg=SingleLegConfig(**raw["single_leg"]),
         lead_lag=LeadLagConfig(**raw["lead_lag"]),
+        swing_leg=SwingLegConfig(**raw["swing_leg"]),
         execution=ExecutionConfig(**raw["execution"]),
         risk=RiskConfig(**raw["risk"]),
         feeds=FeedsConfig(**raw["feeds"]),

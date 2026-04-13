@@ -85,6 +85,26 @@ class TradeSignal:
 
 
 @dataclass
+class SwingPosition:
+    """Tracks a swing dual-leg: first leg bought, waiting/monitoring for second."""
+    market: MarketInfo
+    first_side: str              # "up" or "down"
+    first_token_id: str
+    second_token_id: str
+    first_entry_price: float
+    first_shares: float
+    first_paper_trade_id: Optional[int] = None
+    first_buy_order_id: str = ""
+    second_bought: bool = False
+    second_side: str = ""
+    second_entry_price: float = 0.0
+    second_shares: float = 0.0
+    second_paper_trade_id: Optional[int] = None
+    second_buy_order_id: str = ""
+    opened_at: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class SingleLegPosition:
     """Tracks an open single-leg position."""
     market: MarketInfo

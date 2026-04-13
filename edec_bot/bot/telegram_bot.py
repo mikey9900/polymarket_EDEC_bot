@@ -18,10 +18,11 @@ logger = logging.getLogger(__name__)
 
 # Mode labels for display
 MODE_LABELS = {
-    "both": "🟢 ALL (dual + single + lead-lag)",
+    "both": "🟢 ALL (dual + single + lead-lag + swing)",
     "dual": "🔵 DUAL-LEG only",
     "single": "🟡 SINGLE-LEG only",
     "lead": "🟠 LEAD-LAG only",
+    "swing": "🟣 SWING LEG only",
     "off": "🔴 OFF",
 }
 
@@ -174,6 +175,7 @@ class TelegramBot:
                     cfg_dl = self.config.dual_leg
                     cfg_sl = self.config.single_leg
                     cfg_ll = self.config.lead_lag
+                    cfg_sw = self.config.swing_leg
                     combined = up_ask + dn_ask
                     if combined <= cfg_dl.max_combined_cost:
                         signal_icon = " 🔵"
@@ -185,6 +187,8 @@ class TelegramBot:
                         signal_icon = " 🟠"
                     elif cfg_ll.min_entry <= dn_ask <= cfg_ll.max_entry:
                         signal_icon = " 🟠"
+                    elif up_ask <= cfg_sw.first_leg_max or dn_ask <= cfg_sw.first_leg_max:
+                        signal_icon = " 🟣"
                 else:
                     book_str = "no market"
 

@@ -304,13 +304,13 @@ class TelegramBot:
             await self._refresh_dashboard()
 
     async def _cleanup_loop(self):
-        """Every 60 seconds: delete ephemeral messages and re-post the dashboard at the bottom."""
+        """Every 60 seconds: delete ephemeral messages and refresh the dashboard in-place."""
         while True:
             await asyncio.sleep(60)
             await self._do_cleanup()
 
     async def _repost_dashboard(self):
-        """Delete old dashboard and re-post at the bottom, leaving ephemeral messages intact."""
+        """Delete old dashboard and re-post at the bottom (only used after sending new alerts)."""
         if not self._app or not self.chat_id:
             return
         if self._dashboard_message_id:
@@ -335,11 +335,11 @@ class TelegramBot:
             logger.error(f"Failed to re-post dashboard: {e}")
 
     async def _do_cleanup(self):
-        """Delete all tracked messages and re-post a fresh dashboard at the bottom."""
+        """Delete all tracked ephemeral messages, then refresh the dashboard in-place.
+        Never deletes or reposts the dashboard — it stays at its current position."""
         if not self._app or not self.chat_id:
             return
 
-        # Delete all ephemeral messages (alerts, trade notifications)
         msgs_to_delete = self._ephemeral_msgs[:]
         self._ephemeral_msgs.clear()
         self._clear_ephemeral_log()
@@ -349,28 +349,7 @@ class TelegramBot:
             except Exception as e:
                 logger.debug(f"Could not delete message {msg_id}: {e}")
 
-        # Delete old dashboard and re-send at the bottom of the chat
-        if self._dashboard_message_id:
-            try:
-                await self._app.bot.delete_message(
-                    chat_id=self.chat_id, message_id=self._dashboard_message_id
-                )
-            except Exception:
-                pass
-            self._dashboard_message_id = None
-
-        try:
-            text = self._build_dashboard_text()
-            msg = await self._app.bot.send_message(
-                chat_id=self.chat_id,
-                text=text,
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
-            self._dashboard_message_id = msg.message_id
-            self._save_msg_id()
-        except Exception as e:
-            logger.error(f"Failed to re-post dashboard during cleanup: {e}")
+        await self._refresh_dashboard()
 
     async def _refresh_dashboard(self):
         """Edit the existing dashboard message with fresh data.
@@ -378,9 +357,9 @@ class TelegramBot:
         if not self._app or not self.chat_id:
             return
 
-        # No known message — re-create from scratch
+        # No known message — re-create from scratch (no loop: calls repost, not cleanup)
         if not self._dashboard_message_id:
-            await self._do_cleanup()
+            await self._repost_dashboard()
             return
 
         # Build text first — surface content errors before touching Telegram

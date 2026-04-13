@@ -39,6 +39,7 @@ class SingleLegConfig:
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
     max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
     max_vel_divergence: float = 0.05     # vel60s must not oppose vel30s direction by more than this
+    entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class SwingLegConfig:
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
     dead_leg_threshold: float = 0.05  # sell a leg early if its bid drops below this (dual → single)
     max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
+    first_leg_min: float = 0.20         # don't enter if first leg ask already below this (near-resolved)
 
 
 @dataclass(frozen=True)

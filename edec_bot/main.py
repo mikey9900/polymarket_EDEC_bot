@@ -172,7 +172,7 @@ async def main():
         return export_to_excel("data/decisions.db", "data", today_only)
 
     def do_export_recent() -> str:
-        return export_recent_to_excel("data/decisions.db", "data", limit=50)
+        return export_recent_to_excel("data/decisions.db", "data", limit=25)
 
     telegram = TelegramBot(
         config, tracker, risk_manager,

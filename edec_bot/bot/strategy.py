@@ -376,6 +376,20 @@ class StrategyEngine:
             failed_reason = (f"No cheap side: up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f} "
                              f"(need one <={cfg.entry_max}, other >={cfg.opposite_min})")
 
+        # Filter 5a: Entry floor — don't buy a side already priced near zero.
+        # Sub-threshold asks mean the market has priced that side out; recovery is unreachable
+        # in the remaining window and loss_cut bids can gap straight through.
+        if side in ("up", "down"):
+            floor_ok = entry_price >= cfg.entry_min
+            f = FilterResult("entry_floor", floor_ok,
+                             f"{entry_price:.3f}", f">={cfg.entry_min:.2f}")
+        else:
+            f = FilterResult("entry_floor", True, "n/a", "n/a")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Ask too low: {entry_price:.3f} < floor {cfg.entry_min:.2f} "
+                             f"(market near-resolved)")
+
         # Filter 5b: Velocity divergence — 60s trend must not strongly oppose trade direction.
         # A barely-positive vel30s with a deeply-negative vel60s = entering against the real trend.
         if agg is not None and side in ("up", "down"):
@@ -680,6 +694,19 @@ class StrategyEngine:
             failed_reason = (f"Neither side cheap enough: "
                              f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f} "
                              f"(need one <={cfg.first_leg_max})")
+
+        # Filter 4b: First-leg floor — don't enter when the ask is already near zero.
+        # At these prices the market has priced that side out; bids collapse before loss_cut fires.
+        if side in ("up", "down"):
+            floor_ok = entry_price >= cfg.first_leg_min
+            f = FilterResult("first_leg_floor", floor_ok,
+                             f"{entry_price:.3f}", f">={cfg.first_leg_min:.2f}")
+        else:
+            f = FilterResult("first_leg_floor", True, "n/a", "n/a")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"First leg ask too low: {entry_price:.3f} < floor {cfg.first_leg_min:.2f} "
+                             f"(market near-resolved, no recovery possible)")
 
         # Filter 5: Skip if already an outright arb (dual-leg handles that case)
         combined = up_book.best_ask + down_book.best_ask

@@ -504,7 +504,7 @@ class TelegramBot:
             ],
             # Row 7: Quick AI export
             [
-                InlineKeyboardButton("📊 Last 50 Trades", callback_data="export_recent"),
+                InlineKeyboardButton("📊 Last 25 Trades", callback_data="export_recent"),
             ],
         ])
 
@@ -709,7 +709,7 @@ class TelegramBot:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
                 return
-            wait_msg = await query.message.reply_text("⏳ Building last 50 trades...")
+            wait_msg = await query.message.reply_text("⏳ Building last 25 trades...")
             self._track(wait_msg)
             try:
                 path = self.export_recent_fn()
@@ -718,7 +718,7 @@ class TelegramBot:
                     self._track(await query.message.reply_document(
                         document=f,
                         filename=os.path.basename(path),
-                        caption="📊 Last 50 Trades — compact export for AI analysis",
+                        caption="📊 Last 25 Trades — compact export for AI analysis",
                     ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))

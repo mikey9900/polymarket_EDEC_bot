@@ -47,6 +47,9 @@ class TelegramBot:
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
         self._dashboard_task: asyncio.Task | None = None
+        self._cleanup_task: asyncio.Task | None = None
+        self._refresh_lock = asyncio.Lock()
+        self._ephemeral_msgs: list[int] = []  # message IDs to delete on next cleanup
 
     async def start(self):
         """Initialize and start the Telegram bot."""
@@ -212,7 +215,7 @@ class TelegramBot:
         return "\n".join(lines)
 
     async def start_dashboard(self):
-        """Send the live dashboard message and start the refresh loop."""
+        """Send the live dashboard message and start the refresh + cleanup loops."""
         if not self._app or not self.chat_id:
             return
         try:
@@ -224,15 +227,18 @@ class TelegramBot:
             )
             self._dashboard_message_id = msg.message_id
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
+            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info("Live dashboard started")
         except Exception as e:
             logger.error(f"Failed to start dashboard: {e}")
 
     async def stop_dashboard(self):
-        """Stop the dashboard refresh loop."""
-        if self._dashboard_task:
-            self._dashboard_task.cancel()
-            self._dashboard_task = None
+        """Stop the dashboard refresh and cleanup loops."""
+        for task in (self._dashboard_task, self._cleanup_task):
+            if task:
+                task.cancel()
+        self._dashboard_task = None
+        self._cleanup_task = None
 
     async def _dashboard_loop(self):
         """Refresh the dashboard message every 10 seconds."""
@@ -240,43 +246,101 @@ class TelegramBot:
             await asyncio.sleep(10)
             await self._refresh_dashboard()
 
+    async def _cleanup_loop(self):
+        """Every 5 minutes: delete ephemeral messages and re-post the dashboard at the bottom."""
+        while True:
+            await asyncio.sleep(300)
+            await self._do_cleanup()
+
+    async def _do_cleanup(self):
+        """Delete all tracked messages and re-post a fresh dashboard at the bottom."""
+        if not self._app or not self.chat_id:
+            return
+
+        # Delete all ephemeral messages (alerts, info replies, user commands)
+        msgs_to_delete = self._ephemeral_msgs[:]
+        self._ephemeral_msgs.clear()
+        for msg_id in msgs_to_delete:
+            try:
+                await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
+            except Exception:
+                pass
+
+        # Delete old dashboard and re-send at the bottom of the chat
+        if self._dashboard_message_id:
+            try:
+                await self._app.bot.delete_message(
+                    chat_id=self.chat_id, message_id=self._dashboard_message_id
+                )
+            except Exception:
+                pass
+            self._dashboard_message_id = None
+
+        try:
+            text = self._build_dashboard_text()
+            msg = await self._app.bot.send_message(
+                chat_id=self.chat_id,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=self._main_keyboard(),
+            )
+            self._dashboard_message_id = msg.message_id
+        except Exception as e:
+            logger.error(f"Failed to re-post dashboard during cleanup: {e}")
+
     async def _refresh_dashboard(self):
         """Edit the existing dashboard message with fresh data."""
         if not self._app or not self.chat_id or not self._dashboard_message_id:
             return
+
+        # Build text first — surface content errors before touching Telegram
         try:
-            await self._app.bot.edit_message_text(
-                chat_id=self.chat_id,
-                message_id=self._dashboard_message_id,
-                text=self._build_dashboard_text(),
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
-        except RetryAfter as e:
-            logger.warning(f"Telegram rate limit — retry in {e.retry_after}s")
-            await asyncio.sleep(e.retry_after)
+            text = self._build_dashboard_text()
         except Exception as e:
-            err_str = str(e).lower()
-            if "message is not modified" in err_str:
-                pass  # identical content, not an error
-            elif "message to edit not found" in err_str:
-                self._dashboard_message_id = None  # message was deleted
-            else:
-                logger.warning(f"Dashboard refresh failed: {e}")
+            logger.error(f"Dashboard build error: {e}", exc_info=True)
+            return
+
+        async with self._refresh_lock:
+            try:
+                await self._app.bot.edit_message_text(
+                    chat_id=self.chat_id,
+                    message_id=self._dashboard_message_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=self._main_keyboard(),
+                )
+            except RetryAfter as e:
+                logger.warning(f"Telegram rate limit — retry in {e.retry_after}s")
+                await asyncio.sleep(e.retry_after)
+            except Exception as e:
+                err_str = str(e).lower()
+                if "message is not modified" in err_str:
+                    pass
+                elif "message to edit not found" in err_str:
+                    self._dashboard_message_id = None
+                else:
+                    logger.warning(f"Dashboard refresh failed: {e}")
 
     async def send_alert(self, message: str, reply_markup=None):
         if not self._app or not self.chat_id:
             logger.warning(f"Telegram not configured — skipping message: {message[:50]}")
             return
         try:
-            await self._app.bot.send_message(
+            sent = await self._app.bot.send_message(
                 chat_id=self.chat_id,
                 text=message,
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
+            if not reply_markup:  # don't track dashboard-style messages with buttons
+                self._ephemeral_msgs.append(sent.message_id)
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
+
+    def _track(self, msg) -> None:
+        """Track a sent message for cleanup."""
+        if msg:
+            self._ephemeral_msgs.append(msg.message_id)
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         """Main control keyboard."""
@@ -487,7 +551,7 @@ class TelegramBot:
             paper = self.tracker.get_paper_stats()
             pnl_emoji = "📈" if paper["total_pnl"] >= 0 else "📉"
             win_rate = f"{paper['win_rate']:.0f}%" if paper["total_trades"] > 0 else "—"
-            await query.message.reply_text(
+            self._track(await query.message.reply_text(
                 f"📊 *Today's Stats ({stats['date']})*\n"
                 f"Evaluations: {stats['total_evaluations']}\n"
                 f"Signals: {stats['signals']} | Skips: {stats['skips']}\n\n"
@@ -496,25 +560,25 @@ class TelegramBot:
                 f"P&L: ${paper['total_pnl']:+.2f} | Win rate: {win_rate}\n"
                 f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}",
                 parse_mode="Markdown",
-            )
+            ))
 
         elif data == "status":
             status = self.risk_manager.get_status()
             mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-            await query.message.reply_text(
+            self._track(await query.message.reply_text(
                 f"📈 *Status*\n"
                 f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
                 f"Mode: {MODE_LABELS.get(mode, mode)}\n"
                 f"Budget: ${order_size:.0f}/trade\n"
                 f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}",
                 parse_mode="Markdown",
-            )
+            ))
 
         elif data == "trades":
             trades = self.tracker.get_recent_trades(limit=5)
             if not trades:
-                await query.message.reply_text("No trades yet.")
+                self._track(await query.message.reply_text("No trades yet."))
             else:
                 lines = ["📋 *Recent Trades*\n"]
                 for t in trades:
@@ -524,29 +588,30 @@ class TelegramBot:
                     lines.append(
                         f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}"
                     )
-                await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
         elif data in ("export_today", "export_all"):
             if not self.export_fn:
-                await query.message.reply_text("Export not available.")
+                self._track(await query.message.reply_text("Export not available."))
                 return
-            await query.message.reply_text("⏳ Generating spreadsheet...")
+            wait_msg = await query.message.reply_text("⏳ Generating spreadsheet...")
+            self._track(wait_msg)
             try:
                 path = self.export_fn(today_only=(data == "export_today"))
                 import os
                 with open(path, "rb") as f:
-                    await query.message.reply_document(
+                    self._track(await query.message.reply_document(
                         document=f,
                         filename=os.path.basename(path),
                         caption="📊 EDEC Bot Export — Paper Trades, Decisions, Filter Performance",
-                    )
+                    ))
             except Exception as e:
-                await query.message.reply_text(f"Export error: {e}")
+                self._track(await query.message.reply_text(f"Export error: {e}"))
 
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
             if not stats:
-                await query.message.reply_text("No filter data yet.")
+                self._track(await query.message.reply_text("No filter data yet."))
             else:
                 lines = ["🔍 *Filter Performance*\n"]
                 for s in stats:
@@ -554,7 +619,7 @@ class TelegramBot:
                     fail_pct = (s["failed"] / total * 100) if total > 0 else 0
                     bar = "🟩" * int((100 - fail_pct) / 20) + "🟥" * int(fail_pct / 20)
                     lines.append(f"`{s['filter']:18s}` {bar} {fail_pct:.0f}% fail")
-                await query.message.reply_text("\n".join(lines), parse_mode="Markdown")
+                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
     async def alert_dual_leg(self, market_slug: str, coin: str, up_price: float,
                              down_price: float, combined: float, profit: float,
@@ -621,9 +686,15 @@ class TelegramBot:
     # Command handlers
     # -----------------------------------------------------------------------
 
+    def _track_cmd(self, update: Update) -> None:
+        """Track the user's command message for cleanup."""
+        if update.message:
+            self._ephemeral_msgs.append(update.message.message_id)
+
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
 
         status = self.risk_manager.get_status()
         dry_run = "ON" if self.config.execution.dry_run else "OFF"
@@ -677,14 +748,16 @@ class TelegramBot:
         else:
             lines.append("_(scanner not attached)_")
 
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        self._track_cmd(update)
+        self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
     async def _cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
 
         if not self.strategy_engine:
-            await update.message.reply_text("Strategy engine not available.")
+            self._track(await update.message.reply_text("Strategy engine not available."))
             return
 
         args = context.args
@@ -700,44 +773,48 @@ class TelegramBot:
                 f"`/mode single` — single-leg momentum only\n"
                 f"`/mode off` — pause all trading"
             )
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
             return
 
         new_mode = args[0].lower()
         if self.strategy_engine.set_mode(new_mode):
             label = MODE_LABELS.get(new_mode, new_mode)
-            await update.message.reply_text(f"✅ Mode set to: {label}")
+            self._track(await update.message.reply_text(f"✅ Mode set to: {label}"))
         else:
-            await update.message.reply_text(
+            self._track(await update.message.reply_text(
                 f"❌ Unknown mode `{new_mode}`. Use: both, dual, single, off",
                 parse_mode="Markdown",
-            )
+            ))
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         self.risk_manager.resume()
         self.risk_manager.deactivate_kill_switch()
-        await update.message.reply_text("▶️ Trading resumed")
+        self._track(await update.message.reply_text("▶️ Trading resumed"))
 
     async def _cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         self.risk_manager.pause()
-        await update.message.reply_text("⏸ Trading paused (monitoring continues)")
+        self._track(await update.message.reply_text("⏸ Trading paused (monitoring continues)"))
 
     async def _cmd_kill(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         self.risk_manager.activate_kill_switch("Manual kill via Telegram")
-        await update.message.reply_text("🛑 Kill switch activated — all trading stopped")
+        self._track(await update.message.reply_text("🛑 Kill switch activated — all trading stopped"))
 
     async def _cmd_trades(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         trades = self.tracker.get_recent_trades(limit=10)
         if not trades:
-            await update.message.reply_text("No trades yet.")
+            self._track(await update.message.reply_text("No trades yet."))
             return
 
         lines = ["*Recent Trades*\n"]
@@ -750,11 +827,12 @@ class TelegramBot:
                 f"`{t['timestamp'][:16]}` [{coin}] {strategy} {t['status']}\n"
                 f"  UP@{t.get('up_price', 0):.3f} DN@{t.get('down_price', 0):.3f} → {pnl_str}"
             )
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
     async def _cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         args = context.args
         if args and args[0] == "7d":
             from datetime import timedelta
@@ -767,7 +845,7 @@ class TelegramBot:
                     f"Signals: {stats['signals']} | Trades: {stats['trades_executed']} | "
                     f"OK: {stats['successful']}"
                 )
-            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
         else:
             stats = self.tracker.get_daily_stats()
             msg = (
@@ -779,31 +857,34 @@ class TelegramBot:
                 f"Successful: {stats['successful']}\n"
                 f"Aborted: {stats['aborted']}"
             )
-            await update.message.reply_text(msg, parse_mode="Markdown")
+            self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
 
     async def _cmd_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         if not self.export_fn:
-            await update.message.reply_text("Export not available")
+            self._track(await update.message.reply_text("Export not available"))
             return
 
-        await update.message.reply_text("⏳ Generating Excel export...")
+        wait_msg = await update.message.reply_text("⏳ Generating Excel export...")
+        self._track(wait_msg)
         try:
             today_only = context.args and context.args[0] == "today"
             path = self.export_fn(today_only=today_only)
             with open(path, "rb") as f:
-                await update.message.reply_document(
+                self._track(await update.message.reply_document(
                     document=f,
                     filename=os.path.basename(path),
                     caption="📊 EDEC Bot Decision Export",
-                )
+                ))
         except Exception as e:
-            await update.message.reply_text(f"Export error: {e}")
+            self._track(await update.message.reply_text(f"Export error: {e}"))
 
     async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         cfg = self.config
         dl = cfg.dual_leg
         sl = cfg.single_leg
@@ -827,35 +908,37 @@ class TelegramBot:
             f"  Min time remaining: {sl.min_time_remaining_s}s\n"
             f"  Hold if unfilled: {sl.hold_if_unfilled}"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
 
     async def _cmd_set(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         if not context.args or len(context.args) < 2:
-            await update.message.reply_text(
+            self._track(await update.message.reply_text(
                 "Usage: `/set <param> <value>`\n"
                 "Params: threshold, max\\_cost, min\\_edge, size, dry\\_run\n\n"
                 "Note: Most changes require restart. Use `/mode` for live strategy switching.",
                 parse_mode="Markdown",
-            )
+            ))
             return
 
         param = context.args[0].lower()
         value = context.args[1]
-        await update.message.reply_text(
+        self._track(await update.message.reply_text(
             f"⚠️ Config changes require restart.\n"
             f"Edit `config.yaml` and restart the bot.\n"
             f"Requested: {param} = {value}\n\n"
             f"💡 Tip: Use `/mode` to switch strategies without restarting."
-        )
+        ))
 
     async def _cmd_filters(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         stats = self.tracker.get_filter_stats()
         if not stats:
-            await update.message.reply_text("No filter data yet.")
+            self._track(await update.message.reply_text("No filter data yet."))
             return
 
         lines = ["*Filter Performance*\n"]
@@ -865,11 +948,12 @@ class TelegramBot:
             lines.append(
                 f"`{s['filter']:20s}` ✅{s['passed']} ❌{s['failed']} ({fail_pct:.0f}% reject)"
             )
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
+        self._track_cmd(update)
         msg = (
             "*EDEC Bot Commands*\n"
             "/status — Per-coin book prices + bot state\n"
@@ -887,4 +971,4 @@ class TelegramBot:
             "/filters — Filter pass/fail rates\n"
             "/help — This message"
         )
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        self._track(await update.message.reply_text(msg, parse_mode="Markdown"))

@@ -21,7 +21,9 @@
       "WebFetch(domain:deepwiki.com)",
       "WebFetch(domain:www.polytrackhq.app)",
       "WebFetch(domain:agentbets.ai)",
-      "Bash(python -c \"from bot.execution import ExecutionEngine; from bot.config import load_config; print\\('OK'\\)\")"
+      "Bash(python -c \"from bot.execution import ExecutionEngine; from bot.config import load_config; print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('edec_bot/bot/telegram_bot.py'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('edec_bot/bot/telegram_bot.py', encoding='utf-8'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")"
     ]
   }
 }

@@ -14,7 +14,7 @@ coins:
 dual_leg:
   enabled: true
   price_threshold: 0.45        # Max ask per side
-  max_combined_cost: 0.92      # YES ask + NO ask must be below this (after fees need ~0.05 edge)
+  max_combined_cost: 0.99      # YES ask + NO ask must be below this (after fees need ~0.05 edge)
   min_edge_after_fees: 0.05    # Minimum net profit per share
   min_time_remaining_s: 60     # Skip if less than this many seconds left
   max_velocity_30s: 0.15       # Skip if coin moved >X% in 30s (trending against dual-leg)

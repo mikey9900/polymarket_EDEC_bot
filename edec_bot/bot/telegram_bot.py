@@ -300,26 +300,36 @@ class TelegramBot:
             logger.error(f"Dashboard build error: {e}", exc_info=True)
             return
 
+        # Capture the ID we intend to edit before any await
+        msg_id = self._dashboard_message_id
+        retry_after: float = 0.0
+
         async with self._refresh_lock:
             try:
                 await self._app.bot.edit_message_text(
                     chat_id=self.chat_id,
-                    message_id=self._dashboard_message_id,
+                    message_id=msg_id,
                     text=text,
                     parse_mode="Markdown",
                     reply_markup=self._main_keyboard(),
                 )
             except RetryAfter as e:
-                logger.warning(f"Telegram rate limit — retry in {e.retry_after}s")
-                await asyncio.sleep(e.retry_after)
+                retry_after = e.retry_after
+                logger.warning(f"Telegram rate limit — retry in {retry_after}s")
             except Exception as e:
                 err_str = str(e).lower()
                 if "message is not modified" in err_str:
                     pass
                 elif "message to edit not found" in err_str:
-                    self._dashboard_message_id = None
+                    # Only nullify if nobody else already updated _dashboard_message_id
+                    if self._dashboard_message_id == msg_id:
+                        self._dashboard_message_id = None
                 else:
                     logger.warning(f"Dashboard refresh failed: {e}")
+
+        # Sleep outside the lock so other refreshes aren't blocked
+        if retry_after:
+            await asyncio.sleep(retry_after)
 
     async def send_alert(self, message: str, reply_markup=None):
         if not self._app or not self.chat_id:
@@ -441,16 +451,11 @@ class TelegramBot:
 
         # --- Budget selection ---
         if data.startswith("budget_"):
-            await query.answer()
             amt = float(data.split("_")[1])
             if self.executor:
                 self.executor.set_order_size(amt)
-            await query.edit_message_text(
-                f"💰 Budget updated to *${amt:.0f}* per trade\n"
-                f"_All new orders will use this size._",
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
+            await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
+            await self._refresh_dashboard()
             return
 
         if data == "budget":
@@ -467,16 +472,11 @@ class TelegramBot:
 
         # --- Capital selection ---
         if data.startswith("capital_"):
-            await query.answer()
             amt = float(data.split("_")[1])
             if self.tracker:
                 self.tracker.set_paper_capital(amt)
-            await query.edit_message_text(
-                f"🏦 Paper capital set to *${amt:.0f}*\n"
-                f"_Bot will simulate trades against this bankroll._",
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
+            await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
+            await self._refresh_dashboard()
             return
 
         if data == "capital":
@@ -493,17 +493,7 @@ class TelegramBot:
 
         if data == "back":
             await query.answer()
-            status = self.risk_manager.get_status()
-            mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
-            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-            await query.edit_message_text(
-                f"🤖 *EDEC Bot*\n"
-                f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
-                f"Mode: {MODE_LABELS.get(mode, mode)}\n"
-                f"Budget: ${order_size:.0f}/trade | P&L: ${status['daily_pnl']:+.2f}",
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
+            await self._refresh_dashboard()
             return
 
         # --- Start / Stop / Kill ---

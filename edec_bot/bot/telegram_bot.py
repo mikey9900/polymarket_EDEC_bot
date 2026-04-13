@@ -214,10 +214,35 @@ class TelegramBot:
 
         return "\n".join(lines)
 
+    _MSG_ID_FILE = "data/dashboard_msg_id.txt"
+
+    def _save_msg_id(self) -> None:
+        try:
+            with open(self._MSG_ID_FILE, "w") as f:
+                f.write(str(self._dashboard_message_id or ""))
+        except Exception:
+            pass
+
+    def _load_msg_id(self) -> int | None:
+        try:
+            val = open(self._MSG_ID_FILE).read().strip()
+            return int(val) if val else None
+        except Exception:
+            return None
+
     async def start_dashboard(self):
         """Send the live dashboard message and start the refresh + cleanup loops."""
         if not self._app or not self.chat_id:
             return
+
+        # Delete leftover messages from previous run
+        old_id = self._load_msg_id()
+        if old_id:
+            try:
+                await self._app.bot.delete_message(chat_id=self.chat_id, message_id=old_id)
+            except Exception:
+                pass
+
         try:
             msg = await self._app.bot.send_message(
                 chat_id=self.chat_id,
@@ -226,6 +251,7 @@ class TelegramBot:
                 reply_markup=self._main_keyboard(),
             )
             self._dashboard_message_id = msg.message_id
+            self._save_msg_id()
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info("Live dashboard started")
@@ -273,6 +299,7 @@ class TelegramBot:
                 reply_markup=self._main_keyboard(),
             )
             self._dashboard_message_id = msg.message_id
+            self._save_msg_id()
         except Exception as e:
             logger.error(f"Failed to re-post dashboard: {e}")
 
@@ -309,6 +336,7 @@ class TelegramBot:
                 reply_markup=self._main_keyboard(),
             )
             self._dashboard_message_id = msg.message_id
+            self._save_msg_id()
         except Exception as e:
             logger.error(f"Failed to re-post dashboard during cleanup: {e}")
 
@@ -372,8 +400,7 @@ class TelegramBot:
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
-            if not reply_markup:  # don't track dashboard-style messages with buttons
-                self._ephemeral_msgs.append(sent.message_id)
+            self._ephemeral_msgs.append(sent.message_id)
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 

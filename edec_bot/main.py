@@ -207,9 +207,7 @@ async def main():
         await telegram.send_alert(
             f"🤖 *EDEC Bot ready* — {run_type}\n"
             f"Coins: {coins_str}\n"
-            f"Paper capital: ${paper_balance:.2f}\n\n"
-            f"⏹ *Bot is stopped. Press ▶️ Start to begin scanning.*",
-            reply_markup=telegram._main_keyboard(),
+            f"Paper capital: ${paper_balance:.2f}",
         )
 
         # Start live dashboard

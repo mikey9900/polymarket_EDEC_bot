@@ -360,7 +360,6 @@ class TelegramBot:
     async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard button presses."""
         query = update.callback_query
-        await query.answer()
 
         if not self._auth(update):
             return
@@ -378,6 +377,7 @@ class TelegramBot:
 
         # --- Budget selection ---
         if data.startswith("budget_"):
+            await query.answer()
             amt = float(data.split("_")[1])
             if self.executor:
                 self.executor.set_order_size(amt)
@@ -390,6 +390,7 @@ class TelegramBot:
             return
 
         if data == "budget":
+            await query.answer()
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
             await query.edit_message_text(
                 f"💰 *Budget Per Trade*\n"
@@ -402,6 +403,7 @@ class TelegramBot:
 
         # --- Capital selection ---
         if data.startswith("capital_"):
+            await query.answer()
             amt = float(data.split("_")[1])
             if self.tracker:
                 self.tracker.set_paper_capital(amt)
@@ -414,6 +416,7 @@ class TelegramBot:
             return
 
         if data == "capital":
+            await query.answer()
             _, balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
             await query.edit_message_text(
                 f"🏦 *Paper Capital*\n"
@@ -425,6 +428,7 @@ class TelegramBot:
             return
 
         if data == "back":
+            await query.answer()
             status = self.risk_manager.get_status()
             mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
@@ -465,6 +469,7 @@ class TelegramBot:
             return
 
         if data == "refresh":
+            await query.answer()
             await self._refresh_dashboard()
             return
 
@@ -476,6 +481,7 @@ class TelegramBot:
             return
 
         # --- Info buttons (reply below the existing message) ---
+        await query.answer()
         if data == "stats":
             stats = self.tracker.get_daily_stats()
             paper = self.tracker.get_paper_stats()

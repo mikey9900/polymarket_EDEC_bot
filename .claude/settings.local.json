@@ -10,7 +10,8 @@
       "Bash(python -m venv .venv)",
       "Bash(cmd.exe /c \"dir /s /b C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot\")",
       "Bash(cmd.exe /c \"tree C:\\\\Users\\\\micha\\\\polymarket_EDEC_bot /F\")",
-      "Bash(xargs sed:*)"
+      "Bash(xargs sed:*)",
+      "Bash(xargs wc:*)"
     ]
   }
 }

@@ -463,10 +463,10 @@ class DecisionTracker:
             trade_id, strategy_type, side, entry_price, shares, cost, fee_total = row
 
             if strategy_type == "dual_leg":
-                # Both sides always pay out $1 combined
+                # Both sides always pay out $1 combined; win if net pnl > 0
                 pnl = (1.0 - entry_price) * shares - fee_total
                 exit_price = 1.0
-                status = "closed_win"
+                status = "closed_win" if pnl > 0 else "closed_loss"
             else:
                 # Single leg — check if our side won
                 won = (side == "up" and winner.upper() == "UP") or \
@@ -502,10 +502,13 @@ class DecisionTracker:
                       SUM(CASE WHEN status='closed_win' THEN 1 ELSE 0 END),
                       SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END),
                       SUM(CASE WHEN status='open' THEN 1 ELSE 0 END),
-                      SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END)
+                      SUM(CASE WHEN pnl IS NOT NULL THEN pnl ELSE 0 END),
+                      AVG(entry_price),
+                      SUM(CASE WHEN status IN ('closed_win','closed_loss') THEN 1 ELSE 0 END),
+                      AVG(CASE WHEN status IN ('closed_win','closed_loss') THEN exit_price END)
                FROM paper_trades"""
         ).fetchone()
-        total_trades, wins, losses, open_pos, realized_pnl = row
+        total_trades, wins, losses, open_pos, realized_pnl, avg_buy, sells, avg_sell = row
         return {
             "total_capital": total,
             "current_balance": balance,
@@ -516,6 +519,10 @@ class DecisionTracker:
             "losses": losses or 0,
             "open_positions": open_pos or 0,
             "win_rate": (wins / max(wins + losses, 1)) * 100,
+            "buys": total_trades or 0,
+            "sells": sells or 0,
+            "avg_buy_price": avg_buy or 0.0,
+            "avg_sell_price": avg_sell or 0.0,
         }
 
     def get_coin_recent_outcomes(self, coin: str, limit: int = 4) -> list[str]:

@@ -12,6 +12,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from bot.config import Config
 from bot.tracker import DecisionTracker
 from bot.risk_manager import RiskManager
+from main import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -135,7 +136,7 @@ class TelegramBot:
         win_rate = f"{paper.get('win_rate', 0):.0f}%" if (wins + losses) > 0 else "—"
 
         lines = [
-            f"📡 *EDEC Bot*  {state_icon} {state_label}  💧 Dry  _{now_str}_",
+            f"📡 *EDEC Bot v{__version__}*  {state_icon} {state_label}  💧 Dry  _{now_str}_",
             "─────────────────────────────",
         ]
 
@@ -156,7 +157,7 @@ class TelegramBot:
                     outcomes = self.tracker.get_coin_recent_outcomes(coin, limit=4)
                     icons = []
                     for o in outcomes:
-                        icons.append("⬆️" if o == "UP" else "⬇️")
+                        icons.append("🟢" if o == "UP" else "🔴")
                     # Pad to 4 with dots if fewer than 4
                     while len(icons) < 4:
                         icons.insert(0, "·")
@@ -186,10 +187,16 @@ class TelegramBot:
                 price_col = f"{usd_str:>10}"
                 lines.append(f"{coin_label} {price_col}  {history_icons}  {book_str}")
 
+        buys = paper.get("buys", 0)
+        sells = paper.get("sells", 0)
+        avg_buy = paper.get("avg_buy_price", 0)
+        avg_sell = paper.get("avg_sell_price", 0)
+
         lines += [
             "─────────────────────────────",
             f"💰 `${balance:.2f}` / `${total_cap:.0f}`  {pnl_emoji} P&L: `${pnl:+.2f}`",
-            f"✅ {wins}  ❌ {losses}  🔄 {open_pos}  🎯 {win_rate}",
+            f"✅ {wins}  ❌ {losses}  📦 {open_pos}  🎯 {win_rate}",
+            f"🛒 Buys: {buys} avg `${avg_buy:.3f}`  💸 Sells: {sells} avg `${avg_sell:.3f}`",
         ]
 
         return "\n".join(lines)

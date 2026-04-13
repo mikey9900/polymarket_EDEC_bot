@@ -171,9 +171,13 @@ class TelegramBot:
                     dn_ask = data.get("down_ask", 0)
                     book_str = f"↑{up_ask:.2f} ↓{dn_ask:.2f}"
                     # Signal indicator (kept outside the box)
+                    cfg_dl = self.config.dual_leg
                     cfg_sl = self.config.single_leg
                     cfg_ll = self.config.lead_lag
-                    if up_ask <= cfg_sl.entry_max and dn_ask >= cfg_sl.opposite_min:
+                    combined = up_ask + dn_ask
+                    if combined <= cfg_dl.max_combined_cost:
+                        signal_icon = " 🔵"
+                    elif up_ask <= cfg_sl.entry_max and dn_ask >= cfg_sl.opposite_min:
                         signal_icon = " 🟡"
                     elif dn_ask <= cfg_sl.entry_max and up_ask >= cfg_sl.opposite_min:
                         signal_icon = " 🟡"
@@ -186,7 +190,7 @@ class TelegramBot:
 
                 coin_label = f"`{coin.upper():<4}`"
                 price_col = f"`{usd_str:>10}`"
-                history_col = f"`{history_icons}`" if history_icons else "`····`"
+                history_col = history_icons if history_icons else "····"
                 lines.append(f"{coin_label} {price_col}  {history_col}  `{book_str}`{signal_icon}")
 
         buys = paper.get("buys", 0)

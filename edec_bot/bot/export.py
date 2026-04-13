@@ -43,6 +43,11 @@ SUBHEAD_FONT = Font(bold=True, size=10)
 WIN_FONT  = Font(bold=True, color="375623")   # dark green text
 LOSS_FONT = Font(bold=True, color="9C0006")   # dark red text
 
+# Trade journal section-divider row
+SECTION_FILL = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")  # dark navy
+SECTION_FONT = Font(color="FFFFFF", bold=True, size=10)
+LEARN_FILL   = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # soft yellow
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -59,6 +64,8 @@ def export_to_excel(db_path: str = "data/decisions.db",
     date_str = datetime.utcnow().strftime("%Y-%m-%d") if today_only else None
 
     _build_paper_trades_sheet(wb, conn, date_str)
+    _build_trade_journal_sheet(wb, conn, date_str, "closed_loss")
+    _build_trade_journal_sheet(wb, conn, date_str, "closed_win")
     _build_exit_reason_sheet(wb, conn, date_str)
     _build_coin_performance_sheet(wb, conn, date_str)
     _build_strategy_breakdown_sheet(wb, conn, date_str)
@@ -155,6 +162,261 @@ def _summary(ws, start_row: int, items: list):
 
 def _win_rate(wins, losses):
     return round((wins or 0) / max((wins or 0) + (losses or 0), 1) * 100, 1)
+
+
+# ---------------------------------------------------------------------------
+# Trade journal computed columns
+# ---------------------------------------------------------------------------
+
+def _momentum_alignment(side: str, vel: float | None) -> str:
+    """Did 30s velocity support the trade direction?"""
+    if vel is None:
+        return "No data"
+    side = (side or "").lower()
+    if side not in ("up", "down"):
+        return "N/A (dual-leg)"
+    vel_str = f"{vel:+.2f}%"
+    supported = (side == "up" and vel > 0) or (side == "down" and vel < 0)
+    return f"Supported ({vel_str})" if supported else f"Counter-trend ({vel_str})"
+
+
+def _exit_assessment(reason: str, entry: float | None, bid: float | None,
+                     exit_price: float | None, remaining: float | None) -> str:
+    """Human-readable summary of how the trade exited."""
+    r = (reason or "").lower()
+    if r == "profit_target":
+        return "Fee-adjusted profit exit"
+    if r == "high_confidence":
+        return "High bid — early profit captured"
+    if r == "loss_cut":
+        if entry and bid:
+            pct = (bid - entry) / entry * 100
+            return f"Stop loss @ {bid:.3f} (entry {entry:.3f}, {pct:+.1f}%)"
+        return "Stop loss triggered"
+    if r == "near_close":
+        rem = f"{remaining:.0f}s" if remaining is not None else "≤30s"
+        direction = "profit" if (exit_price or 0) > (entry or 0) else "loss"
+        return f"Time-forced @ {rem} — {direction}"
+    if r == "dead_leg":
+        return "Dead leg: one side collapsed"
+    if r == "resolution":
+        return "Won at $1.00 payout" if (exit_price or 0) >= 0.99 else "Lost at $0.00 resolution"
+    if r == "manual":
+        return "Manually closed"
+    return "—"
+
+
+def _key_lesson(status: str, reason: str, side: str, vel_30s: float | None) -> str:
+    """Key learning takeaway for the trade."""
+    is_win = (status or "").lower() == "closed_win"
+    r = (reason or "").lower()
+    s = (side or "").lower()
+
+    if is_win:
+        if r == "resolution":
+            return "Correct directional call — held to $1.00 payout. Entry analysis was accurate."
+        if r == "profit_target":
+            return "Good entry: bid rose enough for a net-positive exit before expiry."
+        if r == "high_confidence":
+            return "Bid surged early — profit locked in. Consider if holding to resolution would have yielded more."
+        if r == "near_close":
+            return "Late recovery near expiry. Position held correctly under time pressure."
+        if r == "dead_leg":
+            return "Arb completed — dead leg sold, surviving leg resolved in our favour."
+        return "Profitable trade."
+
+    # Losses — check momentum alignment
+    aligned: bool | None = None
+    if vel_30s is not None and s in ("up", "down"):
+        aligned = (s == "up" and vel_30s > 0) or (s == "down" and vel_30s < 0)
+
+    if r == "resolution":
+        if aligned is False:
+            return "Counter-trend entry — velocity warned against this direction. Review entry filters."
+        return "Market resolved against position. No exit fired before expiry — consider tightening loss cut."
+    if r == "loss_cut":
+        if aligned is False:
+            return "Entered against momentum. Loss cut protected capital — velocity was the warning sign."
+        return "Momentum looked valid but reversed. Consider tracking mid-trade velocity changes."
+    if r == "near_close":
+        return "Bid never recovered. Consider lower entry price cap or stricter time-remaining filter."
+    if r == "dead_leg":
+        return "Second leg never dipped into range — one-sided exposure resolved against us."
+    return "Position closed at a loss."
+
+
+# ---------------------------------------------------------------------------
+# Sheets: Loss Journal / Win Journal
+# ---------------------------------------------------------------------------
+
+def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
+    """Detailed per-trade journal with entry reasoning, market context, and lessons."""
+    sheet_name = "Loss Journal" if status == "closed_loss" else "Win Journal"
+    ws = wb.create_sheet(sheet_name)
+
+    # Row 1 — section divider labels (merged cells)
+    sections = [
+        ("TRADE INFO",      1,  7),
+        ("ENTRY DECISION",  8, 18),
+        ("TRADE PROGRESS", 19, 22),
+        ("RESULT",         23, 27),
+        ("LEARNING",       28, 30),
+    ]
+    for title, c_start, c_end in sections:
+        ws.merge_cells(start_row=1, start_column=c_start,
+                       end_row=1, end_column=c_end)
+        cell = ws.cell(row=1, column=c_start, value=title)
+        cell.fill = SECTION_FILL
+        cell.font = SECTION_FONT
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 16
+
+    # Row 2 — column headers
+    headers = [
+        # TRADE INFO (1-7)
+        "#", "Date", "Entry Time", "Coin", "Strategy", "Side", "Market",
+        # ENTRY DECISION (8-18)
+        "Entry $", "Target $", "Shares", "Cost $",
+        "Filters Passed", "Filters Failed",
+        "Vel 30s %", "Vel 60s %", "Book Depth UP $", "Book Depth DOWN $",
+        "Why Entered",
+        # TRADE PROGRESS (19-22)
+        "Time @ Entry (s)", "Time @ Exit (s)", "Hold Duration (s)", "Bid @ Exit $",
+        # RESULT (23-27)
+        "Exit Reason", "Exit Price $", "P&L $", "P&L %", "Fees $",
+        # LEARNING (28-30)
+        "Momentum Alignment", "Exit Assessment", "Key Lesson",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers), row=2)
+    ws.freeze_panes = "A3"
+
+    extra = "AND pt.timestamp LIKE ?" if date_str else ""
+    params = (status, f"{date_str}%") if date_str else (status,)
+
+    rows = conn.execute(f"""
+        SELECT
+            pt.id,
+            pt.timestamp,
+            pt.coin,
+            pt.strategy_type,
+            pt.side,
+            pt.market_slug,
+            pt.entry_price,
+            pt.target_price,
+            pt.shares,
+            pt.cost,
+            pt.fee_total,
+            pt.exit_reason,
+            pt.exit_price,
+            pt.pnl,
+            pt.exit_timestamp,
+            pt.time_remaining_s   AS exit_remaining,
+            pt.bid_at_exit,
+            pt.status,
+            d.filter_passed,
+            d.filter_failed,
+            d.coin_velocity_30s,
+            d.coin_velocity_60s,
+            d.up_depth_usd,
+            d.down_depth_usd,
+            d.time_remaining_s    AS entry_remaining,
+            d.reason              AS decision_reason
+        FROM paper_trades pt
+        LEFT JOIN decisions d ON
+            d.market_slug    = pt.market_slug
+            AND d.strategy_type = pt.strategy_type
+            AND d.action        != 'SKIP'
+            AND d.id = (
+                SELECT id FROM decisions d2
+                WHERE d2.market_slug    = pt.market_slug
+                  AND d2.strategy_type  = pt.strategy_type
+                  AND d2.action        != 'SKIP'
+                ORDER BY ABS(julianday(d2.timestamp) - julianday(pt.timestamp))
+                LIMIT 1
+            )
+        WHERE pt.status = ? {extra}
+        ORDER BY pt.timestamp DESC
+    """, params).fetchall()
+
+    row_fill = LOSS_FILL if status == "closed_loss" else WIN_FILL
+
+    for ri, r in enumerate(rows, start=3):
+        ts = str(r[1] or "")
+        date_part = ts[:10] if len(ts) >= 10 else ts
+        time_part = ts[11:19] if len(ts) >= 19 else ""
+
+        # Hold duration
+        hold_s = None
+        if r[14] and r[1]:
+            try:
+                t_in  = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                t_out = datetime.fromisoformat(str(r[14]).replace("Z", "+00:00"))
+                hold_s = round((t_out - t_in).total_seconds(), 1)
+            except Exception:
+                pass
+
+        # P&L %
+        pnl_pct = None
+        if r[9] and r[9] > 0 and r[13] is not None:
+            pnl_pct = round(r[13] / r[9] * 100, 2)
+
+        momentum = _momentum_alignment(str(r[4] or ""), r[20])
+        exit_ass = _exit_assessment(str(r[11] or ""), r[6], r[16], r[12], r[15])
+        lesson   = _key_lesson(str(r[17] or ""), str(r[11] or ""), str(r[4] or ""), r[20])
+
+        out = [
+            r[0],          # #
+            date_part,     # Date
+            time_part,     # Entry Time
+            r[2],          # Coin
+            r[3],          # Strategy
+            r[4],          # Side
+            r[5],          # Market
+            r[6],          # Entry $
+            r[7],          # Target $
+            r[8],          # Shares
+            r[9],          # Cost $
+            r[18],         # Filters Passed
+            r[19],         # Filters Failed
+            round(r[20], 4) if r[20] is not None else None,  # Vel 30s %
+            round(r[21], 4) if r[21] is not None else None,  # Vel 60s %
+            round(r[22], 2) if r[22] is not None else None,  # Book Depth UP $
+            round(r[23], 2) if r[23] is not None else None,  # Book Depth DOWN $
+            r[25],         # Why Entered
+            r[24],         # Time @ Entry (s)
+            r[15],         # Time @ Exit (s)
+            hold_s,        # Hold Duration (s)
+            r[16],         # Bid @ Exit $
+            r[11],         # Exit Reason
+            r[12],         # Exit Price $
+            r[13],         # P&L $
+            pnl_pct,       # P&L %
+            r[10],         # Fees $
+            momentum,      # Momentum Alignment
+            exit_ass,      # Exit Assessment
+            lesson,        # Key Lesson
+        ]
+        ws.append(out)
+
+        # Colour the whole row win/loss
+        for col in range(1, len(headers) + 1):
+            ws.cell(row=ri, column=col).fill = row_fill
+
+        _pnl_cell(ws.cell(row=ri, column=25))   # P&L $
+        _pnl_cell(ws.cell(row=ri, column=26))   # P&L %
+        _reason_cell(ws.cell(row=ri, column=23))  # Exit Reason
+
+        # Learning columns — yellow tint + wrap
+        for col in (28, 29, 30):
+            cell = ws.cell(row=ri, column=col)
+            cell.fill = LEARN_FILL
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+
+        ws.row_dimensions[ri].height = 50
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
 
 
 # ---------------------------------------------------------------------------

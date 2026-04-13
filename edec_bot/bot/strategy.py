@@ -314,6 +314,13 @@ class StrategyEngine:
         if not f.passed and not failed_reason:
             failed_reason = f"Only {remaining:.0f}s remaining"
 
+        # Filter 2b: Entry window — not too early (wait for direction to establish)
+        f = FilterResult("entry_window", remaining <= cfg.max_time_remaining_s,
+                         f"{remaining:.0f}s", f"<={cfg.max_time_remaining_s:.0f}s")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Too early: {remaining:.0f}s remaining (wait for direction)"
+
         # Filter 3: Books available
         books_ok = up_book is not None and down_book is not None
         f = FilterResult("books_available", books_ok,
@@ -368,6 +375,22 @@ class StrategyEngine:
         if not f.passed and not failed_reason:
             failed_reason = (f"No cheap side: up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f} "
                              f"(need one <={cfg.entry_max}, other >={cfg.opposite_min})")
+
+        # Filter 5b: Velocity divergence — 60s trend must not strongly oppose trade direction.
+        # A barely-positive vel30s with a deeply-negative vel60s = entering against the real trend.
+        if agg is not None and side in ("up", "down"):
+            vel60 = agg.velocity_60s
+            div_ok = (vel60 >= -cfg.max_vel_divergence if side == "up"
+                      else vel60 <= cfg.max_vel_divergence)
+            f = FilterResult("vel_divergence", div_ok,
+                             f"30s={agg.velocity_30s:+.3f}% 60s={vel60:+.3f}%",
+                             f"60s aligned with {side} (max_div={cfg.max_vel_divergence}%)")
+        else:
+            f = FilterResult("vel_divergence", True, "n/a", "n/a")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Vel divergence: 60s={agg.velocity_60s:+.3f}% "
+                             f"opposes {side} direction")
 
         # Filter 6: Liquidity depth at entry
         f = FilterResult("liquidity_depth", entry_depth >= cfg.min_book_depth_usd,
@@ -600,6 +623,13 @@ class StrategyEngine:
         filters.append(f)
         if not f.passed and not failed_reason:
             failed_reason = f"Only {remaining:.0f}s left — not enough time to leg in"
+
+        # Filter 2b: Entry window — not too early (wait for direction to establish)
+        f = FilterResult("entry_window", remaining <= cfg.max_time_remaining_s,
+                         f"{remaining:.0f}s", f"<={cfg.max_time_remaining_s:.0f}s")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = f"Too early: {remaining:.0f}s remaining (wait for direction)"
 
         # Filter 3: Books available
         books_ok = up_book is not None and down_book is not None

@@ -37,6 +37,8 @@ class SingleLegConfig:
     loss_cut_pct: float = 0.40       # exit if loss exceeds this fraction of entry cost
     high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this (nearly resolved)
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
+    max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
+    max_vel_divergence: float = 0.05     # vel60s must not oppose vel30s direction by more than this
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,7 @@ class SwingLegConfig:
     high_confidence_bid: float = 0.82  # hold to resolution if first leg bid exceeds this
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
     dead_leg_threshold: float = 0.05  # sell a leg early if its bid drops below this (dual → single)
+    max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
 
 
 @dataclass(frozen=True)

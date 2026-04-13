@@ -459,25 +459,9 @@ class TelegramBot:
             return
 
         if data == "reset_stats":
-            await query.edit_message_text(
-                "🗑 *Reset Stats*\n\n"
-                "This will zero out wins, losses, P&L and restore balance to full capital.\n"
-                "_Trade history is kept — exports are unaffected._\n\n"
-                "Are you sure?",
-                parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("✅ Yes, reset", callback_data="reset_stats_confirm"),
-                        InlineKeyboardButton("❌ Cancel", callback_data="back"),
-                    ]
-                ]),
-            )
-            return
-
-        if data == "reset_stats_confirm":
             if self.tracker:
                 self.tracker.reset_paper_stats()
-            await query.answer("🗑 Stats reset!", show_alert=False)
+            await query.answer("🗑 Stats reset!", show_alert=True)
             await self._refresh_dashboard()
             return
 

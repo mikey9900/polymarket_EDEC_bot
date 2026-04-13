@@ -721,6 +721,34 @@ class ExecutionEngine:
                     self._open_swing_positions.pop(position.market.coin, None)
                     return
 
+                # Priority 5: Near-close (≤30s) — exit regardless of P&L
+                if remaining <= 30:
+                    fee_val = (1.0 - bid) * position.market.fee_rate * position.first_shares
+                    pnl = (bid - position.first_entry_price) * position.first_shares - fee_val
+                    status = "closed_win" if pnl > 0 else "closed_loss"
+                    logger.info(
+                        f"[{coin}] SWING NEAR-CLOSE exit @{bid:.3f} pnl=${pnl:+.4f} ({remaining:.0f}s)"
+                    )
+                    if is_dry and position.first_paper_trade_id:
+                        self.tracker.close_paper_trade_early(
+                            position.first_paper_trade_id, bid, pnl, status,
+                            exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
+                        )
+                    else:
+                        try:
+                            sell_order = await asyncio.to_thread(
+                                self.client.create_order,
+                                {"token_id": position.first_token_id,
+                                 "price": bid, "size": position.first_shares, "side": "SELL"},
+                                {"tick_size": position.market.tick_size,
+                                 "neg_risk": position.market.neg_risk},
+                            )
+                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                        except Exception as e:
+                            logger.error(f"[{coin}] Swing near-close sell failed: {e}")
+                    self._open_swing_positions.pop(position.market.coin, None)
+                    return
+
             else:
                 # ─── Phase 2: Both legs held ───
                 # Dead leg detection: one leg's bid has collapsed → sell it, hold the other.

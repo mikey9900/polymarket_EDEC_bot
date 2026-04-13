@@ -89,6 +89,28 @@ def export_to_excel(db_path: str = "data/decisions.db",
     return filepath
 
 
+def export_recent_to_excel(db_path: str = "data/decisions.db",
+                           output_dir: str = "data",
+                           limit: int = 50) -> str:
+    """Generate a compact Excel workbook with the last N trades for AI analysis."""
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    wb = Workbook()
+    _build_recent_trades_sheet(wb, conn, limit)
+
+    if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
+        del wb["Sheet"]
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filepath = str(Path(output_dir) / f"edec_recent{limit}_{ts}.xlsx")
+    wb.save(filepath)
+    conn.close()
+    logger.info(f"Recent {limit} trades export saved: {filepath}")
+    return filepath
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -243,6 +265,166 @@ def _key_lesson(status: str, reason: str, side: str, vel_30s: float | None) -> s
     if r == "dead_leg":
         return "Second leg never dipped into range — one-sided exposure resolved against us."
     return "Position closed at a loss."
+
+
+# ---------------------------------------------------------------------------
+# Sheet: Recent N Trades (compact, AI-analysis-friendly)
+# ---------------------------------------------------------------------------
+
+def _build_recent_trades_sheet(wb, conn, limit: int):
+    """Single compact sheet: last N trades with all key fields for AI analysis."""
+    ws = wb.create_sheet(f"Last {limit} Trades")
+
+    headers = [
+        # Identity
+        "ID", "Date", "Time", "Coin", "Strategy", "Side",
+        # Entry context
+        "Entry $", "Target $", "Shares", "Cost $",
+        "Time @ Entry (s)", "Vel 30s %", "Vel 60s %",
+        "Depth UP $", "Depth DOWN $",
+        # Decision
+        "Filters Passed", "Filters Failed", "Entry Reason",
+        # Exit
+        "Exit Reason", "Exit $", "Bid @ Exit $",
+        "Time @ Exit (s)", "Hold (s)",
+        # Result
+        "P&L $", "P&L %", "Fees $",
+        # Status
+        "Status",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    rows = conn.execute("""
+        SELECT
+            pt.id,
+            pt.timestamp,
+            pt.coin,
+            pt.strategy_type,
+            pt.side,
+            pt.entry_price,
+            pt.target_price,
+            pt.shares,
+            pt.cost,
+            pt.fee_total,
+            pt.exit_reason,
+            pt.exit_price,
+            pt.bid_at_exit,
+            pt.pnl,
+            pt.exit_timestamp,
+            pt.time_remaining_s,
+            pt.status,
+            d.filter_passed,
+            d.filter_failed,
+            d.coin_velocity_30s,
+            d.coin_velocity_60s,
+            d.up_depth_usd,
+            d.down_depth_usd,
+            d.time_remaining_s AS entry_remaining,
+            d.reason           AS decision_reason
+        FROM paper_trades pt
+        LEFT JOIN (
+            SELECT market_slug, strategy_type, MAX(id) AS best_id
+            FROM decisions
+            WHERE action != 'SKIP'
+            GROUP BY market_slug, strategy_type
+        ) top_d ON top_d.market_slug   = pt.market_slug
+               AND top_d.strategy_type = pt.strategy_type
+        LEFT JOIN decisions d ON d.id = top_d.best_id
+        ORDER BY pt.id DESC
+        LIMIT ?
+    """, (limit,)).fetchall()
+
+    num_cols = len(headers)
+    for ri, r in enumerate(rows, start=2):
+        ts_str = str(r[1] or "")
+        date_part = ts_str[:10] if len(ts_str) >= 10 else ts_str
+        time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
+
+        hold_s = None
+        if r[14] and r[1]:
+            try:
+                t_in  = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                t_out = datetime.fromisoformat(str(r[14]).replace("Z", "+00:00"))
+                hold_s = round((t_out - t_in).total_seconds(), 1)
+            except Exception:
+                pass
+
+        pnl_pct = None
+        if r[8] and r[8] > 0 and r[13] is not None:
+            pnl_pct = round(r[13] / r[8] * 100, 2)
+
+        out = [
+            r[0],           # ID
+            date_part,      # Date
+            time_part,      # Time
+            r[2],           # Coin
+            r[3],           # Strategy
+            r[4],           # Side
+            r[5],           # Entry $
+            r[6],           # Target $
+            r[7],           # Shares
+            r[8],           # Cost $
+            r[23],          # Time @ Entry (s)
+            round(r[19], 4) if r[19] is not None else None,   # Vel 30s %
+            round(r[20], 4) if r[20] is not None else None,   # Vel 60s %
+            round(r[21], 2) if r[21] is not None else None,   # Depth UP $
+            round(r[22], 2) if r[22] is not None else None,   # Depth DOWN $
+            r[17],          # Filters Passed
+            r[18],          # Filters Failed
+            r[24],          # Entry Reason
+            r[10],          # Exit Reason
+            r[11],          # Exit $
+            r[12],          # Bid @ Exit $
+            r[15],          # Time @ Exit (s)
+            hold_s,         # Hold (s)
+            r[13],          # P&L $
+            pnl_pct,        # P&L %
+            r[9],           # Fees $
+            r[16],          # Status
+        ]
+        ws.append(out)
+
+        # Row color by status
+        status_str = str(r[16] or "").lower()
+        if status_str == "closed_win":
+            row_fill = WIN_FILL
+        elif status_str == "closed_loss":
+            row_fill = LOSS_FILL
+        elif status_str == "open":
+            row_fill = OPEN_FILL
+        elif ri % 2 == 0:
+            row_fill = ZEBRA_FILL
+        else:
+            row_fill = None
+
+        if row_fill:
+            for col in range(1, num_cols + 1):
+                ws.cell(row=ri, column=col).fill = row_fill
+
+        _pnl_cell(ws.cell(row=ri, column=24))   # P&L $
+        _pnl_cell(ws.cell(row=ri, column=25))   # P&L %
+        _reason_cell(ws.cell(row=ri, column=19))  # Exit Reason
+
+    # Summary block below data
+    total_rows = len(rows)
+    if total_rows:
+        wins   = sum(1 for r in rows if str(r[16] or "").lower() == "closed_win")
+        losses = sum(1 for r in rows if str(r[16] or "").lower() == "closed_loss")
+        open_p = sum(1 for r in rows if str(r[16] or "").lower() == "open")
+        total_pnl = sum(r[13] for r in rows if r[13] is not None)
+        _summary(ws, total_rows + 3, [
+            ("Trades shown", total_rows),
+            ("Wins", wins),
+            ("Losses", losses),
+            ("Open", open_p),
+            ("Win rate", f"{_win_rate(wins, losses):.1f}%"),
+            ("Total P&L $", round(total_pnl, 4)),
+        ])
+
+    _auto_width(ws)
+    ws.auto_filter.ref = f"A1:{get_column_letter(num_cols)}1"
 
 
 # ---------------------------------------------------------------------------

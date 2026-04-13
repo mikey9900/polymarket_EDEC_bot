@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from bot.config import load_config
-from bot.export import export_to_excel
+from bot.export import export_to_excel, export_recent_to_excel
 from bot.market_scanner import MarketScanner
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
@@ -171,9 +171,13 @@ async def main():
     def do_export(today_only: bool = False) -> str:
         return export_to_excel("data/decisions.db", "data", today_only)
 
+    def do_export_recent() -> str:
+        return export_recent_to_excel("data/decisions.db", "data", limit=50)
+
     telegram = TelegramBot(
         config, tracker, risk_manager,
         export_fn=do_export,
+        export_recent_fn=do_export_recent,
         scanner=scanner,
         strategy_engine=strategy,
         executor=executor,

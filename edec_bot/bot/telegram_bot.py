@@ -33,12 +33,13 @@ CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
 
 class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
-                 risk_manager: RiskManager, export_fn=None,
+                 risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
         self.export_fn = export_fn
+        self.export_recent_fn = export_recent_fn
         self.scanner = scanner
         self.strategy_engine = strategy_engine
         self.executor = executor
@@ -501,6 +502,10 @@ class TelegramBot:
                 InlineKeyboardButton("📤 Export Today", callback_data="export_today"),
                 InlineKeyboardButton("📤 Export All", callback_data="export_all"),
             ],
+            # Row 7: Quick AI export
+            [
+                InlineKeyboardButton("📊 Last 50 Trades", callback_data="export_recent"),
+            ],
         ])
 
     def _budget_keyboard(self) -> InlineKeyboardMarkup:
@@ -694,6 +699,26 @@ class TelegramBot:
                         document=f,
                         filename=os.path.basename(path),
                         caption="📊 EDEC Bot Export — Paper Trades, Decisions, Filter Performance",
+                    ))
+            except Exception as e:
+                self._track(await query.message.reply_text(f"Export error: {e}"))
+            await self._repost_dashboard()
+
+        elif data == "export_recent":
+            if not self.export_recent_fn:
+                self._track(await query.message.reply_text("Recent export not available."))
+                await self._repost_dashboard()
+                return
+            wait_msg = await query.message.reply_text("⏳ Building last 50 trades...")
+            self._track(wait_msg)
+            try:
+                path = self.export_recent_fn()
+                import os
+                with open(path, "rb") as f:
+                    self._track(await query.message.reply_document(
+                        document=f,
+                        filename=os.path.basename(path),
+                        caption="📊 Last 50 Trades — compact export for AI analysis",
                     ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))

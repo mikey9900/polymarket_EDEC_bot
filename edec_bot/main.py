@@ -172,7 +172,7 @@ async def main():
         return export_to_excel("data/decisions.db", "data", today_only)
 
     def do_export_recent() -> str:
-        return export_recent_to_excel("data/decisions.db", "data", limit=25)
+        return export_recent_to_excel("data/decisions.db", "data", limit=100)
 
     telegram = TelegramBot(
         config, tracker, risk_manager,
@@ -205,7 +205,7 @@ async def main():
         ))
 
         coins_str = ", ".join(c.upper() for c in config.coins)
-        run_type = "💧 Dry Run" if config.execution.dry_run else "🌊 Wet Run"
+        run_type = "🧪 Dry Run" if config.execution.dry_run else "🌊 Wet Run"
         _, paper_balance = tracker.get_paper_capital()
         logger.info(f"Sending startup Telegram message to chat_id={config.telegram_chat_id}")
         await telegram.send_alert(

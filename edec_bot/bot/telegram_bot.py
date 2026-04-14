@@ -142,7 +142,7 @@ class TelegramBot:
         win_rate = f"{paper.get('win_rate', 0):.0f}%" if (wins + losses) > 0 else "—"
 
         lines = [
-            f"📡 *EDEC Bot v{__version__}*  {state_icon} {state_label}  💧 Dry  _{now_str}_",
+            f"📡 *EDEC Bot v{__version__}*  {state_icon} {state_label}  🧪 Dry  _{now_str}_",
             "─────────────────────────────",
         ]
 
@@ -469,7 +469,7 @@ class TelegramBot:
             # Row 2: Mode toggle
             [
                 InlineKeyboardButton(
-                    "💧 Dry Run ✅" if is_dry else "💧 Dry Run",
+                    "🧪 Dry Run ✅" if is_dry else "🧪 Dry Run",
                     callback_data="noop",
                 ),
                 InlineKeyboardButton(
@@ -503,7 +503,7 @@ class TelegramBot:
             ],
             # Row 7: Quick AI export
             [
-                InlineKeyboardButton("📊 Last 25 Trades", callback_data="export_recent"),
+                InlineKeyboardButton("📊 Last 100 Trades", callback_data="export_recent"),
             ],
         ])
 
@@ -721,7 +721,7 @@ class TelegramBot:
                     self._track(await query.message.reply_document(
                         document=f,
                         filename=os.path.basename(path),
-                        caption="📊 Last 25 Trades — compact export for AI analysis",
+                        caption="📊 Last 100 Trades — compact export for AI analysis",
                     ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))

@@ -751,6 +751,7 @@ class ExecutionEngine:
                 fee_buy = (1.0 - entry_price) * market.fee_rate
                 fee_sell = (1.0 - bid) * market.fee_rate
                 net_pnl = (bid - entry_price - fee_buy - fee_sell) * shares
+
                 if strategy_type == "lead_lag" and net_pnl > 0:
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, net_pnl, "closed_win",
@@ -758,6 +759,25 @@ class ExecutionEngine:
                     )
                     logger.info(
                         f"[{coin}] Paper SELL @{bid:.3f} (net pnl=${net_pnl:+.4f}, {remaining:.0f}s left)"
+                    )
+                    return
+
+                # single_leg scalp + runner behavior:
+                # - if bid reaches scalp target and net P&L is meaningful, take the scalp
+                # - if bid reaches high-confidence threshold, hold to resolution (handled above)
+                if (
+                    strategy_type == "single_leg"
+                    and bid >= cfg.scalp_take_profit_bid
+                    and bid < cfg.high_confidence_bid
+                    and net_pnl >= cfg.scalp_min_profit_usd
+                ):
+                    self.tracker.close_paper_trade_early(
+                        trade_id, bid, net_pnl, "closed_win",
+                        exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
+                    )
+                    logger.info(
+                        f"[{coin}] Paper SCALP EXIT @{bid:.3f} "
+                        f"(net pnl=${net_pnl:+.4f}, target>={cfg.scalp_take_profit_bid:.2f})"
                     )
                     return
 

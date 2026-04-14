@@ -38,6 +38,8 @@ class SingleLegConfig:
     max_time_remaining_s: float = 200.0  # don't enter if more than this many seconds remain (too early)
     max_vel_divergence: float = 0.03     # vel60s must not oppose vel30s direction by more than this
     entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
+    scalp_take_profit_bid: float = 0.56  # single-leg scalp target before runner decision
+    scalp_min_profit_usd: float = 0.05   # require at least this net $ for early scalp exit
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,9 @@
 {
   "name": "EDEC Polymarket Bot",
-  "version": "3.2.29",
+ codex/identify-purpose-of-code-ecaagh
+  "version": "3.2.31",
+
+main
   "slug": "edec_bot",
   "description": "Polymarket 5-min up/down trading bot — dual-leg and single-leg strategies",
   "url": "https://github.com/mikey9900/polymarket_EDEC_bot",

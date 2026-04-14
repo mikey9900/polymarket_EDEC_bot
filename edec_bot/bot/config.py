@@ -31,9 +31,10 @@ class SingleLegConfig:
     hold_if_unfilled: bool
     order_size_usd: float
     min_velocity_30s: float = 0.08   # coin must be actually moving (not a thin-book artifact)
-    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction of entry cost
+    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction of entry cost at time_pressure_s
+    loss_cut_max_factor: float = 2.0 # max multiplier on loss_cut_pct for early entries (≥2×time_pressure_s)
     high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this (nearly resolved)
-    time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
+    time_pressure_s: float = 90.0    # loss threshold shrinks linearly from loss_cut_max to 0 at close
     max_time_remaining_s: float = 200.0  # don't enter if more than this many seconds remain (too early)
     max_vel_divergence: float = 0.03     # vel60s must not oppose vel30s direction by more than this
     entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
@@ -48,9 +49,10 @@ class SwingLegConfig:
     min_time_remaining_s: float
     min_book_depth_usd: float
     order_size_usd: float
-    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction
+    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction at time_pressure_s
+    loss_cut_max_factor: float = 2.0 # max multiplier on loss_cut_pct for early entries (≥2×time_pressure_s)
     high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this
-    time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
+    time_pressure_s: float = 90.0    # loss threshold shrinks linearly from loss_cut_max to 0 at close
     max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
     first_leg_min: float = 0.25         # don't enter if first leg ask already below this (near-resolved)
     max_vel_divergence: float = 0.03    # reject if vel60s strongly opposes 30s direction

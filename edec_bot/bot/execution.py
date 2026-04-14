@@ -377,7 +377,12 @@ class ExecutionEngine:
                 continue
 
             loss_pct = (position.entry_price - bid) / position.entry_price
-            time_factor = min(1.0, remaining / cfg.time_pressure_s)
+
+            # Dynamic loss cut: scales with time remaining, giving wider tolerance early.
+            # At ≥(max_factor × time_pressure_s): max cut = loss_cut_pct × max_factor
+            # At time_pressure_s:                 cut = loss_cut_pct
+            # At 0s:                              cut = 0 (forces exit)
+            time_factor = min(cfg.loss_cut_max_factor, remaining / cfg.time_pressure_s)
             dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
             # ── 2. High-confidence: cancel sell, hold to resolution ──
@@ -600,9 +605,10 @@ class ExecutionEngine:
                 self._open_swing_positions.pop(position.market.coin, None)
                 return
 
-            # Priority 2: Progressive loss cut
-            # Threshold = loss_cut_pct when plenty of time, shrinks to 0 at close
-            time_factor = min(1.0, remaining / cfg.time_pressure_s)
+            # Priority 2: Dynamic loss cut — wider early, tightens to 0 at close
+            # time_factor = remaining/time_pressure_s, capped at loss_cut_max_factor
+            # e.g. at 180s with defaults: factor=2.0 → cut=50%; at 90s: cut=25%; at 0s: 0
+            time_factor = min(cfg.loss_cut_max_factor, remaining / cfg.time_pressure_s)
             dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
             if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
@@ -755,10 +761,10 @@ class ExecutionEngine:
                     )
                     return
 
-                # ── 3. Progressive loss cut ──
-                # Full threshold (loss_cut_pct) applies when time > time_pressure_s.
-                # Shrinks linearly to 0 at close, forcing exit on increasingly smaller losses.
-                time_factor = min(1.0, remaining / cfg.time_pressure_s)
+                # ── 3. Dynamic loss cut — wider early, tightens to 0 at close ──
+                # time_factor = remaining/time_pressure_s, capped at loss_cut_max_factor
+                # e.g. at 180s with defaults: factor=2.0 → cut=50%; at 90s: cut=25%; at 0s: 0
+                time_factor = min(cfg.loss_cut_max_factor, remaining / cfg.time_pressure_s)
                 dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
                 if loss_pct > 0 and loss_pct >= dynamic_loss_cut:

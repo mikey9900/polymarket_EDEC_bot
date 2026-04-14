@@ -31,9 +31,10 @@ single_leg:
   hold_if_unfilled: true       # Hold position to resolution if not exited by monitor
   order_size_usd: 3.0          # Dollar amount per trade
   min_velocity_30s: 0.08       # Coin must have moved >=0.08% in 30s (proves real directional move, not just thin book)
-  loss_cut_pct: 0.25           # Exit if loss exceeds this % of entry
+  loss_cut_pct: 0.25           # Exit if loss exceeds this % at time_pressure_s remaining
+  loss_cut_max_factor: 2.0     # Max multiplier: at 2×time_pressure_s (180s), cut = 2×loss_cut_pct (50%)
   high_confidence_bid: 0.82    # Once bid reaches this, hold to $1 resolution (momentum confirmed)
-  time_pressure_s: 90.0        # Loss threshold scales down linearly below this seconds remaining
+  time_pressure_s: 90.0        # Cut = loss_cut_pct*min(max_factor, remaining/time_pressure_s)
   max_time_remaining_s: 200.0  # Skip entries if >200s remain — wait for first 100s to establish direction
   max_vel_divergence: 0.03     # Reject if vel60s opposes trade direction by >0.03% (counter-trend divergence)
   entry_min: 0.15              # Skip if ask already below this — market near-resolved, recovery unreachable
@@ -61,9 +62,10 @@ swing_leg:
   min_time_remaining_s: 140   # Need time to wait for second leg to dip (raised from 120)
   min_book_depth_usd: 5.0
   order_size_usd: 3.0
-  loss_cut_pct: 0.25          # Exit if loss exceeds this %
+  loss_cut_pct: 0.25          # Exit if loss exceeds this % at time_pressure_s remaining
+  loss_cut_max_factor: 2.0    # Max multiplier: at 2×time_pressure_s (180s), cut = 2×loss_cut_pct (50%)
   high_confidence_bid: 0.82   # Hold to resolution if bid exceeds this
-  time_pressure_s: 90.0       # Loss threshold scales down linearly below this seconds remaining
+  time_pressure_s: 90.0       # Cut = loss_cut_pct*min(max_factor, remaining/time_pressure_s)
   max_time_remaining_s: 200.0 # Skip entries if >200s remain — wait for direction to establish
   first_leg_min: 0.25         # Skip if first leg ask already below this (raised from 0.20 — 0.20-0.24 zone is bid-evaporation)
   max_vel_divergence: 0.03    # Reject if vel60s strongly opposes vel30s direction

@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 3.2.26
+> Current version: 3.2.27
 
 ---
 
@@ -39,9 +39,10 @@ This confirms a real directional move. Buy the cheap side; sell when it reprices
 
 **Exit logic (priority order, checked every ~1s):**
 1. **High-confidence** — bid ≥0.82 → hold to $1 resolution (momentum confirmed, don't sell)
-2. **Progressive loss cut** — loss ≥ `loss_cut_pct × (remaining/time_pressure_s)` → exit
-   - At 90s+: full 25% loss cut
-   - At 45s: 12.5% loss cut (tighter because less time to recover)
+2. **Dynamic loss cut** — loss ≥ `loss_cut_pct × min(max_factor, remaining/time_pressure_s)` → exit
+   - At 180s (2× pressure): 50% cut (2× factor — wide, plenty of time to recover)
+   - At 90s (1× pressure): 25% cut (full loss_cut_pct)
+   - At 45s (0.5× pressure): 12.5% cut (tightening toward close)
    - At 0s: 0% (forces exit)
 3. **Near-close** — ≤30s remaining → exit regardless of P&L
 4. **Resolution** — market ends → outcome tracker settles at $0 or $1
@@ -54,9 +55,9 @@ toward $1. Exiting at 0.52 leaves 50¢/share on the table; we ride to resolution
 entry_max:          0.32    high_confidence:    0.82
 opposite_min:       0.62    order_size_usd:     $3
 loss_cut_pct:       0.25    time_pressure_s:    90s
-min_velocity_30s:   0.08%   max_vel_divergence: 0.03%
-max_time_remain:    200s    min_time_remain:    90s
-entry_min:          0.15
+loss_cut_max_factor:2.0     min_velocity_30s:   0.08%
+max_vel_divergence: 0.03%   max_time_remain:    200s
+min_time_remain:    90s     entry_min:          0.15
 ```
 
 ---
@@ -87,7 +88,8 @@ BTC is excluded — its momentum profile is hostile to mean-reversion setups.
 
 **Exit logic (priority order, checked every ~1s):**
 1. **High-confidence bid** ≥0.82 → hold to $1 resolution (bounce fully played out)
-2. **Progressive loss cut** — 0.25 × time_factor (same as single_leg)
+2. **Dynamic loss cut** — `loss_cut_pct × min(max_factor, remaining/time_pressure_s)` (same curve as single_leg)
+   - 180s: 50% | 90s: 25% | 45s: 12.5% | 0s: 0%
 3. **Net-positive exit** — any fee-adjusted profit → sell now
 4. **Near-close** ≤30s → exit regardless of P&L
 
@@ -95,11 +97,11 @@ BTC is excluded — its momentum profile is hostile to mean-reversion setups.
 ```
 first_leg_max:      0.33    first_leg_exit:     0.55
 first_leg_min:      0.25    order_size_usd:     $3
-loss_cut_pct:       0.25    high_confidence:    0.82
-time_pressure_s:    90s     min_time_remain:    140s
-max_time_remain:    200s    max_velocity_30s:   0.12
-max_vel_divergence: 0.03    max_depth_ratio:    2.5×
-disabled_coins:     [btc]
+loss_cut_pct:       0.25    loss_cut_max_factor:2.0
+high_confidence:    0.82    time_pressure_s:    90s
+min_time_remain:    140s    max_time_remain:    200s
+max_velocity_30s:   0.12    max_vel_divergence: 0.03
+max_depth_ratio:    2.5×    disabled_coins:     [btc]
 ```
 
 ---
@@ -215,6 +217,8 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.26 | Removed fixed `target_sell` exit from single_leg | Momentum entry + 0.52 exit was internally contradictory — if signal is correct binary resolves to $1, not 0.52 |
 | 3.2.26 | single_leg now holds to `high_confidence_bid` (0.82) → resolution | Ride the momentum to full payoff instead of exiting at ~40% of EV |
 | 3.2.26 | Removed `target_sell: 0.52` param from single_leg config | No longer used; replaced by `high_confidence_bid` as the exit trigger |
+| 3.2.27 | Dynamic loss cut — removed flat cap at `time_pressure_s` | Early entries (180s+) were cut at same 25% as 90s entries despite having 2× more time to recover |
+| 3.2.27 | Added `loss_cut_max_factor: 2.0` to single_leg + swing_leg | At 2×time_pressure_s (180s): 50% cut; at 1×(90s): 25%; linear to 0 at close |
 
 ---
 

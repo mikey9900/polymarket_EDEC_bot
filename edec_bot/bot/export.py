@@ -1,5 +1,6 @@
 """Export SQLite data to color-coded Excel workbook with full analysis sheets."""
 
+import csv
 import logging
 import sqlite3
 from datetime import datetime
@@ -92,7 +93,7 @@ def export_to_excel(db_path: str = "data/decisions.db",
 def export_recent_to_excel(db_path: str = "data/decisions.db",
                            output_dir: str = "data",
                            limit: int = 50) -> str:
-    """Generate a compact Excel workbook with the last N trades for AI analysis."""
+    """Generate a compact CSV export with the last N trades for AI analysis."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
@@ -102,12 +103,25 @@ def export_recent_to_excel(db_path: str = "data/decisions.db",
     if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
         del wb["Sheet"]
 
+    ws = wb[f"Last {limit} Trades"]
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
+
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filepath = str(Path(output_dir) / f"edec_recent{limit}_{ts}.xlsx")
-    wb.save(filepath)
+    filepath = str(Path(output_dir) / f"edec_recent{limit}_{ts}.csv")
+    latest = str(Path(output_dir) / f"edec_recent{limit}_latest.csv")
+
+    with open(filepath, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+    # Stable latest snapshot path for automation pipelines
+    with open(latest, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
     conn.close()
-    logger.info(f"Recent {limit} trades export saved: {filepath}")
+    logger.info(f"Recent {limit} trades CSV export saved: {filepath} (latest={latest})")
     return filepath
 
 
@@ -281,7 +295,7 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         # Entry context
         "Entry $", "Target $", "Shares", "Cost $",
         "Time @ Entry (s)", "Vel 30s %", "Vel 60s %",
-        "Depth UP $", "Depth DOWN $",
+        "Depth UP $", "Depth DOWN $", "Depth Ratio U/D", "Momentum Align",
         # Decision
         "Filters Passed", "Filters Failed", "Entry Reason",
         # Exit
@@ -355,6 +369,18 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         if r[8] and r[8] > 0 and r[13] is not None:
             pnl_pct = round(r[13] / r[8] * 100, 2)
 
+        depth_ratio = None
+        if r[21] not in (None, 0) and r[22] is not None:
+            depth_ratio = round(r[21] / r[22], 3)
+
+        side = str(r[4] or "").lower()
+        vel30 = r[19]
+        if vel30 is None or side not in ("up", "down"):
+            momentum_align = None
+        else:
+            aligned = (side == "up" and vel30 > 0) or (side == "down" and vel30 < 0)
+            momentum_align = "aligned" if aligned else "counter"
+
         out = [
             r[0],           # ID
             date_part,      # Date
@@ -371,6 +397,8 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             round(r[20], 4) if r[20] is not None else None,   # Vel 60s %
             round(r[21], 2) if r[21] is not None else None,   # Depth UP $
             round(r[22], 2) if r[22] is not None else None,   # Depth DOWN $
+            depth_ratio,    # Depth Ratio U/D
+            momentum_align, # Momentum Align
             r[17],          # Filters Passed
             r[18],          # Filters Failed
             r[24],          # Entry Reason
@@ -403,9 +431,9 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             for col in range(1, num_cols + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
 
-        _pnl_cell(ws.cell(row=ri, column=24))   # P&L $
-        _pnl_cell(ws.cell(row=ri, column=25))   # P&L %
-        _reason_cell(ws.cell(row=ri, column=19))  # Exit Reason
+        _pnl_cell(ws.cell(row=ri, column=26))   # P&L $
+        _pnl_cell(ws.cell(row=ri, column=27))   # P&L %
+        _reason_cell(ws.cell(row=ri, column=21))  # Exit Reason
 
     # Summary block below data
     total_rows = len(rows)

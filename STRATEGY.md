@@ -59,50 +59,43 @@ entry_min:          0.15    min_time_remain:    90s
 
 ---
 
-## Strategy 2: Swing Leg
+## Strategy 2: Swing Leg (Mean-Reversion)
 
-**Idea:** Buy one side when it's cheap (≤0.33), wait for the OTHER side to also dip cheap.
-If both sides fill below $0.50 combined, it's guaranteed profit regardless of outcome.
-If second leg never comes, sell first leg at a small profit (or loss-cut if it moves against us).
-BTC is excluded — its momentum profile is hostile to mean-reversion swing setups.
+**Idea:** Buy one side when it's cheap (≤0.33) in a calm, non-trending market, then sell when it bounces back up. Pure mean-reversion — no second-leg arb phase.
+BTC is excluded — its momentum profile is hostile to mean-reversion setups.
 
 **Entry filters (ALL must pass):**
 | Filter | Rule | Current value |
 |---|---|---|
 | market_active | Market accepting orders | — |
-| time_remaining | Enough runway to wait for second leg | >140s |
+| time_remaining | Enough runway for bounce to play out | >140s |
 | entry_window | Not too early | ≤200s |
 | coin_allowed | Coin not in disabled list | BTC excluded |
 | books_available | Both books exist | — |
-| first_leg_price | At least one side cheap enough | ask ≤0.33 |
-| first_leg_floor | First leg not already near zero | ≥0.25 |
-| directional_neutrality | Velocity opposes entry side (mean-reversion setup, not momentum fade) | UP: vel_30s ≤0, DOWN: vel_30s ≥0 |
+| first_leg_price | Entry side cheap enough | ask ≤0.33 |
+| first_leg_floor | Entry not already near zero | ≥0.25 |
+| directional_neutrality | Velocity opposes entry side (confirms dip, not trend) | UP: vel_30s ≤0, DOWN: vel_30s ≥0 |
 | not_already_arb | Combined cost still above arb threshold | combined >0.99 |
-| coin_velocity | Coin NOT trending too hard (want mean reversion) | 30s ≤0.12% |
+| coin_velocity | Market calm — not trending hard | 30s ≤0.12% |
 | vel_divergence | 60s trend not strongly opposing 30s | 60s within 0.03% of 30s direction |
-| liquidity_symmetry | Books not heavily one-sided (second leg needs to fill) | ratio ≤2.5× |
+| liquidity_symmetry | Books not heavily one-sided (both sides liquid = indecision) | ratio ≤2.5× |
 | liquidity_depth | Enough USD at entry price | ≥$5 |
 | feed_count | At least 2 feeds live | ≥2 |
 | risk_limits | Risk limits OK | — |
 
-**Exit logic — Phase 1 (first leg only):**
-1. **Second leg dips** → buy it (arb complete, hold both to resolution)
-2. **High-confidence bid** ≥0.82 → hold first leg to resolution
-3. **Progressive loss cut** same formula as single_leg (0.25 × time_factor)
-4. **Target hit** → any net-positive exit after fees → sell
-5. **Near-close** ≤30s → exit regardless
-
-**Exit logic — Phase 2 (both legs held):**
-- If either leg's bid drops below 0.05 ("dead leg") → sell that leg for whatever it's worth, hold the other to resolution
+**Exit logic (priority order, checked every ~1s):**
+1. **High-confidence bid** ≥0.82 → hold to $1 resolution (bounce fully played out)
+2. **Progressive loss cut** — 0.25 × time_factor (same as single_leg)
+3. **Net-positive exit** — any fee-adjusted profit → sell now
+4. **Near-close** ≤30s → exit regardless of P&L
 
 **Key parameters:**
 ```
-first_leg_max:      0.33    second_leg_max:     0.45
-first_leg_exit:     0.55    first_leg_min:      0.25
-order_size_usd:     $3      loss_cut_pct:       0.25
-high_confidence:    0.82    time_pressure_s:    90s
-max_time_remain:    200s    dead_leg_threshold: 0.05
-max_velocity_30s:   0.12    min_time_remain:    140s
+first_leg_max:      0.33    first_leg_exit:     0.55
+first_leg_min:      0.25    order_size_usd:     $3
+loss_cut_pct:       0.25    high_confidence:    0.82
+time_pressure_s:    90s     min_time_remain:    140s
+max_time_remain:    200s    max_velocity_30s:   0.12
 max_vel_divergence: 0.03    max_depth_ratio:    2.5×
 disabled_coins:     [btc]
 ```
@@ -215,6 +208,8 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.23 | Added `disabled_coins: [btc]` to swing | BTC sim confirmed worst performer; momentum profile hostile |
 | 3.2.23 | `lead_lag min_velocity_30s` 0.15% → 0.12% | Zero fires in 25 trades; loosen to get signal |
 | 3.2.23 | `lead_lag max_entry` 0.60 → 0.62 | Widen lag window slightly |
+| 3.2.24 | Removed second-leg arb phase from swing_leg | Phase 2 never fired in 50+ paper trades; all wins were mean-reversion bounces |
+| 3.2.24 | Removed `second_leg_max` and `dead_leg_threshold` params | Dead code with Phase 2 removed |
 
 ---
 

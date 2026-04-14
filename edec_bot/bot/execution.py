@@ -450,8 +450,6 @@ class ExecutionEngine:
             return result
 
         token_id = market.up_token_id if signal.side == "up" else market.down_token_id
-        second_token_id = market.down_token_id if signal.side == "up" else market.up_token_id
-        second_side = "down" if signal.side == "up" else "up"
         shares = math.floor(self.config.swing_leg.order_size_usd / signal.entry_price)
 
         if self.config.execution.dry_run:
@@ -472,19 +470,16 @@ class ExecutionEngine:
                 market_end_time=market.end_time.isoformat(),
             )
             logger.info(
-                f"[DRY RUN] [{coin}] SWING LEG 1: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
-                f"| {shares} shares, cost=${cost:.2f} | watching for {second_side.upper()} "
-                f"<={self.config.swing_leg.second_leg_max:.2f}"
+                f"[DRY RUN] [{coin}] SWING: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
+                f"| {shares} shares, cost=${cost:.2f} | exit target@{signal.target_sell_price:.2f}"
             )
             position = SwingPosition(
                 market=market,
                 first_side=signal.side,
                 first_token_id=token_id,
-                second_token_id=second_token_id,
                 first_entry_price=signal.entry_price,
                 first_shares=shares,
                 first_paper_trade_id=trade_id,
-                second_side=second_side,
             )
             self._open_swing_positions[market.coin] = position
             asyncio.create_task(self._monitor_swing_leg(position))
@@ -524,11 +519,9 @@ class ExecutionEngine:
                 market=market,
                 first_side=signal.side,
                 first_token_id=token_id,
-                second_token_id=second_token_id,
                 first_entry_price=signal.entry_price,
                 first_shares=shares,
                 first_buy_order_id=buy_order_id,
-                second_side=second_side,
             )
             self._open_swing_positions[market.coin] = position
             asyncio.create_task(self._monitor_swing_leg(position))
@@ -548,17 +541,14 @@ class ExecutionEngine:
 
     async def _monitor_swing_leg(self, position: SwingPosition):
         """
-        Monitor a swing position with smart exit logic.
+        Monitor a swing mean-reversion position with smart exit logic.
 
-        Phase 1 — first leg only (second_bought=False):
-          Priority 1: Second leg dips → buy it (arb complete, hold both to resolution)
-          Priority 2: High-confidence bid → hold first leg to resolution (don't sell at target)
-          Priority 3: Progressive loss cut → exit based on dynamic time-based threshold
-          Priority 4: Target hit → sell first leg at profit
-
-        Phase 2 — both legs held (second_bought=True):
-          Dead leg detection: if one leg's bid falls below dead_leg_threshold,
-          sell it immediately to recover anything, hold the survivor to resolution.
+        Buy one cheap side in a calm market → sell when it bounces.
+        Priority order each cycle:
+          Priority 1: High-confidence bid (≥ high_confidence_bid) → hold to resolution
+          Priority 2: Progressive loss cut → dynamic threshold based on time remaining
+          Priority 3: Any net-positive exit after fees → sell now
+          Priority 4: Near-close (≤30s) → exit regardless of P&L
         """
         cfg = self.config.swing_leg
         coin = position.market.coin.upper()
@@ -577,267 +567,119 @@ class ExecutionEngine:
 
             try:
                 first_book = await self._fetch_book_price(position.first_token_id)
-                second_book = await self._fetch_book_price(position.second_token_id)
             except Exception as e:
                 logger.debug(f"[{coin}] Swing book fetch error: {e}")
                 continue
 
-            if not position.second_bought:
-                # ─── Phase 1: First leg only ───
-                bid = first_book.best_bid
-                loss_pct = (
-                    (position.first_entry_price - bid) / position.first_entry_price
-                    if bid > 0 else 1.0
+            # ─── Mean-reversion monitoring ───
+            bid = first_book.best_bid
+            loss_pct = (
+                (position.first_entry_price - bid) / position.first_entry_price
+                if bid > 0 else 1.0
+            )
+
+            # Priority 1: High-confidence — first leg is nearly won, hold to resolution
+            if bid >= cfg.high_confidence_bid:
+                logger.info(
+                    f"[{coin}] SWING HIGH-CONFIDENCE @{bid:.3f} — "
+                    f"holding {position.first_side.upper()} to resolution ({remaining:.0f}s)"
                 )
+                self._open_swing_positions.pop(position.market.coin, None)
+                return
 
-                # Priority 1: Second leg cheap → complete the arb
-                if second_book.best_ask <= cfg.second_leg_max:
-                    combined = position.first_entry_price + second_book.best_ask
-                    if combined < 1.0:  # True arb edge
-                        second_shares = math.floor(cfg.order_size_usd / second_book.best_ask)
-                        fee = (1.0 - second_book.best_ask) * position.market.fee_rate
+            # Priority 2: Progressive loss cut
+            # Threshold = loss_cut_pct when plenty of time, shrinks to 0 at close
+            time_factor = min(1.0, remaining / cfg.time_pressure_s)
+            dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
-                        if is_dry:
-                            if self.tracker.has_paper_capital(second_book.best_ask * second_shares):
-                                trade_id = self.tracker.log_paper_trade(
-                                    position.market.slug, position.market.coin, "swing_leg",
-                                    position.second_side, second_book.best_ask,
-                                    1.0, second_shares, fee * second_shares,
-                                    market_end_time=position.market.end_time.isoformat(),
-                                )
-                                position.second_bought = True
-                                position.second_entry_price = second_book.best_ask
-                                position.second_shares = second_shares
-                                position.second_paper_trade_id = trade_id
-                                logger.info(
-                                    f"[DRY RUN] [{coin}] SWING LEG 2: BUY "
-                                    f"{position.second_side.upper()}@{second_book.best_ask:.3f} "
-                                    f"| {second_shares} shares — ARB COMPLETE 🎯 "
-                                    f"combined={combined:.3f}"
-                                )
-                        else:
-                            try:
-                                buy_order = await asyncio.to_thread(
-                                    self.client.create_order,
-                                    {"token_id": position.second_token_id,
-                                     "price": second_book.best_ask,
-                                     "size": second_shares, "side": "BUY"},
-                                    {"tick_size": position.market.tick_size,
-                                     "neg_risk": position.market.neg_risk},
-                                )
-                                buy_resp = await asyncio.to_thread(
-                                    self.client.post_order, buy_order, "GTC"
-                                )
-                                buy_order_id = buy_resp.get("orderID", buy_resp.get("id", ""))
-                                if buy_order_id:
-                                    position.second_bought = True
-                                    position.second_entry_price = second_book.best_ask
-                                    position.second_shares = second_shares
-                                    position.second_buy_order_id = buy_order_id
-                                    logger.info(
-                                        f"[{coin}] SWING LEG 2 placed: "
-                                        f"{position.second_side.upper()}@{second_book.best_ask:.3f} "
-                                        f"({second_shares} shares) — ARB COMPLETE 🎯"
-                                    )
-                            except Exception as e:
-                                logger.error(f"[{coin}] Swing leg 2 order failed: {e}")
-                        continue  # Keep monitoring with both legs
-
-                # Priority 2: High-confidence — first leg is nearly won, hold to resolution
-                if bid >= cfg.high_confidence_bid:
-                    logger.info(
-                        f"[{coin}] SWING HIGH-CONFIDENCE @{bid:.3f} — "
-                        f"holding {position.first_side.upper()} to resolution ({remaining:.0f}s)"
-                    )
-                    # Paper: leave trade open — outcome tracker resolves at $1
-                    # Live: no pending sell order to cancel on first leg in swing mode
-                    self._open_swing_positions.pop(position.market.coin, None)
-                    return
-
-                # Priority 3: Progressive loss cut
-                # Threshold = loss_cut_pct when plenty of time, shrinks to 0 at close
-                time_factor = min(1.0, remaining / cfg.time_pressure_s)
-                dynamic_loss_cut = cfg.loss_cut_pct * time_factor
-
-                if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
-                    exit_bid = max(bid, 0.01)
-                    fee_val = (1.0 - exit_bid) * position.market.fee_rate * position.first_shares
-                    pnl = (exit_bid - position.first_entry_price) * position.first_shares - fee_val
-                    status = "closed_win" if pnl > 0 else "closed_loss"
-                    logger.info(
-                        f"[{coin}] SWING LOSS CUT @{exit_bid:.3f} "
-                        f"(loss={loss_pct:.0%} ≥ {dynamic_loss_cut:.0%}, {remaining:.0f}s) "
-                        f"pnl=${pnl:+.4f}"
-                    )
-                    if is_dry and position.first_paper_trade_id:
-                        self.tracker.close_paper_trade_early(
-                            position.first_paper_trade_id, exit_bid, pnl, status,
-                            exit_reason="loss_cut", time_remaining_s=remaining, bid_at_exit=exit_bid,
-                        )
-                    else:
-                        try:
-                            sell_order = await asyncio.to_thread(
-                                self.client.create_order,
-                                {"token_id": position.first_token_id,
-                                 "price": max(0.01, exit_bid - 0.02),
-                                 "size": position.first_shares, "side": "SELL"},
-                                {"tick_size": position.market.tick_size,
-                                 "neg_risk": position.market.neg_risk},
-                            )
-                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-                        except Exception as e:
-                            logger.error(f"[{coin}] Swing loss cut sell failed: {e}")
-                    self._open_swing_positions.pop(position.market.coin, None)
-                    return
-
-                # Priority 4: Any net-positive exit after fees → sell first leg
-                fee_buy = (1.0 - position.first_entry_price) * position.market.fee_rate
-                fee_sell = (1.0 - bid) * position.market.fee_rate
-                net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
-                if net_pnl > 0:
-                    fee_val = fee_sell * position.first_shares
-                    pnl = net_pnl
-                    logger.info(
-                        f"[{coin}] SWING NET-POSITIVE EXIT @{bid:.3f} pnl=${pnl:+.4f}"
-                    )
-                    if is_dry and position.first_paper_trade_id:
-                        self.tracker.close_paper_trade_early(
-                            position.first_paper_trade_id, bid, pnl,
-                            "closed_win" if pnl > 0 else "closed_loss",
-                            exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
-                        )
-                    else:
-                        try:
-                            sell_order = await asyncio.to_thread(
-                                self.client.create_order,
-                                {"token_id": position.first_token_id,
-                                 "price": bid, "size": position.first_shares, "side": "SELL"},
-                                {"tick_size": position.market.tick_size,
-                                 "neg_risk": position.market.neg_risk},
-                            )
-                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-                        except Exception as e:
-                            logger.error(f"[{coin}] Swing target sell failed: {e}")
-                    self._open_swing_positions.pop(position.market.coin, None)
-                    return
-
-                # Priority 5: Near-close (≤30s) — exit regardless of P&L
-                if remaining <= 30:
-                    fee_val = (1.0 - bid) * position.market.fee_rate * position.first_shares
-                    pnl = (bid - position.first_entry_price) * position.first_shares - fee_val
-                    status = "closed_win" if pnl > 0 else "closed_loss"
-                    logger.info(
-                        f"[{coin}] SWING NEAR-CLOSE exit @{bid:.3f} pnl=${pnl:+.4f} ({remaining:.0f}s)"
-                    )
-                    if is_dry and position.first_paper_trade_id:
-                        self.tracker.close_paper_trade_early(
-                            position.first_paper_trade_id, bid, pnl, status,
-                            exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
-                        )
-                    else:
-                        try:
-                            sell_order = await asyncio.to_thread(
-                                self.client.create_order,
-                                {"token_id": position.first_token_id,
-                                 "price": bid, "size": position.first_shares, "side": "SELL"},
-                                {"tick_size": position.market.tick_size,
-                                 "neg_risk": position.market.neg_risk},
-                            )
-                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-                        except Exception as e:
-                            logger.error(f"[{coin}] Swing near-close sell failed: {e}")
-                    self._open_swing_positions.pop(position.market.coin, None)
-                    return
-
-            else:
-                # ─── Phase 2: Both legs held ───
-                # Dead leg detection: one leg's bid has collapsed → sell it, hold the other.
-                # This converts the dual position into a cleaner single-leg hold-to-resolution.
-                first_bid = first_book.best_bid
-                second_bid = second_book.best_bid
-
-                # Guard prevents re-triggering after leg already sold:
-                # Paper: first_paper_trade_id is set to None after selling
-                # Live:  first_buy_order_id is set to "" after selling
-                first_open = (
-                    (is_dry and position.first_paper_trade_id is not None) or
-                    (not is_dry and bool(position.first_buy_order_id))
+            if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
+                exit_bid = max(bid, 0.01)
+                fee_val = (1.0 - exit_bid) * position.market.fee_rate * position.first_shares
+                pnl = (exit_bid - position.first_entry_price) * position.first_shares - fee_val
+                status = "closed_win" if pnl > 0 else "closed_loss"
+                logger.info(
+                    f"[{coin}] SWING LOSS CUT @{exit_bid:.3f} "
+                    f"(loss={loss_pct:.0%} ≥ {dynamic_loss_cut:.0%}, {remaining:.0f}s) "
+                    f"pnl=${pnl:+.4f}"
                 )
-                second_open = (
-                    (is_dry and position.second_paper_trade_id is not None) or
-                    (not is_dry and bool(position.second_buy_order_id))
+                if is_dry and position.first_paper_trade_id:
+                    self.tracker.close_paper_trade_early(
+                        position.first_paper_trade_id, exit_bid, pnl, status,
+                        exit_reason="loss_cut", time_remaining_s=remaining, bid_at_exit=exit_bid,
+                    )
+                else:
+                    try:
+                        sell_order = await asyncio.to_thread(
+                            self.client.create_order,
+                            {"token_id": position.first_token_id,
+                             "price": max(0.01, exit_bid - 0.02),
+                             "size": position.first_shares, "side": "SELL"},
+                            {"tick_size": position.market.tick_size,
+                             "neg_risk": position.market.neg_risk},
+                        )
+                        await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                    except Exception as e:
+                        logger.error(f"[{coin}] Swing loss cut sell failed: {e}")
+                self._open_swing_positions.pop(position.market.coin, None)
+                return
+
+            # Priority 3: Any net-positive exit after fees → sell first leg
+            fee_buy = (1.0 - position.first_entry_price) * position.market.fee_rate
+            fee_sell = (1.0 - bid) * position.market.fee_rate
+            net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
+            if net_pnl > 0:
+                pnl = net_pnl
+                logger.info(
+                    f"[{coin}] SWING NET-POSITIVE EXIT @{bid:.3f} pnl=${pnl:+.4f}"
                 )
-
-                first_dead = first_bid <= cfg.dead_leg_threshold and first_open
-                second_dead = second_bid <= cfg.dead_leg_threshold and second_open
-
-                if first_dead:
-                    fee_val = (
-                        (1.0 - first_bid) * position.market.fee_rate * position.first_shares
+                if is_dry and position.first_paper_trade_id:
+                    self.tracker.close_paper_trade_early(
+                        position.first_paper_trade_id, bid, pnl,
+                        "closed_win" if pnl > 0 else "closed_loss",
+                        exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
                     )
-                    pnl = (
-                        (first_bid - position.first_entry_price) * position.first_shares - fee_val
-                    )
-                    logger.info(
-                        f"[{coin}] DEAD LEG (first@{first_bid:.3f}) — "
-                        f"selling, holding {position.second_side.upper()} to resolution"
-                    )
-                    if is_dry:
-                        self.tracker.close_paper_trade_early(
-                            position.first_paper_trade_id, first_bid, pnl, "closed_loss",
-                            exit_reason="dead_leg", time_remaining_s=remaining, bid_at_exit=first_bid,
+                else:
+                    try:
+                        sell_order = await asyncio.to_thread(
+                            self.client.create_order,
+                            {"token_id": position.first_token_id,
+                             "price": bid, "size": position.first_shares, "side": "SELL"},
+                            {"tick_size": position.market.tick_size,
+                             "neg_risk": position.market.neg_risk},
                         )
-                        position.first_paper_trade_id = None  # prevent re-trigger
-                    else:
-                        try:
-                            sell_order = await asyncio.to_thread(
-                                self.client.create_order,
-                                {"token_id": position.first_token_id,
-                                 "price": max(0.01, first_bid),
-                                 "size": position.first_shares, "side": "SELL"},
-                                {"tick_size": position.market.tick_size,
-                                 "neg_risk": position.market.neg_risk},
-                            )
-                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-                        except Exception as e:
-                            logger.error(f"[{coin}] Dead leg (first) sell failed: {e}")
-                        position.first_buy_order_id = ""  # prevent re-trigger
+                        await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                    except Exception as e:
+                        logger.error(f"[{coin}] Swing target sell failed: {e}")
+                self._open_swing_positions.pop(position.market.coin, None)
+                return
 
-                elif second_dead:
-                    fee_val = (
-                        (1.0 - second_bid) * position.market.fee_rate
-                        * (position.second_shares or 0.0)
+            # Priority 4: Near-close (≤30s) — exit regardless of P&L
+            if remaining <= 30:
+                fee_val = (1.0 - bid) * position.market.fee_rate * position.first_shares
+                pnl = (bid - position.first_entry_price) * position.first_shares - fee_val
+                status = "closed_win" if pnl > 0 else "closed_loss"
+                logger.info(
+                    f"[{coin}] SWING NEAR-CLOSE exit @{bid:.3f} pnl=${pnl:+.4f} ({remaining:.0f}s)"
+                )
+                if is_dry and position.first_paper_trade_id:
+                    self.tracker.close_paper_trade_early(
+                        position.first_paper_trade_id, bid, pnl, status,
+                        exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
                     )
-                    pnl = (
-                        (second_bid - position.second_entry_price)
-                        * (position.second_shares or 0.0) - fee_val
-                    )
-                    logger.info(
-                        f"[{coin}] DEAD LEG (second@{second_bid:.3f}) — "
-                        f"selling, holding {position.first_side.upper()} to resolution"
-                    )
-                    if is_dry:
-                        self.tracker.close_paper_trade_early(
-                            position.second_paper_trade_id, second_bid, pnl, "closed_loss",
-                            exit_reason="dead_leg", time_remaining_s=remaining, bid_at_exit=second_bid,
+                else:
+                    try:
+                        sell_order = await asyncio.to_thread(
+                            self.client.create_order,
+                            {"token_id": position.first_token_id,
+                             "price": bid, "size": position.first_shares, "side": "SELL"},
+                            {"tick_size": position.market.tick_size,
+                             "neg_risk": position.market.neg_risk},
                         )
-                        position.second_paper_trade_id = None  # prevent re-trigger
-                    else:
-                        try:
-                            sell_order = await asyncio.to_thread(
-                                self.client.create_order,
-                                {"token_id": position.second_token_id,
-                                 "price": max(0.01, second_bid),
-                                 "size": position.second_shares, "side": "SELL"},
-                                {"tick_size": position.market.tick_size,
-                                 "neg_risk": position.market.neg_risk},
-                            )
-                            await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-                        except Exception as e:
-                            logger.error(f"[{coin}] Dead leg (second) sell failed: {e}")
-                        position.second_buy_order_id = ""  # prevent re-trigger
-
-                # Both legs healthy (or one just sold) — hold to resolution
+                        await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                    except Exception as e:
+                        logger.error(f"[{coin}] Swing near-close sell failed: {e}")
+                self._open_swing_positions.pop(position.market.coin, None)
+                return
 
     # -----------------------------------------------------------------------
     # Paper position profit monitor (dry-run only)

@@ -56,17 +56,15 @@ lead_lag:
 # If the second leg never dips, sell the first leg at exit price for a small gain.
 swing_leg:
   enabled: true
-  first_leg_max: 0.33         # Buy first leg when ask <= this (tightened from 0.40 — sim showed 0.30-0.33 blocks 82% of losses)
-  second_leg_max: 0.45        # Buy second leg when it also dips to <= this
-  first_leg_exit: 0.55        # Sell first leg at bid >= this if no second leg comes (raised from 0.52 — improve win size)
+  first_leg_max: 0.33         # Buy when ask <= this (tightened from 0.40 — sim showed 0.30-0.33 blocks 82% of losses)
+  first_leg_exit: 0.55        # Sell when bid bounces to >= this (raised from 0.52 — improve win size)
   max_velocity_30s: 0.12      # Skip if coin trending too hard (tightened from 0.20 — chop regime kills swing)
   min_time_remaining_s: 140   # Need time to wait for second leg to dip (raised from 120)
   min_book_depth_usd: 5.0
   order_size_usd: 3.0
-  loss_cut_pct: 0.25          # Exit first leg if loss exceeds this %
-  high_confidence_bid: 0.82   # Hold to resolution if first leg bid exceeds this
+  loss_cut_pct: 0.25          # Exit if loss exceeds this %
+  high_confidence_bid: 0.82   # Hold to resolution if bid exceeds this
   time_pressure_s: 90.0       # Loss threshold scales down linearly below this seconds remaining
-  dead_leg_threshold: 0.05    # In dual position: sell a leg if its bid drops below this (dual → single)
   max_time_remaining_s: 200.0 # Skip entries if >200s remain — wait for direction to establish
   first_leg_min: 0.25         # Skip if first leg ask already below this (raised from 0.20 — 0.20-0.24 zone is bid-evaporation)
   max_vel_divergence: 0.03    # Reject if vel60s strongly opposes vel30s direction

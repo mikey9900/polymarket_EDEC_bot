@@ -614,9 +614,9 @@ class StrategyEngine:
 
     def _evaluate_swing_leg(self, coin, market, up_book, down_book, agg) -> TradeSignal | None:
         """
-        Swing dual-leg strategy: buy one cheap side and wait for the other to also dip.
-        Once both legs are bought below 50c each, the combined payout guarantees profit.
-        If the second leg never dips, exit the first leg at the exit price for a small gain.
+        Swing mean-reversion: buy one cheap side in a calm market, sell when it bounces.
+        Entry requires low velocity, directional neutrality, and symmetric books (no one-sided momentum).
+        Exit is handled by the position monitor: profit target, progressive loss cut, or near-close.
         """
         cfg = self.config.swing_leg
         filters: list[FilterResult] = []

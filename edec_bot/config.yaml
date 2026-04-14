@@ -37,16 +37,16 @@ single_leg:
   time_pressure_s: 90.0        # Loss threshold scales down linearly below this seconds remaining
   max_time_remaining_s: 200.0  # Skip entries if >200s remain — wait for first 100s to establish direction
   max_vel_divergence: 0.03     # Reject if vel60s opposes trade direction by >0.03% (counter-trend divergence)
-  entry_min: 0.12              # Skip if ask already below this — market near-resolved, recovery unreachable
+  entry_min: 0.15              # Skip if ask already below this — market near-resolved, recovery unreachable
 
 # Lead-lag: buy the winning side BEFORE Polymarket books fully reprice
 # When a coin moves fast on Binance/Coinbase, Polymarket lags by ~5-30s.
 # We buy the side that *should* win (momentum-following) at the still-cheap price.
 lead_lag:
   enabled: true
-  min_velocity_30s: 0.15      # Coin must move >=0.15% in 30s to trigger
+  min_velocity_30s: 0.12      # Coin must move >=0.12% in 30s to trigger (loosened from 0.15 — window was firing 0 times)
   min_entry: 0.48             # Winning-side ask must be >=0.48 (some repricing has begun)
-  max_entry: 0.60             # Must be <=0.60 (still room to grow toward 0.65-0.70)
+  max_entry: 0.62             # Must be <=0.62 (widened from 0.60 — was missing valid lag entries)
   target_sell: 0.67           # Exit price when books have fully repriced
   min_time_remaining_s: 60    # Need time for repricing to propagate
   min_book_depth_usd: 5.0
@@ -56,19 +56,23 @@ lead_lag:
 # If the second leg never dips, sell the first leg at exit price for a small gain.
 swing_leg:
   enabled: true
-  first_leg_max: 0.40         # Buy first leg when ask <= this
+  first_leg_max: 0.33         # Buy first leg when ask <= this (tightened from 0.40 — sim showed 0.30-0.33 blocks 82% of losses)
   second_leg_max: 0.45        # Buy second leg when it also dips to <= this
-  first_leg_exit: 0.52        # Sell first leg at bid >= this if no second leg comes
-  max_velocity_30s: 0.20      # Skip if coin trending too hard (reversal less likely)
-  min_time_remaining_s: 120   # Need time to wait for second leg to dip
+  first_leg_exit: 0.55        # Sell first leg at bid >= this if no second leg comes (raised from 0.52 — improve win size)
+  max_velocity_30s: 0.12      # Skip if coin trending too hard (tightened from 0.20 — chop regime kills swing)
+  min_time_remaining_s: 140   # Need time to wait for second leg to dip (raised from 120)
   min_book_depth_usd: 5.0
   order_size_usd: 3.0
-  loss_cut_pct: 0.25          # Exit first leg if loss exceeds this % (tightened from 0.40)
+  loss_cut_pct: 0.25          # Exit first leg if loss exceeds this %
   high_confidence_bid: 0.82   # Hold to resolution if first leg bid exceeds this
   time_pressure_s: 90.0       # Loss threshold scales down linearly below this seconds remaining
   dead_leg_threshold: 0.05    # In dual position: sell a leg if its bid drops below this (dual → single)
   max_time_remaining_s: 200.0 # Skip entries if >200s remain — wait for direction to establish
-  first_leg_min: 0.20         # Skip if first leg ask already below this — bids gap through loss_cut at these prices
+  first_leg_min: 0.25         # Skip if first leg ask already below this (raised from 0.20 — 0.20-0.24 zone is bid-evaporation)
+  max_vel_divergence: 0.03    # Reject if vel60s strongly opposes vel30s direction
+  max_depth_ratio: 2.5        # Reject if one side has >2.5x depth of other (second leg won't fill)
+  disabled_coins:             # Coins excluded from swing_leg (BTC has strong momentum, not mean-reversion friendly)
+    - btc
 
 # Execution
 execution:

@@ -645,6 +645,14 @@ class StrategyEngine:
         if not f.passed and not failed_reason:
             failed_reason = f"Too early: {remaining:.0f}s remaining (wait for direction)"
 
+        # Filter 2c: Coin not in disabled list for swing_leg
+        if coin in cfg.disabled_coins:
+            if not failed_reason:
+                failed_reason = f"Swing disabled on {coin.upper()} (momentum-driven, not mean-reversion)"
+            self._log_decision(coin, market, up_book, down_book, agg, remaining,
+                               filters, "SKIP", failed_reason, "swing_leg")
+            return None
+
         # Filter 3: Books available
         books_ok = up_book is not None and down_book is not None
         f = FilterResult("books_available", books_ok,
@@ -708,6 +716,23 @@ class StrategyEngine:
             failed_reason = (f"First leg ask too low: {entry_price:.3f} < floor {cfg.first_leg_min:.2f} "
                              f"(market near-resolved, no recovery possible)")
 
+        # Filter 4c: Directional neutrality — if we buy UP, coin should be moving DOWN (or flat).
+        # If vel_30s aligns with the entry side, we're fading momentum, not catching a mean-reversion dip.
+        # UP entry → vel_30s ≤ 0 (coin fell, UP got cheap — now waiting for bounce)
+        # DOWN entry → vel_30s ≥ 0 (coin rose, DOWN got cheap — now waiting for bounce)
+        if agg is not None and side in ("up", "down"):
+            vel30 = agg.velocity_30s
+            neutral_ok = (vel30 <= 0 if side == "up" else vel30 >= 0)
+            f = FilterResult("directional_neutrality", neutral_ok,
+                             f"vel_30s={vel30:+.3f}% side={side}",
+                             f"vel_30s{'<=0 for UP' if side == 'up' else '>=0 for DOWN'}")
+        else:
+            f = FilterResult("directional_neutrality", True, "n/a", "n/a")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Fading momentum: vel_30s={agg.velocity_30s:+.3f}% "
+                             f"aligns with {side} — not a mean-reversion setup")
+
         # Filter 5: Skip if already an outright arb (dual-leg handles that case)
         combined = up_book.best_ask + down_book.best_ask
         not_already_arb = combined > self.config.dual_leg.max_combined_cost
@@ -729,6 +754,40 @@ class StrategyEngine:
         filters.append(f)
         if not f.passed and not failed_reason:
             failed_reason = f"{coin.upper()} trending too hard: {f.value}"
+
+        # Filter 6b: Velocity divergence — 60s trend must not strongly oppose 30s direction.
+        # If 60s trend opposes 30s, the very-short-term move is against the longer-term trend — bad for swing.
+        if agg is not None and side in ("up", "down"):
+            vel60 = agg.velocity_60s
+            div_ok = (vel60 >= -cfg.max_vel_divergence if side == "up"
+                      else vel60 <= cfg.max_vel_divergence)
+            f = FilterResult("vel_divergence", div_ok,
+                             f"30s={agg.velocity_30s:+.3f}% 60s={vel60:+.3f}%",
+                             f"60s aligned with {side} (max_div={cfg.max_vel_divergence}%)")
+        else:
+            f = FilterResult("vel_divergence", True, "n/a", "n/a")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Vel divergence: 60s={agg.velocity_60s:+.3f}% "
+                             f"opposes {side} direction")
+
+        # Filter 6c: Liquidity symmetry — if one side has >max_depth_ratio× the other's depth,
+        # the second leg is structurally unlikely to dip (market has already decided direction).
+        up_depth = up_book.ask_depth_usd
+        dn_depth = down_book.ask_depth_usd
+        min_depth = min(up_depth, dn_depth)
+        if min_depth > 0:
+            depth_ratio = max(up_depth, dn_depth) / min_depth
+            sym_ok = depth_ratio <= cfg.max_depth_ratio
+        else:
+            depth_ratio = float("inf")
+            sym_ok = False
+        f = FilterResult("liquidity_symmetry", sym_ok,
+                         f"ratio={depth_ratio:.1f}x (up=${up_depth:.1f}, dn=${dn_depth:.1f})",
+                         f"<={cfg.max_depth_ratio}x")
+        filters.append(f)
+        if not f.passed and not failed_reason:
+            failed_reason = (f"Asymmetric books: {depth_ratio:.1f}x ratio — second leg unlikely to fill")
 
         # Filter 7: Liquidity depth
         f = FilterResult("liquidity_depth", entry_depth >= cfg.min_book_depth_usd,

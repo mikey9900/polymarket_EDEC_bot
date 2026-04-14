@@ -39,25 +39,28 @@ class SingleLegConfig:
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
     max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
     max_vel_divergence: float = 0.05     # vel60s must not oppose vel30s direction by more than this
-    entry_min: float = 0.12             # don't enter if ask already below this (market near-resolved)
+    entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
 
 
 @dataclass(frozen=True)
 class SwingLegConfig:
     enabled: bool
-    first_leg_max: float       # Buy first leg when ask <= this (e.g., 0.40)
+    first_leg_max: float       # Buy first leg when ask <= this (e.g., 0.33)
     second_leg_max: float      # Buy second leg when ask <= this (e.g., 0.45)
-    first_leg_exit: float      # Sell first leg at bid >= this if no second leg (e.g., 0.52)
+    first_leg_exit: float      # Sell first leg at bid >= this if no second leg (e.g., 0.55)
     max_velocity_30s: float    # Skip if coin trending too hard (reversal less likely)
     min_time_remaining_s: float
     min_book_depth_usd: float
     order_size_usd: float
-    loss_cut_pct: float = 0.40       # exit first leg if loss exceeds this fraction
+    loss_cut_pct: float = 0.25       # exit first leg if loss exceeds this fraction
     high_confidence_bid: float = 0.82  # hold to resolution if first leg bid exceeds this
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
     dead_leg_threshold: float = 0.05  # sell a leg early if its bid drops below this (dual → single)
     max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
-    first_leg_min: float = 0.20         # don't enter if first leg ask already below this (near-resolved)
+    first_leg_min: float = 0.25         # don't enter if first leg ask already below this (near-resolved)
+    max_vel_divergence: float = 0.03    # reject if vel60s strongly opposes 30s direction
+    max_depth_ratio: float = 2.5        # reject if one book side has >2.5x depth of other (second leg unlikely)
+    disabled_coins: tuple = ()          # coins where swing_leg is disabled (e.g. BTC — too momentum-driven)
 
 
 @dataclass(frozen=True)
@@ -156,7 +159,10 @@ def load_config(config_path: str = "config.yaml") -> Config:
         dual_leg=DualLegConfig(**raw["dual_leg"]),
         single_leg=SingleLegConfig(**raw["single_leg"]),
         lead_lag=LeadLagConfig(**raw["lead_lag"]),
-        swing_leg=SwingLegConfig(**raw["swing_leg"]),
+        swing_leg=SwingLegConfig(**{
+            **raw["swing_leg"],
+            "disabled_coins": tuple(raw["swing_leg"].get("disabled_coins", [])),
+        }),
         execution=ExecutionConfig(**raw["execution"]),
         risk=RiskConfig(**raw["risk"]),
         feeds=FeedsConfig(**raw["feeds"]),

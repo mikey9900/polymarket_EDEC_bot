@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 3.2.22
+> Current version: 3.2.23
 
 ---
 
@@ -31,7 +31,7 @@ This confirms a real directional move. Buy the cheap side; sell when it reprices
 | books_available | Both UP and DOWN books exist | — |
 | coin_velocity | Coin actually moving (30s) | ≥0.08% |
 | entry_threshold | One side cheap, other side expensive | ask ≤0.32, opposite ≥0.62 |
-| entry_floor | Entry ask not already near zero | ≥0.12 |
+| entry_floor | Entry ask not already near zero | ≥0.15 |
 | vel_divergence | 60s trend not opposing trade direction | 60s within 0.03% of 30s direction |
 | liquidity_depth | Enough USD at entry price | ≥$5 |
 | feed_count | At least 2 price feeds live | ≥2 |
@@ -54,28 +54,33 @@ opposite_min:       0.62    order_size_usd:     $3
 loss_cut_pct:       0.25    time_pressure_s:    90s
 high_confidence:    0.82    min_velocity_30s:   0.08%
 max_time_remain:    200s    max_vel_divergence: 0.03%
-entry_min:          0.12    min_time_remain:    90s
+entry_min:          0.15    min_time_remain:    90s
 ```
 
 ---
 
 ## Strategy 2: Swing Leg
 
-**Idea:** Buy one side when it's cheap (≤0.40), wait for the OTHER side to also dip cheap.
+**Idea:** Buy one side when it's cheap (≤0.33), wait for the OTHER side to also dip cheap.
 If both sides fill below $0.50 combined, it's guaranteed profit regardless of outcome.
 If second leg never comes, sell first leg at a small profit (or loss-cut if it moves against us).
+BTC is excluded — its momentum profile is hostile to mean-reversion swing setups.
 
 **Entry filters (ALL must pass):**
 | Filter | Rule | Current value |
 |---|---|---|
 | market_active | Market accepting orders | — |
-| time_remaining | Enough runway to wait for second leg | >120s |
+| time_remaining | Enough runway to wait for second leg | >140s |
 | entry_window | Not too early | ≤200s |
+| coin_allowed | Coin not in disabled list | BTC excluded |
 | books_available | Both books exist | — |
-| first_leg_price | At least one side cheap enough | ask ≤0.40 |
-| first_leg_floor | First leg not already near zero | ≥0.20 |
+| first_leg_price | At least one side cheap enough | ask ≤0.33 |
+| first_leg_floor | First leg not already near zero | ≥0.25 |
+| directional_neutrality | Velocity opposes entry side (mean-reversion setup, not momentum fade) | UP: vel_30s ≤0, DOWN: vel_30s ≥0 |
 | not_already_arb | Combined cost still above arb threshold | combined >0.99 |
-| coin_velocity | Coin NOT trending too hard (want mean reversion) | 30s ≤0.20% |
+| coin_velocity | Coin NOT trending too hard (want mean reversion) | 30s ≤0.12% |
+| vel_divergence | 60s trend not strongly opposing 30s | 60s within 0.03% of 30s direction |
+| liquidity_symmetry | Books not heavily one-sided (second leg needs to fill) | ratio ≤2.5× |
 | liquidity_depth | Enough USD at entry price | ≥$5 |
 | feed_count | At least 2 feeds live | ≥2 |
 | risk_limits | Risk limits OK | — |
@@ -92,12 +97,14 @@ If second leg never comes, sell first leg at a small profit (or loss-cut if it m
 
 **Key parameters:**
 ```
-first_leg_max:      0.40    second_leg_max:     0.45
-first_leg_exit:     0.52    first_leg_min:      0.20
+first_leg_max:      0.33    second_leg_max:     0.45
+first_leg_exit:     0.55    first_leg_min:      0.25
 order_size_usd:     $3      loss_cut_pct:       0.25
 high_confidence:    0.82    time_pressure_s:    90s
 max_time_remain:    200s    dead_leg_threshold: 0.05
-max_velocity_30s:   0.20    min_time_remain:    120s
+max_velocity_30s:   0.12    min_time_remain:    140s
+max_vel_divergence: 0.03    max_depth_ratio:    2.5×
+disabled_coins:     [btc]
 ```
 
 ---
@@ -113,8 +120,8 @@ Buy the WINNING side while it's still cheap; sell when Polymarket catches up.
 | market_active | — | — |
 | time_remaining | >60s | >60s |
 | books_available | — | — |
-| coin_velocity | Fast move required | ≥0.15% in 30s |
-| entry_range | Winning side partially repriced but still cheap | 0.48–0.60 ask |
+| coin_velocity | Fast move required | ≥0.12% in 30s |
+| entry_range | Winning side partially repriced but still cheap | 0.48–0.62 ask |
 | liquidity_depth | ≥$5 | ≥$5 |
 | feed_count | ≥2 feeds | ≥2 |
 | risk_limits | — | — |
@@ -123,8 +130,8 @@ Buy the WINNING side while it's still cheap; sell when Polymarket catches up.
 
 **Key parameters:**
 ```
-min_velocity_30s:   0.15%   min_entry:          0.48
-max_entry:          0.60    target_sell:        0.67
+min_velocity_30s:   0.12%   min_entry:          0.48
+max_entry:          0.62    target_sell:        0.67
 order_size_usd:     $3      min_time_remain:    60s
 ```
 
@@ -196,6 +203,18 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.18 | Added `entry_floor` 0.15 (single), 0.20 (swing) | Sub-floor bids collapse instantly, unrecoverable |
 | 3.2.22 | `entry_min` 0.15 → 0.12 | Paper run — testing if 0.12-0.15 range is viable |
 | 3.2.22 | `order_size_usd` $2 → $3 | Larger size makes P&L signal cleaner in analysis |
+| 3.2.23 | `entry_min` 0.12 → 0.15 | 0.12 test confirmed: -97% on BTC, unrecoverable |
+| 3.2.23 | `swing first_leg_max` 0.40 → 0.33 | Sim showed 0.30–0.33 blocks 82% of swing losses |
+| 3.2.23 | `swing first_leg_min` 0.20 → 0.25 | 0.20–0.24 range is bid-evaporation zone |
+| 3.2.23 | `swing max_velocity_30s` 0.20% → 0.12% | Chop regime kills swing; need lower threshold |
+| 3.2.23 | `swing min_time_remaining` 120s → 140s | More runway for second leg to fill |
+| 3.2.23 | `swing first_leg_exit` 0.52 → 0.55 | Avg win was only $0.43; raise target to improve win size |
+| 3.2.23 | Added `directional_neutrality` filter to swing | Buying UP while coin moves UP = fading momentum, not swing |
+| 3.2.23 | Added `vel_divergence` filter to swing | 60s opposing 30s = trending market, wrong regime for swing |
+| 3.2.23 | Added `liquidity_symmetry` filter to swing | Asymmetric books → second leg structurally won't fill |
+| 3.2.23 | Added `disabled_coins: [btc]` to swing | BTC sim confirmed worst performer; momentum profile hostile |
+| 3.2.23 | `lead_lag min_velocity_30s` 0.15% → 0.12% | Zero fires in 25 trades; loosen to get signal |
+| 3.2.23 | `lead_lag max_entry` 0.60 → 0.62 | Widen lag window slightly |
 
 ---
 

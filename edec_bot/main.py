@@ -4,6 +4,7 @@ from version import __version__  # noqa: F401
 
 import asyncio
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +121,9 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
 
 
 async def main():
-    config = load_config("config.yaml")
+    config_path = os.getenv("EDEC_CONFIG_PATH", "config.yaml")
+    config = load_config(config_path)
+    logger.info(f"Using config: {config_path}")
     setup_logging(config)
 
     logger.info("=" * 60)

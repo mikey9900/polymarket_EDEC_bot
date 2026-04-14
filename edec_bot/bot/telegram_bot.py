@@ -469,7 +469,7 @@ class TelegramBot:
             # Row 2: Mode toggle
             [
                 InlineKeyboardButton(
-                    "🧪 Dry Run ✅" if is_dry else "🧪 Dry Run",
+                    "📋 Dry Run ✅" if is_dry else "📋 Dry Run",
                     callback_data="noop",
                 ),
                 InlineKeyboardButton(

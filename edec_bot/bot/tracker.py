@@ -590,14 +590,16 @@ class DecisionTracker:
             (reset_at,),
         ).fetchone()
         total_trades, wins, losses, open_pos, realized_pnl, avg_buy, sells, avg_sell = row
+        wins = wins or 0
+        losses = losses or 0
         return {
             "total_capital": total,
             "current_balance": balance,
             "total_pnl": balance - total,
             "realized_pnl": realized_pnl or 0.0,
             "total_trades": total_trades or 0,
-            "wins": wins or 0,
-            "losses": losses or 0,
+            "wins": wins,
+            "losses": losses,
             "open_positions": open_pos or 0,
             "win_rate": (wins / max(wins + losses, 1)) * 100,
             "buys": total_trades or 0,

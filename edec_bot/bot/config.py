@@ -26,19 +26,16 @@ class SingleLegConfig:
     enabled: bool
     entry_max: float
     opposite_min: float
-    target_sell: float
     min_time_remaining_s: float
     min_book_depth_usd: float
     hold_if_unfilled: bool
     order_size_usd: float
     min_velocity_30s: float = 0.08   # coin must be actually moving (not a thin-book artifact)
-    profit_take_pct: float = 0.50    # close paper position when profit >= 50%
-    min_profit_near_close: float = 0.20  # near expiry, take any >=20% profit
-    loss_cut_pct: float = 0.40       # exit if loss exceeds this fraction of entry cost
+    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction of entry cost
     high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this (nearly resolved)
     time_pressure_s: float = 90.0    # loss threshold shrinks linearly below this seconds remaining
-    max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
-    max_vel_divergence: float = 0.05     # vel60s must not oppose vel30s direction by more than this
+    max_time_remaining_s: float = 200.0  # don't enter if more than this many seconds remain (too early)
+    max_vel_divergence: float = 0.03     # vel60s must not oppose vel30s direction by more than this
     entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
 
 

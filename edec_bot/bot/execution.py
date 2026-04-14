@@ -186,7 +186,11 @@ class ExecutionEngine:
     # -----------------------------------------------------------------------
 
     async def execute_single_leg(self, signal: TradeSignal, decision_id: int = 0) -> TradeResult:
-        """Buy one side with a GTC limit, immediately place a GTC sell at target price."""
+        """Buy one side with a GTC limit.
+
+        single_leg: holds to high_confidence_bid (0.82) or resolution — no fixed sell order placed.
+        lead_lag:   immediately places a GTC sell at target_sell_price (Polymarket repricing play).
+        """
         result = TradeResult(signal=signal, strategy_type="single_leg",
                              side=signal.side, status="open")
 
@@ -224,6 +228,7 @@ class ExecutionEngine:
                     entry_price=signal.entry_price,
                     target_sell=signal.target_sell_price,
                     shares=shares,
+                    strategy_type=signal.strategy_type,
                 ))
             else:
                 logger.info(f"[DRY RUN] [{coin}] Skipped — insufficient paper capital (need ${cost:.2f})")
@@ -257,29 +262,36 @@ class ExecutionEngine:
             result.buy_order_id = buy_order_id
             result.total_cost = signal.entry_price * shares
 
-            logger.info(
-                f"[{coin}] SINGLE-LEG BUY placed: {shares} {signal.side.upper()} "
-                f"@ {signal.entry_price:.3f} (order {buy_order_id})"
-            )
+            sell_order_id = None
 
-            # Place GTC sell at target price
-            sell_order = await asyncio.to_thread(
-                self.client.create_order,
-                {"token_id": token_id, "price": signal.target_sell_price,
-                 "size": shares, "side": "SELL"},
-                {"tick_size": market.tick_size, "neg_risk": market.neg_risk},
-            )
-            sell_resp = await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
-            sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
-
-            if sell_order_id:
-                result.sell_order_id = sell_order_id
+            if signal.strategy_type == "lead_lag":
+                # Lead-lag: place GTC sell now — exit when Polymarket fully reprices
                 logger.info(
-                    f"[{coin}] SINGLE-LEG SELL placed: {shares} {signal.side.upper()} "
-                    f"@ {signal.target_sell_price:.3f} (order {sell_order_id})"
+                    f"[{coin}] LEAD-LAG BUY placed: {shares} {signal.side.upper()} "
+                    f"@ {signal.entry_price:.3f} (order {buy_order_id})"
                 )
+                sell_order = await asyncio.to_thread(
+                    self.client.create_order,
+                    {"token_id": token_id, "price": signal.target_sell_price,
+                     "size": shares, "side": "SELL"},
+                    {"tick_size": market.tick_size, "neg_risk": market.neg_risk},
+                )
+                sell_resp = await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                if sell_order_id:
+                    result.sell_order_id = sell_order_id
+                    logger.info(
+                        f"[{coin}] LEAD-LAG SELL placed: {shares} {signal.side.upper()} "
+                        f"@ {signal.target_sell_price:.3f} (order {sell_order_id})"
+                    )
+                else:
+                    logger.warning(f"[{coin}] Sell order placement failed: {sell_resp}. Will hold to resolution.")
             else:
-                logger.warning(f"[{coin}] Sell order placement failed: {sell_resp}. Will hold to resolution.")
+                # Single-leg momentum: no fixed sell — monitor holds to high_confidence_bid (0.82)
+                logger.info(
+                    f"[{coin}] SINGLE-LEG BUY placed: {shares} {signal.side.upper()} "
+                    f"@ {signal.entry_price:.3f} (order {buy_order_id}) — holding to 0.82+ or loss_cut"
+                )
 
             # Track this open position
             position = SingleLegPosition(
@@ -290,7 +302,8 @@ class ExecutionEngine:
                 target_price=signal.target_sell_price,
                 shares=shares,
                 buy_order_id=buy_order_id,
-                sell_order_id=sell_order_id or None,
+                sell_order_id=sell_order_id,
+                strategy_type=signal.strategy_type,
             )
             self._open_positions[buy_order_id] = position
 
@@ -687,14 +700,16 @@ class ExecutionEngine:
 
     async def _monitor_paper_single_leg(self, trade_id: int, market,
                                          token_id: str, entry_price: float,
-                                         target_sell: float, shares: float):
+                                         target_sell: float, shares: float,
+                                         strategy_type: str = "single_leg"):
         """Watch a paper trade's live bid — progressive loss cutting and smart profit taking.
 
         Priority order each cycle:
         1. High-confidence bid (≥ high_confidence_bid) → hold to resolution for $1
-        2. Any net-positive exit (fee-adjusted) → sell now, don't wait for a big move
+        2. [lead_lag only] Any net-positive exit (fee-adjusted) → sell now
+           single_leg skips this: momentum entry should ride to resolution, not exit early
         3. Progressive loss cut → exit based on dynamic time-based threshold
-        4. Near-close fallback → exit if any profit at ≤30s remaining
+        4. Near-close fallback → exit at ≤30s remaining
         """
         cfg = self.config.single_leg
         coin = market.coin.upper()
@@ -724,13 +739,13 @@ class ExecutionEngine:
                     )
                     return  # outcome tracker closes this at $1 (or $0 if surprised)
 
-                # ── 2. Any net-positive exit — sell as soon as we're ahead after fees ──
-                # Don't wait for the fixed target_sell price. A small confirmed profit
-                # is always better than risking a loss by holding longer.
+                # ── 2. Net-positive exit (lead_lag only) ──
+                # single_leg rides to resolution (high_confidence or loss_cut) — don't exit early.
+                # lead_lag exits as soon as Polymarket has repriced past our entry (books caught up).
                 fee_buy = (1.0 - entry_price) * market.fee_rate
                 fee_sell = (1.0 - bid) * market.fee_rate
                 net_pnl = (bid - entry_price - fee_buy - fee_sell) * shares
-                if net_pnl > 0:
+                if strategy_type == "lead_lag" and net_pnl > 0:
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, net_pnl, "closed_win",
                         exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,

@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 3.2.24
+> Current version: 3.2.26
 
 ---
 
@@ -38,23 +38,25 @@ This confirms a real directional move. Buy the cheap side; sell when it reprices
 | risk_limits | Daily loss / position / hourly limits OK | — |
 
 **Exit logic (priority order, checked every ~1s):**
-1. **High-confidence** — bid ≥0.82 → cancel sell order, hold to $1 resolution
-2. **Net profit** — any fee-adjusted positive P&L → sell now
-3. **Progressive loss cut** — loss ≥ `loss_cut_pct × (remaining/time_pressure_s)` → exit
+1. **High-confidence** — bid ≥0.82 → hold to $1 resolution (momentum confirmed, don't sell)
+2. **Progressive loss cut** — loss ≥ `loss_cut_pct × (remaining/time_pressure_s)` → exit
    - At 90s+: full 25% loss cut
    - At 45s: 12.5% loss cut (tighter because less time to recover)
    - At 0s: 0% (forces exit)
-4. **Near-close** — ≤30s remaining → exit regardless of P&L
-5. **Resolution** — market ends → outcome tracker settles at $0 or $1
+3. **Near-close** — ≤30s remaining → exit regardless of P&L
+4. **Resolution** — market ends → outcome tracker settles at $0 or $1
+
+Note: No fixed target sell price. If the momentum signal is correct the binary resolves
+toward $1. Exiting at 0.52 leaves 50¢/share on the table; we ride to resolution instead.
 
 **Key parameters:**
 ```
-entry_max:          0.32    target_sell:        0.52
+entry_max:          0.32    high_confidence:    0.82
 opposite_min:       0.62    order_size_usd:     $3
 loss_cut_pct:       0.25    time_pressure_s:    90s
-high_confidence:    0.82    min_velocity_30s:   0.08%
-max_time_remain:    200s    max_vel_divergence: 0.03%
-entry_min:          0.15    min_time_remain:    90s
+min_velocity_30s:   0.08%   max_vel_divergence: 0.03%
+max_time_remain:    200s    min_time_remain:    90s
+entry_min:          0.15
 ```
 
 ---
@@ -210,6 +212,9 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.23 | `lead_lag max_entry` 0.60 → 0.62 | Widen lag window slightly |
 | 3.2.24 | Removed second-leg arb phase from swing_leg | Phase 2 never fired in 50+ paper trades; all wins were mean-reversion bounces |
 | 3.2.24 | Removed `second_leg_max` and `dead_leg_threshold` params | Dead code with Phase 2 removed |
+| 3.2.26 | Removed fixed `target_sell` exit from single_leg | Momentum entry + 0.52 exit was internally contradictory — if signal is correct binary resolves to $1, not 0.52 |
+| 3.2.26 | single_leg now holds to `high_confidence_bid` (0.82) → resolution | Ride the momentum to full payoff instead of exiting at ~40% of EV |
+| 3.2.26 | Removed `target_sell: 0.52` param from single_leg config | No longer used; replaced by `high_confidence_bid` as the exit trigger |
 
 ---
 

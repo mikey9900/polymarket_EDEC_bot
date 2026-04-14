@@ -108,6 +108,7 @@ class SingleLegPosition:
     shares: float
     buy_order_id: str
     sell_order_id: Optional[str] = None
+    strategy_type: str = "single_leg"   # "single_leg" or "lead_lag" — controls exit behaviour
     opened_at: datetime = field(default_factory=datetime.utcnow)
 
 

@@ -429,11 +429,11 @@ class StrategyEngine:
 
         all_passed = all(f.passed for f in filters)
 
-        # Profit estimate
-        target_sell = cfg.target_sell
+        # EV estimate: momentum entry holds to high_confidence_bid (0.82), then resolves at $1
+        notional_target = cfg.high_confidence_bid
         fee_buy = (1.0 - entry_price) * market.fee_rate
-        fee_sell = (1.0 - target_sell) * market.fee_rate
-        expected_profit = (target_sell - entry_price) - fee_buy - fee_sell
+        fee_sell = (1.0 - notional_target) * market.fee_rate
+        expected_profit = (notional_target - entry_price) - fee_buy - fee_sell
 
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = f"Single-leg {side.upper() if side else '?'} @{entry_price:.3f}" if all_passed else failed_reason
@@ -449,7 +449,7 @@ class StrategyEngine:
             strategy_type="single_leg",
             side=side,
             entry_price=entry_price,
-            target_sell_price=target_sell,
+            target_sell_price=notional_target,
             fee_total=fee_buy + fee_sell,
             expected_profit=expected_profit,
             time_remaining_s=remaining,
@@ -460,7 +460,7 @@ class StrategyEngine:
         logger.info(
             f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
             f"SINGLE-LEG SIGNAL [{coin.upper()}]: BUY {side.upper()}@{entry_price:.3f} → "
-            f"SELL@{target_sell:.3f} | Est profit: ${expected_profit:.4f}"
+            f"HOLD@{notional_target:.2f} | Est profit: ${expected_profit:.4f}"
         )
         return signal
 

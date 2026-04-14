@@ -121,7 +121,7 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
 
 
 async def main():
-    config_path = os.getenv("EDEC_CONFIG_PATH", "config.yaml")
+    config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
     config = load_config(config_path)
     logger.info(f"Using config: {config_path}")
     setup_logging(config)
@@ -152,6 +152,13 @@ async def main():
     )
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
+
+    default_mode = os.getenv("EDEC_DEFAULT_MODE", "single")
+    if default_mode:
+        if strategy.set_mode(default_mode):
+            logger.info(f"Default strategy mode from env: {default_mode}")
+        else:
+            logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
 
     # Initialize CLOB client
     clob_client = None

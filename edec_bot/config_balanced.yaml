@@ -1,0 +1,108 @@
+# Balanced preset tuned from 2026-04-14 recent-100 sample:
+# prioritize tail-loss control over trade frequency.
+coins:
+- btc
+- eth
+- sol
+- xrp
+- bnb
+- doge
+- hype
+
+dual_leg:
+  enabled: true
+  price_threshold: 0.45
+  max_combined_cost: 0.99
+  min_edge_after_fees: 0.05
+  min_time_remaining_s: 60
+  max_velocity_30s: 0.12
+  max_velocity_60s: 0.2
+  min_book_depth_usd: 15.0
+
+# Disabled in this preset: recent sample showed sustained negative expectancy
+# from low-price single-leg entries with frequent deep loss_cut outcomes.
+single_leg:
+  enabled: false
+  entry_max: 0.29
+  opposite_min: 0.64
+  min_time_remaining_s: 110
+  min_book_depth_usd: 20.0
+  hold_if_unfilled: true
+  order_size_usd: 1.5
+  min_velocity_30s: 0.1
+  loss_cut_pct: 0.18
+  loss_cut_max_factor: 1.5
+  high_confidence_bid: 0.85
+  time_pressure_s: 75.0
+  max_time_remaining_s: 170.0
+  max_vel_divergence: 0.02
+  entry_min: 0.28
+
+# Keep lead-lag active as the only directional strategy in this preset.
+lead_lag:
+  enabled: true
+  min_velocity_30s: 0.16
+  min_entry: 0.5
+  max_entry: 0.6
+  target_sell: 0.67
+  min_time_remaining_s: 70
+  min_book_depth_usd: 12.0
+  order_size_usd: 2.0
+
+# Disabled in this preset: swing leg produced repeated loss_cut clusters.
+swing_leg:
+  enabled: false
+  first_leg_max: 0.3
+  first_leg_exit: 0.55
+  max_velocity_30s: 0.08
+  min_time_remaining_s: 150
+  min_book_depth_usd: 15.0
+  order_size_usd: 1.25
+  loss_cut_pct: 0.2
+  loss_cut_max_factor: 1.5
+  high_confidence_bid: 0.85
+  time_pressure_s: 75.0
+  max_time_remaining_s: 170.0
+  first_leg_min: 0.28
+  max_vel_divergence: 0.02
+  max_depth_ratio: 1.6
+  disabled_coins:
+  - btc
+  - doge
+
+execution:
+  order_size_usd: 2.5
+  abort_timeout_s: 2.0
+  max_slippage: 0.015
+  dry_run: true
+
+risk:
+  max_daily_loss_usd: 10.0
+  max_open_positions: 2
+  max_trades_per_hour: 10
+  session_profit_target: 0
+
+feeds:
+  binance_symbols:
+    btc: btcusdt
+    eth: ethusdt
+    sol: solusdt
+    xrp: xrpusdt
+    bnb: bnbusdt
+    doge: dogeusdt
+    hype: null
+  coinbase_product: BTC-USD
+  coingecko_poll_interval_s: 30
+  price_staleness_max_s: 4
+
+polymarket:
+  clob_base_url: https://clob.polymarket.com
+  gamma_base_url: https://gamma-api.polymarket.com
+  chain_id: 137
+  tick_size: '0.01'
+  neg_risk: false
+
+logging:
+  level: INFO
+  file: bot.log
+  trade_log: data/trades.jsonl

@@ -1,6 +1,7 @@
 """Telegram interface — commands, alerts, status updates, and data export."""
 
 import asyncio
+import json
 import logging
 import os
 from datetime import datetime
@@ -222,8 +223,10 @@ class TelegramBot:
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
-    _DEEP_CLEAN_WINDOW = int(os.getenv("EDEC_TG_DEEP_CLEAN_WINDOW", "2000"))
-    _STARTUP_DEEP_CLEAN = os.getenv("EDEC_TG_STARTUP_DEEP_CLEAN", "true").lower() not in ("0", "false", "no")
+    _DEEP_CLEAN_WINDOW = int(os.getenv("EDEC_TG_DEEP_CLEAN_WINDOW", "15000"))
+    _DEEP_CLEAN_BATCH = int(os.getenv("EDEC_TG_DEEP_CLEAN_BATCH", "200"))
+    _DEEP_CLEAN_PAUSE_S = float(os.getenv("EDEC_TG_DEEP_CLEAN_PAUSE_S", "0.15"))
+    _STARTUP_DEEP_CLEAN = os.getenv("EDEC_TG_STARTUP_DEEP_CLEAN", "false").lower() not in ("0", "false", "no")
 
     def _save_msg_id(self) -> None:
         try:
@@ -359,11 +362,35 @@ class TelegramBot:
             )
         await self._refresh_dashboard()
 
-    async def _deep_clean(self):
-        """Sweep recent message IDs before the dashboard and delete bot clutter.
-        Catches old messages whose IDs were never tracked (e.g. from previous runs)."""
+    async def _delete_ids_batched(self, to_delete: list[int]) -> dict:
+        stats = {"attempted": len(to_delete), "deleted": 0, "undeletable": 0}
+        if not to_delete:
+            return stats
+        batch = max(1, self._DEEP_CLEAN_BATCH)
+        for i in range(0, len(to_delete), batch):
+            chunk = to_delete[i:i + batch]
+            results = await asyncio.gather(
+                *[
+                    self._app.bot.delete_message(chat_id=self.chat_id, message_id=mid)
+                    for mid in chunk
+                ],
+                return_exceptions=True,
+            )
+            for r in results:
+                if not isinstance(r, Exception):
+                    stats["deleted"] += 1
+                else:
+                    msg = str(r).lower()
+                    if "can't be deleted" in msg or "can not be deleted" in msg:
+                        stats["undeletable"] += 1
+            await asyncio.sleep(max(0.0, self._DEEP_CLEAN_PAUSE_S))
+        return stats
+
+    async def _deep_clean(self) -> dict:
+        """Sweep tracked + recent message IDs before the dashboard and delete bot clutter."""
+        stats = {"attempted": 0, "deleted": 0, "undeletable": 0}
         if not self._app or not self.chat_id:
-            return
+            return stats
 
         # Collect tracked IDs + range sweep around current dashboard
         ids: set[int] = set(self._ephemeral_msgs)
@@ -375,16 +402,42 @@ class TelegramBot:
             hi = self._dashboard_message_id  # don't delete the dashboard itself
             ids.update(range(lo, hi))
 
-        if ids:
-            results = await asyncio.gather(
-                *[self._app.bot.delete_message(chat_id=self.chat_id, message_id=mid)
-                  for mid in ids],
-                return_exceptions=True,
-            )
-            deleted = sum(1 for r in results if not isinstance(r, Exception))
-            logger.info(f"Deep clean: deleted {deleted}/{len(ids)} messages")
+        to_delete = sorted(ids, reverse=True)
+        stats = await self._delete_ids_batched(to_delete)
 
+        logger.info(
+            "Deep clean: deleted %s/%s (undeletable=%s)",
+            stats["deleted"],
+            stats["attempted"],
+            stats["undeletable"],
+        )
         await self._refresh_dashboard()
+        return stats
+
+    async def _clear_chat_history(self) -> dict:
+        """Attempt to clear as much prior chat history as allowed, then restore dashboard."""
+        stats = {"attempted": 0, "deleted": 0, "undeletable": 0}
+        if not self._app or not self.chat_id:
+            return stats
+
+        ids: set[int] = set(self._ephemeral_msgs)
+        ids.update(self._load_persisted_ephemerals())
+        self._ephemeral_msgs.clear()
+        self._clear_ephemeral_log()
+
+        if self._dashboard_message_id and self._dashboard_message_id > 1:
+            ids.update(range(1, self._dashboard_message_id))
+
+        to_delete = sorted(ids, reverse=True)
+        stats = await self._delete_ids_batched(to_delete)
+        logger.info(
+            "Clear chat: deleted %s/%s (undeletable=%s)",
+            stats["deleted"],
+            stats["attempted"],
+            stats["undeletable"],
+        )
+        await self._repost_dashboard()
+        return stats
 
     async def _refresh_dashboard(self):
         """Edit the existing dashboard message with fresh data.
@@ -510,6 +563,32 @@ class TelegramBot:
         )
         await self.send_alert(msg)
 
+    def _build_archive_health_text(self) -> str:
+        if not self.archive_latest_fn:
+            return "Archive health unavailable (archive not configured)."
+        paths = self.archive_latest_fn() or {}
+        index_path = paths.get("latest_index")
+        if not index_path or not os.path.exists(index_path):
+            return "No archive index found yet. Run /latest_export or wait for the daily archive run."
+        try:
+            with open(index_path, "r", encoding="utf-8") as f:
+                idx = json.load(f)
+        except Exception as e:
+            return f"Archive index unreadable: {e}"
+
+        rows = idx.get("row_counts", {})
+        dropbox_ok = "yes" if idx.get("dropbox_files") else "no"
+        exported = idx.get("exported_at_utc", "unknown")
+        label = idx.get("label", "EDEC-BOT")
+        return (
+            f"*Archive Health ({label})*\n"
+            f"Last export (UTC): `{exported}`\n"
+            f"Dropbox synced: `{dropbox_ok}`\n"
+            f"Rows 24h P/L/D: `{rows.get('paper_trades_24h', 0)}/"
+            f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}`\n"
+            f"Recent trades rows: `{rows.get('recent_trades_rows', 0)}`"
+        )
+
     def _track(self, msg) -> None:
         """Track a sent message for cleanup."""
         if msg:
@@ -550,7 +629,6 @@ class TelegramBot:
                 InlineKeyboardButton("📈 Status", callback_data="status"),
             ],
             [
-                InlineKeyboardButton("📋 Trades", callback_data="trades"),
                 InlineKeyboardButton("🔍 Filters", callback_data="filters"),
             ],
             # Row 4: Capital & Budget
@@ -563,10 +641,12 @@ class TelegramBot:
                 InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
                 InlineKeyboardButton("🗑 Reset Stats", callback_data="reset_stats"),
             ],
+            [
+                InlineKeyboardButton("🧹 Clear Chat", callback_data="clear_chat"),
+            ],
             # Row 6: Export
             [
-                InlineKeyboardButton("📤 Export Today", callback_data="export_today"),
-                InlineKeyboardButton("📤 Export All", callback_data="export_all"),
+                InlineKeyboardButton("🧭 Archive Health", callback_data="archive_health"),
             ],
             # Row 7: Quick AI export
             [
@@ -695,8 +775,21 @@ class TelegramBot:
             return
 
         if data == "refresh":
-            await query.answer("🧹 Cleaning up...", show_alert=False)
-            await self._deep_clean()
+            await query.answer("Refreshing dashboard...", show_alert=False)
+            await self._refresh_dashboard()
+            return
+
+        if data == "clear_chat":
+            await query.answer("Clearing chat history...", show_alert=True)
+            stats = await self._clear_chat_history()
+            note = (
+                f"Chat clear done. Deleted {stats.get('deleted', 0)}/"
+                f"{stats.get('attempted', 0)} messages."
+            )
+            if stats.get("undeletable", 0):
+                note += " Some old messages may be undeletable due to Telegram limits."
+            self._track(await self._app.bot.send_message(chat_id=self.chat_id, text=note))
+            await self._repost_dashboard()
             return
 
         if data == "reset_stats":
@@ -809,6 +902,10 @@ class TelegramBot:
             except Exception as e:
                 self._track(await query.message.reply_text(f"Latest archive error: {e}"))
             await self._repost_dashboard()
+
+        elif data == "archive_health":
+            text = self._build_archive_health_text()
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
             if not stats:
@@ -1199,4 +1296,11 @@ class TelegramBot:
             await update.message.delete()
         except Exception:
             pass
-        await self._deep_clean()
+        stats = await self._deep_clean()
+        note = (
+            "Cleanup done. Deleted "
+            f"{stats.get('deleted', 0)}/{stats.get('attempted', 0)} messages."
+        )
+        if stats.get("undeletable", 0):
+            note += " Some older Telegram messages may be undeletable due to Telegram limits."
+        self._track(await self._app.bot.send_message(chat_id=self.chat_id, text=note))

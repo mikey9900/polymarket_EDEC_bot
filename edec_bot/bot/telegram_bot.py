@@ -36,7 +36,8 @@ class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
-                 archive_fn=None, archive_latest_fn=None, archive_health_fn=None):
+                 archive_fn=None, archive_latest_fn=None, archive_health_fn=None,
+                 repo_sync_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -49,6 +50,7 @@ class TelegramBot:
         self.archive_fn = archive_fn
         self.archive_latest_fn = archive_latest_fn
         self.archive_health_fn = archive_health_fn
+        self.repo_sync_fn = repo_sync_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -79,6 +81,7 @@ class TelegramBot:
             ("stats", self._cmd_stats),
             ("export", self._cmd_export),
             ("latest_export", self._cmd_latest_export),
+            ("sync_repo_latest", self._cmd_sync_repo_latest),
             ("config", self._cmd_config),
             ("set", self._cmd_set),
             ("filters", self._cmd_filters),
@@ -228,6 +231,7 @@ class TelegramBot:
     _DEEP_CLEAN_BATCH = int(os.getenv("EDEC_TG_DEEP_CLEAN_BATCH", "200"))
     _DEEP_CLEAN_PAUSE_S = float(os.getenv("EDEC_TG_DEEP_CLEAN_PAUSE_S", "0.15"))
     _STARTUP_DEEP_CLEAN = os.getenv("EDEC_TG_STARTUP_DEEP_CLEAN", "false").lower() not in ("0", "false", "no")
+    _AUTO_EPHEMERAL_CLEAN = os.getenv("EDEC_TG_AUTO_EPHEMERAL_CLEAN", "false").lower() not in ("0", "false", "no")
 
     def _save_msg_id(self) -> None:
         try:
@@ -269,15 +273,6 @@ class TelegramBot:
         if not self._app or not self.chat_id:
             return
 
-        # Delete all messages from the previous run immediately on startup
-        old_msgs = self._load_persisted_ephemerals()
-        self._clear_ephemeral_log()
-        for msg_id in old_msgs:
-            try:
-                await self._app.bot.delete_message(chat_id=self.chat_id, message_id=msg_id)
-            except Exception as e:
-                logger.debug(f"Could not delete old message {msg_id}: {e}")
-
         # Delete leftover dashboard from previous run
         old_id = self._load_msg_id()
         if old_id:
@@ -296,7 +291,8 @@ class TelegramBot:
             self._dashboard_message_id = msg.message_id
             self._save_msg_id()
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
-            self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+            if self._AUTO_EPHEMERAL_CLEAN:
+                self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info("Live dashboard started")
             if self._STARTUP_DEEP_CLEAN:
                 await self._deep_clean()
@@ -627,64 +623,49 @@ class TelegramBot:
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         """Main control keyboard."""
-        status = self.risk_manager.get_status()
         is_running = self.strategy_engine.is_active if self.strategy_engine else False
         order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
         is_dry = self.config.execution.dry_run
         _, capital_balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
 
         return InlineKeyboardMarkup([
-            # Row 1: Run control
             [
                 InlineKeyboardButton(
-                    "⏸ Pause" if is_running else "▶️ Resume",
+                    "Pause" if is_running else "Resume",
                     callback_data="stop" if is_running else "start",
                 ),
-                InlineKeyboardButton("🛑 Kill Switch", callback_data="kill"),
+                InlineKeyboardButton("Kill Switch", callback_data="kill"),
             ],
-            # Row 2: Mode toggle
             [
                 InlineKeyboardButton(
-                    "📋 Dry Run ✅" if is_dry else "📋 Dry Run",
+                    "Dry Run ON" if is_dry else "Dry Run",
                     callback_data="noop",
                 ),
-                InlineKeyboardButton(
-                    "🌊 Wet Run 🔒",
-                    callback_data="wet_disabled",
-                ),
-            ],
-            # Row 3: Data
-            [
-                InlineKeyboardButton("📊 Stats", callback_data="stats"),
-                InlineKeyboardButton("📈 Status", callback_data="status"),
+                InlineKeyboardButton("Wet Run Locked", callback_data="wet_disabled"),
             ],
             [
-                InlineKeyboardButton("🔍 Filters", callback_data="filters"),
-            ],
-            # Row 4: Capital & Budget
-            [
-                InlineKeyboardButton(f"🏦 Capital: ${capital_balance:.2f}", callback_data="capital"),
-                InlineKeyboardButton(f"💰 Budget: ${order_size:.0f}", callback_data="budget"),
-            ],
-            # Row 5: Refresh / Reset
-            [
-                InlineKeyboardButton("🔄 Refresh", callback_data="refresh"),
-                InlineKeyboardButton("🗑 Reset Stats", callback_data="reset_stats"),
+                InlineKeyboardButton("Stats", callback_data="stats"),
+                InlineKeyboardButton("Status", callback_data="status"),
             ],
             [
-                InlineKeyboardButton("🧹 Clear Chat", callback_data="clear_chat"),
+                InlineKeyboardButton("Filters", callback_data="filters"),
+                InlineKeyboardButton("Commands", callback_data="help_panel"),
             ],
-            # Row 6: Export
             [
-                InlineKeyboardButton("🧭 Archive Health", callback_data="archive_health"),
+                InlineKeyboardButton(f"Capital: ${capital_balance:.2f}", callback_data="capital"),
+                InlineKeyboardButton(f"Budget: ${order_size:.0f}", callback_data="budget"),
             ],
-            # Row 7: Quick AI export
             [
-                InlineKeyboardButton("📊 Last 500 Trades (CSV)", callback_data="export_recent"),
+                InlineKeyboardButton("Refresh", callback_data="refresh"),
+                InlineKeyboardButton("Reset Stats", callback_data="reset_stats"),
             ],
-            # Row 8: Latest archive files
             [
-                InlineKeyboardButton("🗄 Latest Archive", callback_data="export_latest"),
+                InlineKeyboardButton("Clear Chat", callback_data="clear_chat"),
+                InlineKeyboardButton("Archive Health", callback_data="archive_health"),
+            ],
+            [
+                InlineKeyboardButton("Last 500 Trades", callback_data="export_recent"),
+                InlineKeyboardButton("Latest Archive", callback_data="export_latest"),
             ],
         ])
 
@@ -935,6 +916,9 @@ class TelegramBot:
 
         elif data == "archive_health":
             text = await self._build_archive_health_text()
+            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
+        elif data == "help_panel":
+            text = self._commands_text()
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
@@ -1223,6 +1207,34 @@ class TelegramBot:
         except Exception as e:
             self._track(await update.message.reply_text(f"Latest archive error: {e}"))
 
+    async def _cmd_sync_repo_latest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        if not self.repo_sync_fn:
+            self._track(await update.message.reply_text("Repo sync is not configured."))
+            return
+        wait_msg = await update.message.reply_text("Syncing latest Dropbox files to local repo folder...")
+        self._track(wait_msg)
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, self.repo_sync_fn)
+            ok = bool(result.get("ok"))
+            downloads = result.get("downloads", {})
+            lines = [
+                "*Repo Sync*" if ok else "*Repo Sync Failed*",
+                f"Output dir: `{result.get('output_dir', 'unknown')}`",
+                f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
+            ]
+            for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
+                d = downloads.get(key, {})
+                lines.append(
+                    f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
+                )
+            self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+        except Exception as e:
+            self._track(await update.message.reply_text(f"Repo sync error: {e}"))
+
     async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
@@ -1292,11 +1304,8 @@ class TelegramBot:
             )
         self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
-    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self._auth(update):
-            return
-        self._track_cmd(update)
-        msg = (
+    def _commands_text(self) -> str:
+        return (
             "*EDEC Bot Commands*\n"
             "/status — Per-coin book prices + bot state\n"
             "/mode — Show current strategy mode\n"
@@ -1310,11 +1319,18 @@ class TelegramBot:
             "/export — Send Excel file\n"
             "/export today — Today only\n"
             "/latest_export — Send latest archive files\n"
+            "/sync_repo_latest — Sync Dropbox latest files into local repo folder\n"
             "/config — Show all settings\n"
             "/filters — Filter pass/fail rates\n"
             "/clean — Delete old chat messages\n"
             "/help — This message"
         )
+
+    async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        msg = self._commands_text()
         self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
 
     async def _cmd_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

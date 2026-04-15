@@ -603,11 +603,12 @@ def sync_dropbox_latest_to_local(
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    remote = {
-        "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
-        "latest_trades_csv_gz": f"{root}/latest/{label}_latest_trades.csv.gz",
-        "latest_index_json": f"{root}/latest/{label}_latest_index.json",
+    latest_filenames = {
+        "latest_last24h_xlsx": f"{label}_latest_last24h.xlsx",
+        "latest_trades_csv_gz": f"{label}_latest_trades.csv.gz",
+        "latest_index_json": f"{label}_latest_index.json",
     }
+    remote_candidates = _dropbox_latest_remote_candidates(root, latest_filenames)
     local = {
         "latest_last24h_xlsx": str(out / f"{label}_latest_last24h.xlsx"),
         "latest_trades_csv_gz": str(out / f"{label}_latest_trades.csv.gz"),
@@ -615,13 +616,37 @@ def sync_dropbox_latest_to_local(
     }
 
     downloads: dict[str, Any] = {}
-    for key, remote_path in remote.items():
-        downloads[key] = _dropbox_download_file(
-            dropbox_path=remote_path,
-            token=dropbox_token,
-            local_path=local[key],
-        )
-        downloads[key]["remote_path"] = remote_path
+    for key, candidates in remote_candidates.items():
+        attempts: list[dict[str, Any]] = []
+        chosen: dict[str, Any] | None = None
+        for remote_path in candidates:
+            res = _dropbox_download_file(
+                dropbox_path=remote_path,
+                token=dropbox_token,
+                local_path=local[key],
+            )
+            attempts.append(
+                {
+                    "remote_path": remote_path,
+                    "ok": bool(res.get("ok")),
+                    "status": res.get("status"),
+                    "error": res.get("error"),
+                }
+            )
+            if res.get("ok"):
+                chosen = res
+                chosen["remote_path"] = remote_path
+                break
+        if chosen is None:
+            chosen = {
+                "ok": False,
+                "status": attempts[-1].get("status") if attempts else None,
+                "error": attempts[-1].get("error") if attempts else "No Dropbox path candidates built",
+                "path": local[key],
+                "remote_path": candidates[0] if candidates else None,
+            }
+        chosen["attempts"] = attempts
+        downloads[key] = chosen
 
     expanded_csv = None
     if expand_trades_csv and downloads["latest_trades_csv_gz"].get("ok"):
@@ -648,11 +673,46 @@ def _safe_label(label: str) -> str:
 def _normalize_dropbox_root(dropbox_root: str | None) -> str:
     """Normalize Dropbox root so generated file paths are always valid."""
     root = (dropbox_root or "/EDEC-BOT").strip()
+    if len(root) >= 2 and root[0] == root[-1] and root[0] in ("'", '"'):
+        root = root[1:-1].strip()
+    root = root.replace("\\", "/")
     if not root:
+        root = "/EDEC-BOT"
+    if "/home/" in root and "dropbox.com" in root:
+        marker = "/home/"
+        root = root[root.index(marker) + len(marker):]
+    if root.startswith("https://") or root.startswith("http://"):
         root = "/EDEC-BOT"
     if not root.startswith("/"):
         root = f"/{root}"
+    while "//" in root:
+        root = root.replace("//", "/")
     return root.rstrip("/")
+
+
+def _dropbox_latest_remote_candidates(
+    root: str,
+    latest_filenames: dict[str, str],
+) -> dict[str, list[str]]:
+    base = root.rstrip("/")
+    candidate_dirs: list[str] = []
+    if base.endswith("/latest"):
+        candidate_dirs.extend([base, base[: -len("/latest")] or "/"])
+    else:
+        candidate_dirs.extend([f"{base}/latest", base])
+
+    seen_dirs: set[str] = set()
+    unique_dirs: list[str] = []
+    for d in candidate_dirs:
+        d = d.rstrip("/") or "/"
+        if d not in seen_dirs:
+            seen_dirs.add(d)
+            unique_dirs.append(d)
+
+    result: dict[str, list[str]] = {}
+    for key, filename in latest_filenames.items():
+        result[key] = [f"{d}/{filename}" if d != "/" else f"/{filename}" for d in unique_dirs]
+    return result
 
 
 def run_daily_archive(

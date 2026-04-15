@@ -997,9 +997,16 @@ class TelegramBot:
                 ]
                 for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
                     d = downloads.get(key, {})
-                    lines.append(
-                        f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
-                    )
+                    status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
+                    if not d.get("ok") and d.get("remote_path"):
+                        status_txt += f"\n  path: `{d.get('remote_path')}`"
+                    err = d.get("error")
+                    if not d.get("ok") and err:
+                        err_compact = " ".join(str(err).split())
+                        if len(err_compact) > 180:
+                            err_compact = f"{err_compact[:177]}..."
+                        status_txt += f"\n  error: `{err_compact}`"
+                    lines.append(status_txt)
                 self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Repo sync error: {e}"))

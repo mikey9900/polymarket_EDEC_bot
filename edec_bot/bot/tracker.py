@@ -175,7 +175,9 @@ CREATE TABLE IF NOT EXISTS runs (
     default_order_size_usd REAL,
     initial_paper_capital REAL
 );
+"""
 
+INDEX_SCHEMA = """
 CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
@@ -195,6 +197,7 @@ class DecisionTracker:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
+        self._ensure_indexes()
         self.conn.commit()
 
     def _migrate(self):
@@ -270,8 +273,6 @@ class DecisionTracker:
                 default_order_size_usd REAL,
                 initial_paper_capital REAL
             );
-            CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
-            CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
         """)
         # Add coin/strategy_type columns to decisions if missing (added in v1.0.5)
         existing = {row[1] for row in self.conn.execute("PRAGMA table_info(decisions)")}
@@ -369,6 +370,10 @@ class DecisionTracker:
             if col not in pt_cols:
                 self.conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_type}")
         self.conn.commit()
+
+    def _ensure_indexes(self) -> None:
+        """Create indexes only after migrations have added any newly indexed columns."""
+        self.conn.executescript(INDEX_SCHEMA)
 
     def set_runtime_context(self, context: dict[str, object]) -> None:
         """Store current bot/runtime metadata for subsequent decision/trade logs."""

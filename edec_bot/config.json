@@ -1,9 +1,9 @@
 {
   "name": "EDEC Polymarket Bot",
-<<<<<<< codex/fix-bugs-in-main-branch-hxli5q
-  "version": "3.4.13",
-=======
-  "version": "3.4.12",
+
+  "version": "3.4.14",
+
+
 >>>>>>> main
   "slug": "edec_bot",
   "description": "Polymarket 5-min up/down trading bot — dual-leg and single-leg strategies",

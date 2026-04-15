@@ -631,41 +631,41 @@ class TelegramBot:
         return InlineKeyboardMarkup([
             [
                 InlineKeyboardButton(
-                    "Pause" if is_running else "Resume",
+                    "\u23F8 Pause" if is_running else "\u25B6 Resume",
                     callback_data="stop" if is_running else "start",
                 ),
-                InlineKeyboardButton("Kill Switch", callback_data="kill"),
+                InlineKeyboardButton("\U0001F6D1 Kill Switch", callback_data="kill"),
             ],
             [
                 InlineKeyboardButton(
-                    "Dry Run ON" if is_dry else "Dry Run",
+                    "\U0001F4CB Dry Run \u2705" if is_dry else "\U0001F4CB Dry Run",
                     callback_data="noop",
                 ),
-                InlineKeyboardButton("Wet Run Locked", callback_data="wet_disabled"),
+                InlineKeyboardButton("\U0001F30A Wet Run \U0001F512", callback_data="wet_disabled"),
             ],
             [
-                InlineKeyboardButton("Stats", callback_data="stats"),
-                InlineKeyboardButton("Status", callback_data="status"),
+                InlineKeyboardButton("\U0001F4CA Stats", callback_data="stats"),
+                InlineKeyboardButton("\U0001F4C8 Status", callback_data="status"),
             ],
             [
-                InlineKeyboardButton("Filters", callback_data="filters"),
-                InlineKeyboardButton("Commands", callback_data="help_panel"),
+                InlineKeyboardButton("\U0001F50D Filters", callback_data="filters"),
+                InlineKeyboardButton("\u2139\uFE0F Commands", callback_data="help_panel"),
             ],
             [
-                InlineKeyboardButton(f"Capital: ${capital_balance:.2f}", callback_data="capital"),
-                InlineKeyboardButton(f"Budget: ${order_size:.0f}", callback_data="budget"),
+                InlineKeyboardButton(f"\U0001F3E6 Capital: ${capital_balance:.2f}", callback_data="capital"),
+                InlineKeyboardButton(f"\U0001F4B0 Budget: ${order_size:.0f}", callback_data="budget"),
             ],
             [
-                InlineKeyboardButton("Refresh", callback_data="refresh"),
-                InlineKeyboardButton("Reset Stats", callback_data="reset_stats"),
+                InlineKeyboardButton("\U0001F504 Refresh", callback_data="refresh"),
+                InlineKeyboardButton("\U0001F5D1 Reset Stats", callback_data="reset_stats"),
             ],
             [
-                InlineKeyboardButton("Clear Chat", callback_data="clear_chat"),
-                InlineKeyboardButton("Archive Health", callback_data="archive_health"),
+                InlineKeyboardButton("\U0001F9F9 Clear Chat", callback_data="clear_chat"),
+                InlineKeyboardButton("\U0001F9ED Archive Health", callback_data="archive_health"),
             ],
             [
-                InlineKeyboardButton("Last 500 Trades", callback_data="export_recent"),
-                InlineKeyboardButton("Latest Archive", callback_data="export_latest"),
+                InlineKeyboardButton("\U0001F4CA Last 500 Trades", callback_data="export_recent"),
+                InlineKeyboardButton("\U0001F5C4 Latest Archive", callback_data="export_latest"),
             ],
         ])
 
@@ -919,7 +919,7 @@ class TelegramBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
         elif data == "help_panel":
             text = self._commands_text()
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
+            await query.edit_message_text(text, reply_markup=_back_kb)
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
             if not stats:
@@ -1306,24 +1306,24 @@ class TelegramBot:
 
     def _commands_text(self) -> str:
         return (
-            "*EDEC Bot Commands*\n"
-            "/status — Per-coin book prices + bot state\n"
-            "/mode — Show current strategy mode\n"
-            "/mode both|dual|single|off — Switch mode live\n"
-            "/start — Resume trading\n"
-            "/stop — Pause trading\n"
-            "/kill — Emergency stop\n"
-            "/trades — Last 10 trades\n"
-            "/stats — Today's summary\n"
-            "/stats 7d — Last 7 days\n"
-            "/export — Send Excel file\n"
-            "/export today — Today only\n"
-            "/latest_export — Send latest archive files\n"
-            "/sync_repo_latest — Sync Dropbox latest files into local repo folder\n"
-            "/config — Show all settings\n"
-            "/filters — Filter pass/fail rates\n"
-            "/clean — Delete old chat messages\n"
-            "/help — This message"
+            "EDEC Bot Commands\n"
+            "/status - Per-coin book prices + bot state\n"
+            "/mode - Show current strategy mode\n"
+            "/mode both|dual|single|off - Switch mode live\n"
+            "/start - Resume trading\n"
+            "/stop - Pause trading\n"
+            "/kill - Emergency stop\n"
+            "/trades - Last 10 trades\n"
+            "/stats - Today's summary\n"
+            "/stats 7d - Last 7 days\n"
+            "/export - Send Excel file\n"
+            "/export today - Today only\n"
+            "/latest_export - Send latest archive files\n"
+            "/sync_repo_latest - Sync Dropbox latest files into local repo folder\n"
+            "/config - Show all settings\n"
+            "/filters - Filter pass/fail rates\n"
+            "/clean - Delete old chat messages\n"
+            "/help - This message"
         )
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1331,7 +1331,7 @@ class TelegramBot:
             return
         self._track_cmd(update)
         msg = self._commands_text()
-        self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
+        self._track(await update.message.reply_text(msg))
 
     async def _cmd_clean(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Delete old bot messages by sweeping recent message IDs."""

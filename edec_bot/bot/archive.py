@@ -14,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib import request
+from urllib import error as urlerror
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -368,6 +369,35 @@ def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> None
             raise RuntimeError(f"Dropbox upload failed for {dropbox_path} with status {resp.status}")
 
 
+def _dropbox_get_metadata(dropbox_path: str, token: str) -> dict[str, Any]:
+    req = request.Request(
+        url="https://api.dropboxapi.com/2/files/get_metadata",
+        data=json.dumps({"path": dropbox_path}).encode("utf-8"),
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            return {"exists": True, "status": resp.status, "payload": payload}
+    except urlerror.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")
+        except Exception:
+            body = str(e)
+        # Dropbox uses 409 for not_found
+        if e.code == 409:
+            return {"exists": False, "status": e.code, "error": body}
+        return {"exists": False, "status": e.code, "error": body}
+    except Exception as e:
+        return {"exists": False, "status": None, "error": str(e)}
+
+
 def _safe_label(label: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in label).strip("-_") or "EDEC-BOT"
 
@@ -478,6 +508,48 @@ def read_latest_index(output_dir: str = "data/exports", label: str = "EDEC-BOT")
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def archive_health_snapshot(
+    output_dir: str = "data/exports",
+    label: str = "EDEC-BOT",
+    dropbox_token: str | None = None,
+    dropbox_root: str = "/EDEC-BOT",
+) -> dict[str, Any]:
+    label = _safe_label(label)
+    local_paths = latest_archive_paths(output_dir=output_dir, label=label)
+    index = read_latest_index(output_dir=output_dir, label=label)
+
+    health: dict[str, Any] = {
+        "label": label,
+        "checked_at_utc": _utc_now().isoformat(),
+        "index": index,
+        "local": {
+            "latest_excel_exists": Path(local_paths["latest_excel"]).exists(),
+            "latest_trades_exists": Path(local_paths["latest_trades"]).exists(),
+            "latest_index_exists": Path(local_paths["latest_index"]).exists(),
+        },
+        "dropbox_live": None,
+    }
+
+    if dropbox_token:
+        root = dropbox_root.rstrip("/")
+        latest_remote = {
+            "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
+            "latest_trades_csv_gz": f"{root}/latest/{label}_latest_trades.csv.gz",
+            "latest_index_json": f"{root}/latest/{label}_latest_index.json",
+        }
+        files: dict[str, Any] = {}
+        for key, p in latest_remote.items():
+            files[key] = {"path": p, **_dropbox_get_metadata(p, dropbox_token)}
+        live_ok = all(bool(v.get("exists")) for v in files.values())
+        health["dropbox_live"] = {
+            "enabled": True,
+            "ok": live_ok,
+            "files": files,
+        }
+
+    return health
 
 
 def _parse_args() -> argparse.Namespace:

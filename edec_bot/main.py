@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from bot.config import load_config
-from bot.archive import latest_archive_paths, run_daily_archive
+from bot.archive import archive_health_snapshot, latest_archive_paths, run_daily_archive
 from bot.export import export_to_excel, export_recent_to_excel
 from bot.market_scanner import MarketScanner
 from bot.price_aggregator import PriceAggregator
@@ -302,6 +302,14 @@ async def main():
     def do_archive_latest() -> dict:
         return latest_archive_paths(output_dir=archive_output_dir, label=archive_label)
 
+    def do_archive_health() -> dict:
+        return archive_health_snapshot(
+            output_dir=archive_output_dir,
+            label=archive_label,
+            dropbox_token=dropbox_token,
+            dropbox_root=str(dropbox_root),
+        )
+
     telegram = TelegramBot(
         config, tracker, risk_manager,
         export_fn=do_export,
@@ -312,6 +320,7 @@ async def main():
         aggregator=aggregator,
         archive_fn=do_archive,
         archive_latest_fn=do_archive_latest,
+        archive_health_fn=do_archive_health,
     )
 
     feed_pairs = []

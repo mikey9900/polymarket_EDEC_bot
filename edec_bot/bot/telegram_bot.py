@@ -36,7 +36,7 @@ class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
-                 archive_fn=None, archive_latest_fn=None):
+                 archive_fn=None, archive_latest_fn=None, archive_health_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -48,6 +48,7 @@ class TelegramBot:
         self.aggregator = aggregator
         self.archive_fn = archive_fn
         self.archive_latest_fn = archive_latest_fn
+        self.archive_health_fn = archive_health_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -563,27 +564,56 @@ class TelegramBot:
         )
         await self.send_alert(msg)
 
-    def _build_archive_health_text(self) -> str:
-        if not self.archive_latest_fn:
-            return "Archive health unavailable (archive not configured)."
-        paths = self.archive_latest_fn() or {}
-        index_path = paths.get("latest_index")
-        if not index_path or not os.path.exists(index_path):
-            return "No archive index found yet. Run /latest_export or wait for the daily archive run."
-        try:
-            with open(index_path, "r", encoding="utf-8") as f:
-                idx = json.load(f)
-        except Exception as e:
-            return f"Archive index unreadable: {e}"
+    async def _build_archive_health_text(self) -> str:
+        if self.archive_health_fn:
+            loop = asyncio.get_event_loop()
+            try:
+                health = await loop.run_in_executor(None, self.archive_health_fn)
+            except Exception as e:
+                return f"Archive health check failed: {e}"
+        else:
+            if not self.archive_latest_fn:
+                return "Archive health unavailable (archive not configured)."
+            paths = self.archive_latest_fn() or {}
+            index_path = paths.get("latest_index")
+            if not index_path or not os.path.exists(index_path):
+                return "No archive index found yet. Run /latest_export or wait for the daily archive run."
+            try:
+                with open(index_path, "r", encoding="utf-8") as f:
+                    idx = json.load(f)
+            except Exception as e:
+                return f"Archive index unreadable: {e}"
+            health = {
+                "label": idx.get("label", "EDEC-BOT"),
+                "checked_at_utc": "unknown",
+                "index": idx,
+                "dropbox_live": None,
+            }
 
+        idx = health.get("index") or {}
         rows = idx.get("row_counts", {})
-        dropbox_ok = "yes" if idx.get("dropbox_files") else "no"
+        label = health.get("label", idx.get("label", "EDEC-BOT"))
         exported = idx.get("exported_at_utc", "unknown")
-        label = idx.get("label", "EDEC-BOT")
+        checked_at = health.get("checked_at_utc", "unknown")
+
+        live = health.get("dropbox_live")
+        if live is None:
+            dropbox_line = "Dropbox live check: `disabled`"
+        else:
+            ok = bool(live.get("ok"))
+            files = live.get("files", {})
+            missing = [k for k, v in files.items() if not v.get("exists")]
+            if ok:
+                dropbox_line = "Dropbox live check: `ok`"
+            else:
+                miss = ", ".join(missing) if missing else "unknown"
+                dropbox_line = f"Dropbox live check: `missing` ({miss})"
+
         return (
             f"*Archive Health ({label})*\n"
             f"Last export (UTC): `{exported}`\n"
-            f"Dropbox synced: `{dropbox_ok}`\n"
+            f"Live check (UTC): `{checked_at}`\n"
+            f"{dropbox_line}\n"
             f"Rows 24h P/L/D: `{rows.get('paper_trades_24h', 0)}/"
             f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}`\n"
             f"Recent trades rows: `{rows.get('recent_trades_rows', 0)}`"
@@ -904,7 +934,7 @@ class TelegramBot:
             await self._repost_dashboard()
 
         elif data == "archive_health":
-            text = self._build_archive_health_text()
+            text = await self._build_archive_health_text()
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
         elif data == "filters":
             stats = self.tracker.get_filter_stats()

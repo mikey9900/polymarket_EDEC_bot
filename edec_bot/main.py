@@ -153,7 +153,7 @@ async def main():
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
-    default_mode = os.getenv("EDEC_DEFAULT_MODE", "single")
+    default_mode = os.getenv("EDEC_DEFAULT_MODE")
     if default_mode:
         if strategy.set_mode(default_mode):
             logger.info(f"Default strategy mode from env: {default_mode}")

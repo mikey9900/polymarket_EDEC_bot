@@ -398,6 +398,85 @@ def _dropbox_get_metadata(dropbox_path: str, token: str) -> dict[str, Any]:
         return {"exists": False, "status": None, "error": str(e)}
 
 
+def _dropbox_download_file(dropbox_path: str, token: str, local_path: str) -> dict[str, Any]:
+    req = request.Request(
+        url="https://content.dropboxapi.com/2/files/download",
+        data=b"",
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
+        },
+    )
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            p = Path(local_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(body)
+            return {"ok": True, "status": resp.status, "bytes": len(body), "path": str(p)}
+    except urlerror.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")
+        except Exception:
+            body = str(e)
+        return {"ok": False, "status": e.code, "error": body, "path": str(local_path)}
+    except Exception as e:
+        return {"ok": False, "status": None, "error": str(e), "path": str(local_path)}
+
+
+def sync_dropbox_latest_to_local(
+    dropbox_token: str,
+    dropbox_root: str = "/EDEC-BOT",
+    output_dir: str = "data/dropbox_sync",
+    label: str = "EDEC-BOT",
+    expand_trades_csv: bool = True,
+) -> dict[str, Any]:
+    """Pull stable latest archive files from Dropbox into a local folder."""
+    label = _safe_label(label)
+    root = dropbox_root.rstrip("/")
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    remote = {
+        "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
+        "latest_trades_csv_gz": f"{root}/latest/{label}_latest_trades.csv.gz",
+        "latest_index_json": f"{root}/latest/{label}_latest_index.json",
+    }
+    local = {
+        "latest_last24h_xlsx": str(out / f"{label}_latest_last24h.xlsx"),
+        "latest_trades_csv_gz": str(out / f"{label}_latest_trades.csv.gz"),
+        "latest_index_json": str(out / f"{label}_latest_index.json"),
+    }
+
+    downloads: dict[str, Any] = {}
+    for key, remote_path in remote.items():
+        downloads[key] = _dropbox_download_file(
+            dropbox_path=remote_path,
+            token=dropbox_token,
+            local_path=local[key],
+        )
+        downloads[key]["remote_path"] = remote_path
+
+    expanded_csv = None
+    if expand_trades_csv and downloads["latest_trades_csv_gz"].get("ok"):
+        gz_path = Path(local["latest_trades_csv_gz"])
+        csv_path = gz_path.with_suffix("")  # .csv.gz -> .csv
+        with gzip.open(gz_path, "rb") as f_in, open(csv_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        expanded_csv = str(csv_path)
+
+    ok = all(bool(v.get("ok")) for v in downloads.values())
+    return {
+        "ok": ok,
+        "checked_at_utc": _utc_now().isoformat(),
+        "output_dir": str(out),
+        "downloads": downloads,
+        "expanded_trades_csv": expanded_csv,
+    }
+
+
 def _safe_label(label: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in label).strip("-_") or "EDEC-BOT"
 

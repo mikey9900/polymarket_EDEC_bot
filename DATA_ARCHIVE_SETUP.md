@@ -66,3 +66,24 @@ No separate HA `shell_command` is required when using add-on options.
    - latest 24h Excel
    - latest compressed trades file
    - latest index JSON
+
+## Repo-Local Dropbox Sync (No Drag/Drop)
+
+Use this when you want local workspace access to the latest files for AI analysis.
+
+From `edec_bot/`:
+
+```powershell
+python sync_dropbox_to_repo_latest.py --output-dir data/dropbox_sync
+```
+
+This pulls from Dropbox `/EDEC-BOT/latest/` into:
+
+1. `data/dropbox_sync/EDEC-BOT_latest_last24h.xlsx`
+2. `data/dropbox_sync/EDEC-BOT_latest_trades.csv.gz`
+3. `data/dropbox_sync/EDEC-BOT_latest_trades.csv` (decompressed helper)
+4. `data/dropbox_sync/EDEC-BOT_latest_index.json`
+
+Required env or arg:
+
+1. `EDEC_DROPBOX_TOKEN` (or `--dropbox-token`)

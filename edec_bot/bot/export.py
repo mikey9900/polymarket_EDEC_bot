@@ -370,8 +370,10 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             pnl_pct = round(r[13] / r[8] * 100, 2)
 
         depth_ratio = None
-        if r[21] is not None and r[22] not in (None, 0):
-            depth_ratio = round(r[21] / r[22], 3)
+        up_depth = r[21]
+        down_depth = r[22]
+        if up_depth is not None and down_depth is not None and down_depth != 0:
+            depth_ratio = round(up_depth / down_depth, 3)
 
         side = str(r[4] or "").lower()
         vel30 = r[19]

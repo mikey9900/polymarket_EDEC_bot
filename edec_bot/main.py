@@ -153,12 +153,14 @@ async def main():
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
-    default_mode = os.getenv("EDEC_DEFAULT_MODE")
+    default_mode = (os.getenv("EDEC_DEFAULT_MODE") or "").strip()
     if default_mode:
         if strategy.set_mode(default_mode):
             logger.info(f"Default strategy mode from env: {default_mode}")
         else:
             logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
+    else:
+        logger.info("EDEC_DEFAULT_MODE not set; leaving strategy in default off mode.")
 
     # Initialize CLOB client
     clob_client = None

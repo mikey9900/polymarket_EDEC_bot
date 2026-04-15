@@ -694,6 +694,7 @@ class TelegramBot:
             [
                 InlineKeyboardButton("\U0001F4CA Last 500 Trades", callback_data="export_recent"),
                 InlineKeyboardButton("\U0001F5C4 Latest Archive", callback_data="export_latest"),
+                InlineKeyboardButton("\U0001F4E5 Sync Dropbox", callback_data="sync_repo_latest"),
             ],
         ])
 
@@ -933,12 +934,22 @@ class TelegramBot:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
                 return
-            wait_msg = await query.message.reply_text("⏳ Building Last 500 Trades CSV...")
+            wait_msg = await query.message.reply_text("⏳ Building Last 500 Trades CSV (Dropbox sync first)...")
             self._track(wait_msg)
             try:
                 loop = asyncio.get_event_loop()
-                path = await loop.run_in_executor(None, self.export_recent_fn)
-                import os
+                path = None
+                if self.repo_sync_fn:
+                    try:
+                        sync_result = await loop.run_in_executor(None, self.repo_sync_fn)
+                        synced_csv = sync_result.get("expanded_trades_csv")
+                        if synced_csv and os.path.exists(synced_csv):
+                            path = synced_csv
+                    except Exception:
+                        # Fall back to local DB export if Dropbox sync fails.
+                        path = None
+                if not path:
+                    path = await loop.run_in_executor(None, self.export_recent_fn)
                 with open(path, "rb") as f:
                     self._track(await query.message.reply_document(
                         document=f,
@@ -966,6 +977,33 @@ class TelegramBot:
             self._set_dashboard_view("archive_health")
             text = await self._build_archive_health_text()
             await query.edit_message_text(text, reply_markup=_back_kb)
+        elif data == "sync_repo_latest":
+            self._set_dashboard_view("main")
+            if not self.repo_sync_fn:
+                self._track(await query.message.reply_text("Repo sync is not configured."))
+                await self._repost_dashboard()
+                return
+            wait_msg = await query.message.reply_text("⏳ Syncing latest Dropbox files to local repo folder...")
+            self._track(wait_msg)
+            try:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(None, self.repo_sync_fn)
+                ok = bool(result.get("ok"))
+                downloads = result.get("downloads", {})
+                lines = [
+                    "✅ *Repo Sync Complete*" if ok else "⚠️ *Repo Sync Partial/Failed*",
+                    f"Output dir: `{result.get('output_dir', 'unknown')}`",
+                    f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
+                ]
+                for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
+                    d = downloads.get(key, {})
+                    lines.append(
+                        f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
+                    )
+                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+            except Exception as e:
+                self._track(await query.message.reply_text(f"Repo sync error: {e}"))
+            await self._repost_dashboard()
         elif data == "help_panel":
             self._set_dashboard_view("help_panel")
             text = self._commands_text()

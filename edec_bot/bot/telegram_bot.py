@@ -600,25 +600,25 @@ class TelegramBot:
 
         live = health.get("dropbox_live")
         if live is None:
-            dropbox_line = "Dropbox live check: `disabled`"
+            dropbox_line = "Dropbox live check: disabled"
         else:
             ok = bool(live.get("ok"))
             files = live.get("files", {})
             missing = [k for k, v in files.items() if not v.get("exists")]
             if ok:
-                dropbox_line = "Dropbox live check: `ok`"
+                dropbox_line = "Dropbox live check: ok"
             else:
                 miss = ", ".join(missing) if missing else "unknown"
-                dropbox_line = f"Dropbox live check: `missing` ({miss})"
+                dropbox_line = f"Dropbox live check: missing ({miss})"
 
         return (
-            f"*Archive Health ({label})*\n"
-            f"Last export (UTC): `{exported}`\n"
-            f"Live check (UTC): `{checked_at}`\n"
+            f"Archive Health ({label})\n"
+            f"Last export (UTC): {exported}\n"
+            f"Live check (UTC): {checked_at}\n"
             f"{dropbox_line}\n"
-            f"Rows 24h P/L/D: `{rows.get('paper_trades_24h', 0)}/"
-            f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}`\n"
-            f"Recent trades rows: `{rows.get('recent_trades_rows', 0)}`"
+            f"Rows 24h P/L/D: {rows.get('paper_trades_24h', 0)}/"
+            f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}\n"
+            f"Recent trades rows: {rows.get('recent_trades_rows', 0)}"
         )
 
     def _track(self, msg) -> None:
@@ -943,7 +943,7 @@ class TelegramBot:
         elif data == "archive_health":
             self._set_dashboard_view("archive_health")
             text = await self._build_archive_health_text()
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
+            await query.edit_message_text(text, reply_markup=_back_kb)
         elif data == "help_panel":
             self._set_dashboard_view("help_panel")
             text = self._commands_text()

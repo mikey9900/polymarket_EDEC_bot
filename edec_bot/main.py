@@ -154,14 +154,16 @@ async def main():
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
     default_mode_raw = os.getenv("EDEC_DEFAULT_MODE")
-    default_mode = default_mode_raw.strip() if default_mode_raw else ""
-    if default_mode:
-        if strategy.set_mode(default_mode):
+    if default_mode_raw is None:
+        logger.info("EDEC_DEFAULT_MODE not set; leaving strategy in default off mode.")
+    else:
+        default_mode = default_mode_raw.strip()
+        if not default_mode:
+            logger.info("EDEC_DEFAULT_MODE is blank; leaving strategy in default off mode.")
+        elif strategy.set_mode(default_mode):
             logger.info(f"Default strategy mode from env: {default_mode}")
         else:
             logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
-    else:
-        logger.info("EDEC_DEFAULT_MODE not set; leaving strategy in default off mode.")
 
     # Initialize CLOB client
     clob_client = None

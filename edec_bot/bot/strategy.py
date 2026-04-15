@@ -30,10 +30,15 @@ class StrategyEngine:
         self._mode = "off"
         self._active = False  # scanning on/off
         # Cooldown: track last signal price per (coin, strategy_type).
-        # Only re-signal if price improves by more than MIN_IMPROVEMENT.
+        # Re-signal same window only when price improves by strategy threshold.
         # Key = (coin, strategy_type), value = (market_slug, last_entry_price)
         self._last_signal: dict[tuple, tuple] = {}
-        self.MIN_PRICE_IMPROVEMENT = 0.03  # must be 3c cheaper to re-signal
+        self.MIN_PRICE_IMPROVEMENT = {
+            "dual_leg": 0.03,    # 3c cheaper combined cost
+            "single_leg": 0.02,  # 2c cheaper entry
+            "lead_lag": 0.02,    # 2c cheaper entry
+            "swing_leg": 0.02,   # 2c cheaper entry
+        }
 
     @property
     def mode(self) -> str:
@@ -136,9 +141,7 @@ class StrategyEngine:
         """
         Returns True if this is worth signalling:
         - New market window (different slug) → always signal
-        - Single-leg: ONE trade per window per coin — never re-signal same window.
-          (Prevents stacking 3-4 entries as price drifts lower in a losing direction.)
-        - Dual-leg: same window but price improved by MIN_PRICE_IMPROVEMENT → signal again
+        - Same window: re-signal only if price improved enough for that strategy.
         - Same window, price same or worse → suppress
         """
         key = (coin, strategy)
@@ -148,9 +151,8 @@ class StrategyEngine:
         last_slug, last_price = last
         if last_slug != slug:
             return True                          # new 5-min window — always evaluate
-        if strategy in ("single_leg", "lead_lag", "swing_leg"):
-            return False  # one trade per window per coin
-        return (last_price - price) >= self.MIN_PRICE_IMPROVEMENT  # dual-leg: price got cheaper
+        needed = self.MIN_PRICE_IMPROVEMENT.get(strategy, 0.03)
+        return (last_price - price) >= needed
 
     # -----------------------------------------------------------------------
     # Dual-leg filter chain

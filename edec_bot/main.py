@@ -4,6 +4,7 @@ from version import __version__  # noqa: F401
 
 import asyncio
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +121,9 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
 
 
 async def main():
-    config = load_config("config.yaml")
+    config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
+    config = load_config(config_path)
+    logger.info(f"Using config: {config_path}")
     setup_logging(config)
 
     logger.info("=" * 60)
@@ -150,6 +153,13 @@ async def main():
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
+    default_mode = os.getenv("EDEC_DEFAULT_MODE", "single")
+    if default_mode:
+        if strategy.set_mode(default_mode):
+            logger.info(f"Default strategy mode from env: {default_mode}")
+        else:
+            logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
+
     # Initialize CLOB client
     clob_client = None
     if not config.execution.dry_run and config.private_key and "YOUR" not in config.private_key:
@@ -172,7 +182,7 @@ async def main():
         return export_to_excel("data/decisions.db", "data", today_only)
 
     def do_export_recent() -> str:
-        return export_recent_to_excel("data/decisions.db", "data", limit=100)
+        return export_recent_to_excel("data/decisions.db", "data", limit=50)
 
     telegram = TelegramBot(
         config, tracker, risk_manager,

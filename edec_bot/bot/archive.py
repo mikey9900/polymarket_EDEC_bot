@@ -569,6 +569,7 @@ def _dropbox_download_file(dropbox_path: str, token: str, local_path: str) -> di
         method="POST",
         headers={
             "Authorization": f"Bearer {token}",
+            "Content-Type": "text/plain; charset=utf-8",
             "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
         },
     )

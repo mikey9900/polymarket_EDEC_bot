@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Mode labels for display
 MODE_LABELS = {
-    "both": "🟢 ALL (dual + single + lead-lag + swing)",
+    "both": "🟢 ALL enabled strategies",
     "dual": "🔵 DUAL-LEG only",
     "single": "🟡 SINGLE-LEG only",
     "lead": "🟠 LEAD-LAG only",
@@ -59,6 +59,28 @@ class TelegramBot:
         self._refresh_lock = asyncio.Lock()
         self._ephemeral_msgs: list[int] = []  # message IDs to delete on next cleanup
         self._dashboard_view: str = "main"
+
+    def _enabled_mode_summary(self) -> str:
+        enabled = []
+        if self.config.dual_leg.enabled:
+            enabled.append("dual-leg")
+        if self.config.single_leg.enabled:
+            enabled.append("single-leg")
+        if self.config.lead_lag.enabled:
+            enabled.append("lead-lag")
+        if self.config.swing_leg.enabled:
+            enabled.append("swing-leg")
+        return " + ".join(enabled) if enabled else "none"
+
+    def _mode_help_lines(self) -> list[str]:
+        return [
+            f"`/mode both` - all enabled strategies ({self._enabled_mode_summary()})",
+            "`/mode dual` - dual-leg arb only",
+            "`/mode single` - single-leg repricing only",
+            "`/mode lead` - lead-lag repricing only",
+            "`/mode swing` - swing-leg mean reversion only",
+            "`/mode off` - pause all trading",
+        ]
 
     async def start(self):
         """Initialize and start the Telegram bot."""
@@ -1104,16 +1126,12 @@ class TelegramBot:
 
         args = context.args
         if not args:
-            # Show current mode
             mode = self.strategy_engine.mode
             msg = (
                 f"*Strategy Mode*\n"
                 f"Current: {MODE_LABELS.get(mode, mode)}\n\n"
-                f"Change with:\n"
-                f"`/mode both` — dual-leg + single-leg\n"
-                f"`/mode dual` — dual-leg arb only\n"
-                f"`/mode single` — single-leg momentum only\n"
-                f"`/mode off` — pause all trading"
+                f"Enabled in config: `{self._enabled_mode_summary()}`\n\n"
+                f"Change with:\n" + "\n".join(self._mode_help_lines())
             )
             self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
             return
@@ -1121,10 +1139,10 @@ class TelegramBot:
         new_mode = args[0].lower()
         if self.strategy_engine.set_mode(new_mode):
             label = MODE_LABELS.get(new_mode, new_mode)
-            self._track(await update.message.reply_text(f"✅ Mode set to: {label}"))
+            self._track(await update.message.reply_text(f"Mode set to: {label}"))
         else:
             self._track(await update.message.reply_text(
-                f"❌ Unknown mode `{new_mode}`. Use: both, dual, single, off",
+                f"Unknown mode `{new_mode}`. Use: both, dual, single, lead, swing, off",
                 parse_mode="Markdown",
             ))
 
@@ -1338,7 +1356,7 @@ class TelegramBot:
             "EDEC Bot Commands\n"
             "/status - Per-coin book prices + bot state\n"
             "/mode - Show current strategy mode\n"
-            "/mode both|dual|single|off - Switch mode live\n"
+            "/mode both|dual|single|lead|swing|off - Switch mode live\n"
             "/start - Resume trading\n"
             "/stop - Pause trading\n"
             "/kill - Emergency stop\n"

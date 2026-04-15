@@ -599,7 +599,7 @@ def sync_dropbox_latest_to_local(
 ) -> dict[str, Any]:
     """Pull stable latest archive files from Dropbox into a local folder."""
     label = _safe_label(label)
-    root = dropbox_root.rstrip("/")
+    root = _normalize_dropbox_root(dropbox_root)
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -643,6 +643,16 @@ def sync_dropbox_latest_to_local(
 
 def _safe_label(label: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "-" for ch in label).strip("-_") or "EDEC-BOT"
+
+
+def _normalize_dropbox_root(dropbox_root: str | None) -> str:
+    """Normalize Dropbox root so generated file paths are always valid."""
+    root = (dropbox_root or "/EDEC-BOT").strip()
+    if not root:
+        root = "/EDEC-BOT"
+    if not root.startswith("/"):
+        root = f"/{root}"
+    return root.rstrip("/")
 
 
 def run_daily_archive(
@@ -705,7 +715,7 @@ def run_daily_archive(
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     if dropbox_token:
-        root = dropbox_root.rstrip("/")
+        root = _normalize_dropbox_root(dropbox_root)
         dbx_paths = {
             "daily_last24h_xlsx": f"{root}/daily-reports/{Path(excel_path).name}",
             "daily_recent_trades_csv_gz": f"{root}/daily-archives/{Path(recent_path).name}",
@@ -778,7 +788,7 @@ def archive_health_snapshot(
     }
 
     if dropbox_token:
-        root = dropbox_root.rstrip("/")
+        root = _normalize_dropbox_root(dropbox_root)
         latest_remote = {
             "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
             "latest_trades_csv_gz": f"{root}/latest/{label}_latest_trades.csv.gz",

@@ -372,7 +372,8 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         depth_ratio = None
         up_depth = r[21]
         down_depth = r[22]
-        if up_depth is not None and down_depth is not None and down_depth != 0:
+        # Guard division when either side is missing or the down-book is empty.
+        if up_depth is not None and down_depth not in (None, 0):
             depth_ratio = round(up_depth / down_depth, 3)
 
         side = str(r[4] or "").lower()

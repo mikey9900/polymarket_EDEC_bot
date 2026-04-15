@@ -34,7 +34,8 @@ CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
 class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
-                 scanner=None, strategy_engine=None, executor=None, aggregator=None):
+                 scanner=None, strategy_engine=None, executor=None, aggregator=None,
+                 archive_fn=None, archive_latest_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -44,6 +45,8 @@ class TelegramBot:
         self.strategy_engine = strategy_engine
         self.executor = executor
         self.aggregator = aggregator
+        self.archive_fn = archive_fn
+        self.archive_latest_fn = archive_latest_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -73,6 +76,7 @@ class TelegramBot:
             ("trades", self._cmd_trades),
             ("stats", self._cmd_stats),
             ("export", self._cmd_export),
+            ("latest_export", self._cmd_latest_export),
             ("config", self._cmd_config),
             ("set", self._cmd_set),
             ("filters", self._cmd_filters),
@@ -218,6 +222,8 @@ class TelegramBot:
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
+    _DEEP_CLEAN_WINDOW = int(os.getenv("EDEC_TG_DEEP_CLEAN_WINDOW", "2000"))
+    _STARTUP_DEEP_CLEAN = os.getenv("EDEC_TG_STARTUP_DEEP_CLEAN", "true").lower() not in ("0", "false", "no")
 
     def _save_msg_id(self) -> None:
         try:
@@ -288,6 +294,8 @@ class TelegramBot:
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
             self._cleanup_task = asyncio.create_task(self._cleanup_loop())
             logger.info("Live dashboard started")
+            if self._STARTUP_DEEP_CLEAN:
+                await self._deep_clean()
         except Exception as e:
             logger.error(f"Failed to start dashboard: {e}")
 
@@ -352,7 +360,7 @@ class TelegramBot:
         await self._refresh_dashboard()
 
     async def _deep_clean(self):
-        """Sweep the last 250 message IDs before the dashboard and delete any bot messages.
+        """Sweep recent message IDs before the dashboard and delete bot clutter.
         Catches old messages whose IDs were never tracked (e.g. from previous runs)."""
         if not self._app or not self.chat_id:
             return
@@ -363,7 +371,7 @@ class TelegramBot:
         self._clear_ephemeral_log()
 
         if self._dashboard_message_id:
-            lo = max(1, self._dashboard_message_id - 250)
+            lo = max(1, self._dashboard_message_id - self._DEEP_CLEAN_WINDOW)
             hi = self._dashboard_message_id  # don't delete the dashboard itself
             ids.update(range(lo, hi))
 
@@ -443,6 +451,65 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
+    async def _send_file_path(self, path: str, caption: str):
+        if not self._app or not self.chat_id or not path:
+            return
+        if not os.path.exists(path):
+            return
+        with open(path, "rb") as f:
+            sent = await self._app.bot.send_document(
+                chat_id=self.chat_id,
+                document=f,
+                filename=os.path.basename(path),
+                caption=caption,
+            )
+        self._track(sent)
+
+    async def send_latest_archive_files(self, include_index: bool = True) -> bool:
+        if not self.archive_latest_fn:
+            return False
+        paths = self.archive_latest_fn() or {}
+        sent_any = False
+
+        def _path_set():
+            return (
+                paths.get("latest_excel"),
+                paths.get("latest_trades"),
+                paths.get("latest_index"),
+            )
+
+        excel, trades, index = _path_set()
+        if not ((excel and os.path.exists(excel)) or (trades and os.path.exists(trades))):
+            if self.archive_fn:
+                loop = asyncio.get_event_loop()
+                try:
+                    await loop.run_in_executor(None, self.archive_fn)
+                except Exception:
+                    pass
+                paths = self.archive_latest_fn() or {}
+                excel, trades, index = _path_set()
+
+        if excel and os.path.exists(excel):
+            await self._send_file_path(excel, "EDEC latest 24h Excel export")
+            sent_any = True
+        if trades and os.path.exists(trades):
+            await self._send_file_path(trades, "EDEC latest compressed trades export (500)")
+            sent_any = True
+        if include_index and index and os.path.exists(index):
+            await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
+            sent_any = True
+        return sent_any
+
+    async def alert_archive_complete(self, archive_result: dict):
+        row_counts = archive_result.get("row_counts", {})
+        msg = (
+            "*Archive Completed*\n"
+            f"24h paper/live/decisions: {row_counts.get('paper_trades_24h', 0)}/"
+            f"{row_counts.get('live_trades_24h', 0)}/{row_counts.get('decisions_24h', 0)}\n"
+            f"Recent trades rows: {row_counts.get('recent_trades_rows', 0)}"
+        )
+        await self.send_alert(msg)
+
     def _track(self, msg) -> None:
         """Track a sent message for cleanup."""
         if msg:
@@ -503,7 +570,11 @@ class TelegramBot:
             ],
             # Row 7: Quick AI export
             [
-                InlineKeyboardButton("📊 Last 50 Trades (CSV)", callback_data="export_recent"),
+                InlineKeyboardButton("📊 Last 500 Trades (CSV)", callback_data="export_recent"),
+            ],
+            # Row 8: Latest archive files
+            [
+                InlineKeyboardButton("🗄 Latest Archive", callback_data="export_latest"),
             ],
         ])
 
@@ -711,7 +782,7 @@ class TelegramBot:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
                 return
-            wait_msg = await query.message.reply_text("⏳ Building last 50 trades CSV...")
+            wait_msg = await query.message.reply_text("⏳ Building Last 500 Trades CSV...")
             self._track(wait_msg)
             try:
                 loop = asyncio.get_event_loop()
@@ -721,12 +792,23 @@ class TelegramBot:
                     self._track(await query.message.reply_document(
                         document=f,
                         filename=os.path.basename(path),
-                        caption="📊 Last 50 Trades CSV — compact export for AI analysis",
+                        caption="📊 Last 500 Trades CSV — compact export for AI analysis",
                     ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))
             await self._repost_dashboard()
 
+
+        elif data == "export_latest":
+            wait_msg = await query.message.reply_text("⏳ Sending latest archive files...")
+            self._track(wait_msg)
+            try:
+                sent = await self.send_latest_archive_files(include_index=True)
+                if not sent:
+                    self._track(await query.message.reply_text("Latest archive files not found yet."))
+            except Exception as e:
+                self._track(await query.message.reply_text(f"Latest archive error: {e}"))
+            await self._repost_dashboard()
         elif data == "filters":
             stats = self.tracker.get_filter_stats()
             if not stats:
@@ -1001,6 +1083,19 @@ class TelegramBot:
         except Exception as e:
             self._track(await update.message.reply_text(f"Export error: {e}"))
 
+    async def _cmd_latest_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        wait_msg = await update.message.reply_text("Sending latest archive files...")
+        self._track(wait_msg)
+        try:
+            sent = await self.send_latest_archive_files(include_index=True)
+            if not sent:
+                self._track(await update.message.reply_text("Latest archive files not found yet."))
+        except Exception as e:
+            self._track(await update.message.reply_text(f"Latest archive error: {e}"))
+
     async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
@@ -1087,6 +1182,7 @@ class TelegramBot:
             "/stats 7d — Last 7 days\n"
             "/export — Send Excel file\n"
             "/export today — Today only\n"
+            "/latest_export — Send latest archive files\n"
             "/config — Show all settings\n"
             "/filters — Filter pass/fail rates\n"
             "/clean — Delete old chat messages\n"

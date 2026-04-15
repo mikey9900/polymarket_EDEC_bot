@@ -3,13 +3,15 @@
 from version import __version__  # noqa: F401
 
 import asyncio
+import json
 import logging
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from bot.config import load_config
+from bot.archive import latest_archive_paths, run_daily_archive
 from bot.export import export_to_excel, export_recent_to_excel
 from bot.market_scanner import MarketScanner
 from bot.price_aggregator import PriceAggregator
@@ -21,6 +23,37 @@ from bot.tracker import DecisionTracker
 from bot.telegram_bot import TelegramBot
 
 logger = logging.getLogger("edec")
+
+
+def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
+    try:
+        with open(ha_options_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _as_bool(v, default: bool) -> bool:
+    if v is None:
+        return default
+    return str(v).strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _as_int(v, default: int) -> int:
+    try:
+        return int(v)
+    except Exception:
+        return default
+
+
+def _parse_hhmm(hhmm: str, default_h: int = 0, default_m: int = 5) -> tuple[int, int]:
+    try:
+        h_str, m_str = str(hhmm).split(":", 1)
+        h = max(0, min(23, int(h_str)))
+        m = max(0, min(59, int(m_str)))
+        return h, m
+    except Exception:
+        return default_h, default_m
 
 
 def setup_logging(config):
@@ -120,6 +153,49 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
             logger.error(f"Outcome tracker error: {e}")
 
 
+async def archive_scheduler_loop(
+    telegram: TelegramBot,
+    archive_fn,
+    archive_enabled: bool,
+    schedule_hour: int,
+    schedule_minute: int,
+    send_files_to_telegram: bool,
+):
+    if not archive_enabled:
+        return
+
+    logger.info(
+        "Archive scheduler enabled: daily at %02d:%02d (local time)",
+        schedule_hour,
+        schedule_minute,
+    )
+
+    while True:
+        try:
+            now = datetime.now().astimezone()
+            next_run = now.replace(hour=schedule_hour, minute=schedule_minute, second=0, microsecond=0)
+            if next_run <= now:
+                next_run = next_run + timedelta(days=1)
+            sleep_s = max(1.0, (next_run - now).total_seconds())
+            logger.info("Next archive run scheduled for %s", next_run.isoformat())
+            await asyncio.sleep(sleep_s)
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, archive_fn)
+            logger.info("Archive run complete: %s", result.get("index_path"))
+
+            await telegram.alert_archive_complete(result)
+            if send_files_to_telegram:
+                await telegram.send_latest_archive_files(include_index=True)
+
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.exception("Archive scheduler error: %s", e)
+            await telegram.send_alert(f"*Archive Failed*\n`{e}`")
+            await asyncio.sleep(60)
+
+
 async def main():
     config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
     config = load_config(config_path)
@@ -137,6 +213,7 @@ async def main():
     Path("data").mkdir(exist_ok=True)
 
     tracker = DecisionTracker("data/decisions.db")
+    ha_options = _load_ha_options()
     # Init paper capital if not already set
     total, _ = tracker.get_paper_capital()
     if total == 0:
@@ -182,7 +259,48 @@ async def main():
         return export_to_excel("data/decisions.db", "data", today_only)
 
     def do_export_recent() -> str:
-        return export_recent_to_excel("data/decisions.db", "data", limit=50)
+        return export_recent_to_excel("data/decisions.db", "data", limit=500)
+
+    archive_enabled = _as_bool(
+        os.getenv("EDEC_ARCHIVE_ENABLED", ha_options.get("archive_enabled")),
+        True,
+    )
+    archive_output_dir = os.getenv(
+        "EDEC_ARCHIVE_OUTPUT_DIR",
+        str(ha_options.get("archive_output_dir", "data/exports")),
+    )
+    archive_label = os.getenv(
+        "EDEC_ARCHIVE_LABEL",
+        str(ha_options.get("archive_label", "EDEC-BOT")),
+    )
+    archive_recent_limit = _as_int(
+        os.getenv("EDEC_ARCHIVE_RECENT_LIMIT", ha_options.get("archive_recent_limit")),
+        500,
+    )
+    archive_hhmm = os.getenv(
+        "EDEC_ARCHIVE_TIME",
+        str(ha_options.get("archive_time", "00:05")),
+    )
+    archive_hour, archive_minute = _parse_hhmm(archive_hhmm)
+    archive_send_files_to_telegram = _as_bool(
+        os.getenv("EDEC_ARCHIVE_TELEGRAM_FILES", ha_options.get("archive_telegram_files")),
+        True,
+    )
+    dropbox_token = os.getenv("EDEC_DROPBOX_TOKEN") or ha_options.get("dropbox_token")
+    dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/EDEC-BOT"
+
+    def do_archive() -> dict:
+        return run_daily_archive(
+            db_path="data/decisions.db",
+            output_dir=archive_output_dir,
+            label=archive_label,
+            recent_limit=archive_recent_limit,
+            dropbox_token=dropbox_token,
+            dropbox_root=str(dropbox_root),
+        )
+
+    def do_archive_latest() -> dict:
+        return latest_archive_paths(output_dir=archive_output_dir, label=archive_label)
 
     telegram = TelegramBot(
         config, tracker, risk_manager,
@@ -192,6 +310,8 @@ async def main():
         strategy_engine=strategy,
         executor=executor,
         aggregator=aggregator,
+        archive_fn=do_archive,
+        archive_latest_fn=do_archive_latest,
     )
 
     feed_pairs = []
@@ -212,6 +332,16 @@ async def main():
         ))
         tasks.append(asyncio.create_task(
             outcome_tracker_loop(scanner, tracker, aggregator, risk_manager, telegram)
+        ))
+        tasks.append(asyncio.create_task(
+            archive_scheduler_loop(
+                telegram=telegram,
+                archive_fn=do_archive,
+                archive_enabled=archive_enabled,
+                schedule_hour=archive_hour,
+                schedule_minute=archive_minute,
+                send_files_to_telegram=archive_send_files_to_telegram,
+            )
         ))
 
         coins_str = ", ".join(c.upper() for c in config.coins)

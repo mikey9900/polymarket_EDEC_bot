@@ -14,10 +14,24 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
+    signal_context TEXT,
+    signal_overlap_count INTEGER DEFAULT 0,
+    suppressed_reason TEXT,
     market_slug TEXT NOT NULL,
+    window_id TEXT,
     coin TEXT NOT NULL DEFAULT 'btc',
     strategy_type TEXT NOT NULL DEFAULT 'dual_leg',
     market_end_time TEXT NOT NULL,
+    market_start_time TEXT,
     up_best_ask REAL,
     down_best_ask REAL,
     combined_cost REAL,
@@ -38,7 +52,17 @@ CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     decision_id INTEGER REFERENCES decisions(id),
     timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
     market_slug TEXT NOT NULL,
+    window_id TEXT,
     coin TEXT NOT NULL DEFAULT 'btc',
     strategy_type TEXT NOT NULL DEFAULT 'dual_leg',
     side TEXT,
@@ -49,6 +73,9 @@ CREATE TABLE IF NOT EXISTS trades (
     combined_cost REAL,
     fee_total REAL,
     shares REAL,
+    shares_requested REAL,
+    shares_filled REAL,
+    blocked_min_5_shares INTEGER DEFAULT 0,
     up_order_id TEXT,
     down_order_id TEXT,
     buy_order_id TEXT,
@@ -79,13 +106,28 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
 CREATE TABLE IF NOT EXISTS paper_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
     market_slug TEXT NOT NULL,
+    window_id TEXT,
     coin TEXT NOT NULL,
     strategy_type TEXT NOT NULL,
+    signal_context TEXT,
+    signal_overlap_count INTEGER DEFAULT 0,
     side TEXT,
     entry_price REAL NOT NULL,
     target_price REAL,
     shares REAL NOT NULL,
+    shares_requested REAL,
+    shares_filled REAL,
+    blocked_min_5_shares INTEGER DEFAULT 0,
     cost REAL NOT NULL,
     fee_total REAL DEFAULT 0,
     status TEXT DEFAULT 'open',
@@ -95,7 +137,24 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     exit_timestamp TEXT,
     time_remaining_s REAL,
     bid_at_exit REAL,
+    ask_at_exit REAL,
+    exit_spread REAL,
     market_end_time TEXT
+    ,
+    market_start_time TEXT,
+    entry_bid REAL,
+    entry_ask REAL,
+    entry_spread REAL,
+    entry_depth_side_usd REAL,
+    opposite_depth_usd REAL,
+    depth_ratio REAL,
+    max_bid_seen REAL,
+    min_bid_seen REAL,
+    time_to_max_bid_s REAL,
+    time_to_min_bid_s REAL,
+    first_profit_time_s REAL,
+    scalp_hit INTEGER DEFAULT 0,
+    high_confidence_hit INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -104,11 +163,26 @@ CREATE TABLE IF NOT EXISTS paper_capital (
     current_balance REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    dry_run INTEGER DEFAULT 1,
+    initial_mode TEXT,
+    default_order_size_usd REAL,
+    initial_paper_capital REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
+CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
 """
 
 
@@ -117,6 +191,7 @@ class DecisionTracker:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
+        self._runtime_context: dict[str, object] = {}
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
@@ -129,13 +204,28 @@ class DecisionTracker:
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
+                run_id TEXT,
+                app_version TEXT,
+                strategy_version TEXT,
+                config_path TEXT,
+                config_hash TEXT,
+                mode TEXT,
+                dry_run INTEGER DEFAULT 1,
+                order_size_usd REAL,
+                paper_capital_total REAL,
                 market_slug TEXT NOT NULL,
+                window_id TEXT,
                 coin TEXT NOT NULL,
                 strategy_type TEXT NOT NULL,
+                signal_context TEXT,
+                signal_overlap_count INTEGER DEFAULT 0,
                 side TEXT,
                 entry_price REAL NOT NULL,
                 target_price REAL,
                 shares REAL NOT NULL,
+                shares_requested REAL,
+                shares_filled REAL,
+                blocked_min_5_shares INTEGER DEFAULT 0,
                 cost REAL NOT NULL,
                 fee_total REAL DEFAULT 0,
                 status TEXT DEFAULT 'open',
@@ -145,14 +235,43 @@ class DecisionTracker:
                 exit_timestamp TEXT,
                 time_remaining_s REAL,
                 bid_at_exit REAL,
-                market_end_time TEXT
+                ask_at_exit REAL,
+                exit_spread REAL,
+                market_end_time TEXT,
+                market_start_time TEXT,
+                entry_bid REAL,
+                entry_ask REAL,
+                entry_spread REAL,
+                entry_depth_side_usd REAL,
+                opposite_depth_usd REAL,
+                depth_ratio REAL,
+                max_bid_seen REAL,
+                min_bid_seen REAL,
+                time_to_max_bid_s REAL,
+                time_to_min_bid_s REAL,
+                first_profit_time_s REAL,
+                scalp_hit INTEGER DEFAULT 0,
+                high_confidence_hit INTEGER DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS paper_capital (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 total_capital REAL NOT NULL,
                 current_balance REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS runs (
+                run_id TEXT PRIMARY KEY,
+                started_at TEXT NOT NULL,
+                app_version TEXT,
+                strategy_version TEXT,
+                config_path TEXT,
+                config_hash TEXT,
+                dry_run INTEGER DEFAULT 1,
+                initial_mode TEXT,
+                default_order_size_usd REAL,
+                initial_paper_capital REAL
+            );
             CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
+            CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
         """)
         # Add coin/strategy_type columns to decisions if missing (added in v1.0.5)
         existing = {row[1] for row in self.conn.execute("PRAGMA table_info(decisions)")}
@@ -164,6 +283,44 @@ class DecisionTracker:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_30s REAL")
         if "coin_velocity_60s" not in existing:
             self.conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_60s REAL")
+        decision_new_cols = {
+            "run_id": "TEXT",
+            "app_version": "TEXT",
+            "strategy_version": "TEXT",
+            "config_path": "TEXT",
+            "config_hash": "TEXT",
+            "mode": "TEXT",
+            "dry_run": "INTEGER DEFAULT 1",
+            "order_size_usd": "REAL",
+            "paper_capital_total": "REAL",
+            "signal_context": "TEXT",
+            "signal_overlap_count": "INTEGER DEFAULT 0",
+            "suppressed_reason": "TEXT",
+            "window_id": "TEXT",
+            "market_start_time": "TEXT",
+        }
+        for col, col_type in decision_new_cols.items():
+            if col not in existing:
+                self.conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} {col_type}")
+        trade_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(trades)")}
+        trade_new_cols = {
+            "run_id": "TEXT",
+            "app_version": "TEXT",
+            "strategy_version": "TEXT",
+            "config_path": "TEXT",
+            "config_hash": "TEXT",
+            "mode": "TEXT",
+            "dry_run": "INTEGER DEFAULT 1",
+            "order_size_usd": "REAL",
+            "paper_capital_total": "REAL",
+            "window_id": "TEXT",
+            "shares_requested": "REAL",
+            "shares_filled": "REAL",
+            "blocked_min_5_shares": "INTEGER DEFAULT 0",
+        }
+        for col, col_type in trade_new_cols.items():
+            if col not in trade_cols:
+                self.conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
         # Add reset_at to paper_capital if missing (added in v1.2.7)
         cap_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_capital)")}
         if "reset_at" not in cap_cols:
@@ -171,16 +328,101 @@ class DecisionTracker:
         # Add new paper_trades columns (added in v1.3.3)
         pt_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_trades)")}
         new_pt_cols = {
+            "run_id": "TEXT",
+            "app_version": "TEXT",
+            "strategy_version": "TEXT",
+            "config_path": "TEXT",
+            "config_hash": "TEXT",
+            "mode": "TEXT",
+            "dry_run": "INTEGER DEFAULT 1",
+            "order_size_usd": "REAL",
+            "paper_capital_total": "REAL",
+            "window_id": "TEXT",
+            "signal_context": "TEXT",
+            "signal_overlap_count": "INTEGER DEFAULT 0",
             "exit_reason": "TEXT",
             "exit_timestamp": "TEXT",
             "time_remaining_s": "REAL",
             "bid_at_exit": "REAL",
             "market_end_time": "TEXT",
+            "market_start_time": "TEXT",
+            "entry_bid": "REAL",
+            "entry_ask": "REAL",
+            "entry_spread": "REAL",
+            "ask_at_exit": "REAL",
+            "exit_spread": "REAL",
+            "entry_depth_side_usd": "REAL",
+            "opposite_depth_usd": "REAL",
+            "depth_ratio": "REAL",
+            "shares_requested": "REAL",
+            "shares_filled": "REAL",
+            "blocked_min_5_shares": "INTEGER DEFAULT 0",
+            "max_bid_seen": "REAL",
+            "min_bid_seen": "REAL",
+            "time_to_max_bid_s": "REAL",
+            "time_to_min_bid_s": "REAL",
+            "first_profit_time_s": "REAL",
+            "scalp_hit": "INTEGER DEFAULT 0",
+            "high_confidence_hit": "INTEGER DEFAULT 0",
         }
         for col, col_type in new_pt_cols.items():
             if col not in pt_cols:
                 self.conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_type}")
         self.conn.commit()
+
+    def set_runtime_context(self, context: dict[str, object]) -> None:
+        """Store current bot/runtime metadata for subsequent decision/trade logs."""
+        self._runtime_context = dict(context)
+        run_id = str(context.get("run_id") or "")
+        if not run_id:
+            return
+        self.conn.execute(
+            """INSERT OR REPLACE INTO runs (
+                run_id, started_at, app_version, strategy_version, config_path, config_hash,
+                dry_run, initial_mode, default_order_size_usd, initial_paper_capital
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run_id,
+                context.get("started_at") or datetime.utcnow().isoformat(),
+                context.get("app_version"),
+                context.get("strategy_version"),
+                context.get("config_path"),
+                context.get("config_hash"),
+                int(bool(context.get("dry_run", True))),
+                context.get("mode"),
+                context.get("order_size_usd"),
+                context.get("paper_capital_total"),
+            ),
+        )
+        self.conn.commit()
+
+    def get_runtime_context(self) -> dict[str, object]:
+        return dict(self._runtime_context)
+
+    def latest_run_metadata(self) -> dict | None:
+        row = self.conn.execute(
+            """SELECT run_id, started_at, app_version, strategy_version, config_path,
+                      config_hash, dry_run, initial_mode, default_order_size_usd,
+                      initial_paper_capital
+               FROM runs ORDER BY started_at DESC LIMIT 1"""
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row[0],
+            "started_at": row[1],
+            "app_version": row[2],
+            "strategy_version": row[3],
+            "config_path": row[4],
+            "config_hash": row[5],
+            "dry_run": bool(row[6]),
+            "mode": row[7],
+            "order_size_usd": row[8],
+            "paper_capital_total": row[9],
+        }
+
+    def _runtime_value(self, key: str, default=None):
+        return self._runtime_context.get(key, default)
 
     def log_decision(self, decision: Decision) -> int:
         """Log a strategy evaluation. Returns the decision ID."""
@@ -189,18 +431,35 @@ class DecisionTracker:
 
         cursor = self.conn.execute(
             """INSERT INTO decisions (
-                timestamp, market_slug, coin, strategy_type, market_end_time,
+                timestamp, run_id, app_version, strategy_version, config_path, config_hash,
+                mode, dry_run, order_size_usd, paper_capital_total, signal_context,
+                signal_overlap_count, suppressed_reason,
+                market_slug, window_id, coin, strategy_type, market_end_time, market_start_time,
                 up_best_ask, down_best_ask, combined_cost,
                 btc_price, coin_velocity_30s, coin_velocity_60s,
                 up_depth_usd, down_depth_usd, time_remaining_s,
                 feed_count, filter_passed, filter_failed, action, reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 decision.timestamp.isoformat(),
+                decision.run_id or self._runtime_value("run_id"),
+                decision.app_version or self._runtime_value("app_version"),
+                decision.strategy_version or self._runtime_value("strategy_version"),
+                decision.config_path or self._runtime_value("config_path"),
+                decision.config_hash or self._runtime_value("config_hash"),
+                decision.mode or self._runtime_value("mode"),
+                int(decision.dry_run),
+                decision.order_size_usd,
+                decision.paper_capital_total,
+                decision.signal_context,
+                decision.signal_overlap_count,
+                decision.suppressed_reason,
                 decision.market_slug,
+                decision.window_id,
                 decision.coin,
                 decision.strategy_type,
                 decision.market_end_time.isoformat(),
+                decision.market_start_time.isoformat(),
                 decision.up_best_ask,
                 decision.down_best_ask,
                 decision.combined_cost,
@@ -223,17 +482,30 @@ class DecisionTracker:
     def log_trade(self, decision_id: int, result: TradeResult) -> int:
         """Log an executed trade."""
         market = result.signal.market
+        paper_total, _ = self.get_paper_capital()
         cursor = self.conn.execute(
             """INSERT INTO trades (
-                decision_id, timestamp, market_slug, coin, strategy_type, side,
+                decision_id, timestamp, run_id, app_version, strategy_version, config_path,
+                config_hash, mode, dry_run, order_size_usd, paper_capital_total,
+                market_slug, window_id, coin, strategy_type, side,
                 up_price, down_price, entry_price, target_price,
-                combined_cost, fee_total, shares,
+                combined_cost, fee_total, shares, shares_requested, shares_filled, blocked_min_5_shares,
                 up_order_id, down_order_id, buy_order_id, sell_order_id,
                 status, abort_cost, error
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 decision_id,
                 datetime.utcnow().isoformat(),
+                self._runtime_value("run_id"),
+                self._runtime_value("app_version"),
+                self._runtime_value("strategy_version"),
+                self._runtime_value("config_path"),
+                self._runtime_value("config_hash"),
+                self._runtime_value("mode"),
+                int(bool(self._runtime_value("dry_run", True))),
+                self._runtime_value("order_size_usd"),
+                paper_total,
+                market.slug,
                 market.slug,
                 market.coin,
                 result.strategy_type or "dual_leg",
@@ -245,6 +517,9 @@ class DecisionTracker:
                 result.total_cost,
                 result.fee_total,
                 result.shares,
+                result.shares_requested,
+                result.shares_filled,
+                int(bool(result.blocked_min_5_shares)),
                 result.up_order_id,
                 result.down_order_id,
                 result.buy_order_id,
@@ -289,11 +564,11 @@ class DecisionTracker:
             if up_ask is None or down_ask is None:
                 continue
             # Calculate hypothetical profit
-            # Fee for each side: (1 - price) * fee_rate
+            # Polymarket fee per share: fee_rate * price * (1 - price)
             # We use 0.072 as default fee rate
             fee_rate = 0.072
-            fee_up = (1.0 - up_ask) * fee_rate
-            fee_down = (1.0 - down_ask) * fee_rate
+            fee_up = fee_rate * up_ask * (1.0 - up_ask)
+            fee_down = fee_rate * down_ask * (1.0 - down_ask)
             total_cost = combined + fee_up + fee_down
             hyp_profit = 1.0 - total_cost if total_cost < 1.0 else -(total_cost - 1.0)
             would_profit = hyp_profit > 0
@@ -459,16 +734,68 @@ class DecisionTracker:
     def log_paper_trade(self, market_slug: str, coin: str, strategy_type: str,
                         side: str, entry_price: float, target_price: float,
                         shares: float, fee_total: float,
-                        market_end_time: str | None = None) -> int:
+                        market_end_time: str | None = None,
+                        market_start_time: str | None = None,
+                        signal_context: str = "",
+                        signal_overlap_count: int = 0,
+                        order_size_usd: float | None = None,
+                        shares_requested: float | None = None,
+                        shares_filled: float | None = None,
+                        blocked_min_5_shares: bool = False,
+                        entry_bid: float | None = None,
+                        entry_ask: float | None = None,
+                        entry_spread: float | None = None,
+                        entry_depth_side_usd: float | None = None,
+                        opposite_depth_usd: float | None = None,
+                        depth_ratio: float | None = None,
+                        window_id: str | None = None) -> int:
         """Open a paper trade and deduct cost from balance."""
         cost = entry_price * shares
+        paper_total, _ = self.get_paper_capital()
         cursor = self.conn.execute(
             """INSERT INTO paper_trades
-               (timestamp, market_slug, coin, strategy_type, side,
-                entry_price, target_price, shares, cost, fee_total, status, market_end_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)""",
-            (datetime.utcnow().isoformat(), market_slug, coin, strategy_type,
-             side, entry_price, target_price, shares, cost, fee_total, market_end_time),
+               (timestamp, run_id, app_version, strategy_version, config_path, config_hash,
+                mode, dry_run, order_size_usd, paper_capital_total,
+                market_slug, window_id, coin, strategy_type, signal_context, signal_overlap_count,
+                side, entry_price, target_price, shares, shares_requested, shares_filled,
+                blocked_min_5_shares, cost, fee_total, status, market_end_time, market_start_time,
+                entry_bid, entry_ask, entry_spread, entry_depth_side_usd, opposite_depth_usd, depth_ratio)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                datetime.utcnow().isoformat(),
+                self._runtime_value("run_id"),
+                self._runtime_value("app_version"),
+                self._runtime_value("strategy_version"),
+                self._runtime_value("config_path"),
+                self._runtime_value("config_hash"),
+                self._runtime_value("mode"),
+                int(bool(self._runtime_value("dry_run", True))),
+                order_size_usd if order_size_usd is not None else self._runtime_value("order_size_usd"),
+                paper_total,
+                market_slug,
+                window_id or market_slug,
+                coin,
+                strategy_type,
+                signal_context,
+                signal_overlap_count,
+                side,
+                entry_price,
+                target_price,
+                shares,
+                shares_requested if shares_requested is not None else shares,
+                shares_filled if shares_filled is not None else shares,
+                int(bool(blocked_min_5_shares)),
+                cost,
+                fee_total,
+                market_end_time,
+                market_start_time,
+                entry_bid,
+                entry_ask if entry_ask is not None else entry_price,
+                entry_spread,
+                entry_depth_side_usd,
+                opposite_depth_usd,
+                depth_ratio,
+            ),
         )
         # Deduct from paper balance
         self.conn.execute(
@@ -478,7 +805,72 @@ class DecisionTracker:
         self.conn.commit()
         return cursor.lastrowid
 
-    def close_paper_trades(self, market_slug: str, winner: str):
+    def update_decision_signal_context(
+        self,
+        decision_id: int,
+        signal_context: str,
+        signal_overlap_count: int = 0,
+    ) -> None:
+        self.conn.execute(
+            """UPDATE decisions
+               SET signal_context = ?, signal_overlap_count = ?
+               WHERE id = ?""",
+            (signal_context, signal_overlap_count, decision_id),
+        )
+        self.conn.commit()
+
+    def suppress_decision(self, decision_id: int, reason: str) -> None:
+        self.conn.execute(
+            """UPDATE decisions
+               SET action = 'SUPPRESSED', suppressed_reason = ?
+               WHERE id = ?""",
+            (reason, decision_id),
+        )
+        self.conn.commit()
+
+    def record_paper_trade_path(
+        self,
+        trade_id: int,
+        *,
+        max_bid_seen: float | None = None,
+        min_bid_seen: float | None = None,
+        time_to_max_bid_s: float | None = None,
+        time_to_min_bid_s: float | None = None,
+        first_profit_time_s: float | None = None,
+        scalp_hit: bool | None = None,
+        high_confidence_hit: bool | None = None,
+    ) -> None:
+        assignments: list[str] = []
+        values: list[object] = []
+        mapping = {
+            "max_bid_seen": max_bid_seen,
+            "min_bid_seen": min_bid_seen,
+            "time_to_max_bid_s": time_to_max_bid_s,
+            "time_to_min_bid_s": time_to_min_bid_s,
+            "first_profit_time_s": first_profit_time_s,
+        }
+        for col, value in mapping.items():
+            if value is not None:
+                assignments.append(f"{col} = ?")
+                values.append(value)
+        if scalp_hit is not None:
+            assignments.append("scalp_hit = ?")
+            values.append(int(bool(scalp_hit)))
+        if high_confidence_hit is not None:
+            assignments.append("high_confidence_hit = ?")
+            values.append(int(bool(high_confidence_hit)))
+        if not assignments:
+            return
+        values.append(trade_id)
+        self.conn.execute(
+            f"UPDATE paper_trades SET {', '.join(assignments)} WHERE id = ?",
+            tuple(values),
+        )
+        self.conn.commit()
+
+    def close_paper_trades(self, market_slug: str, winner: str,
+                           exit_bid: float | None = None,
+                           exit_ask: float | None = None):
         """Resolve all open paper trades for a market and update balance."""
         trades = self.conn.execute(
             """SELECT id, strategy_type, side, entry_price, shares, cost, fee_total
@@ -511,9 +903,21 @@ class DecisionTracker:
             self.conn.execute(
                 """UPDATE paper_trades
                    SET status=?, exit_price=?, pnl=?,
-                       exit_reason='resolution', exit_timestamp=?
+                       exit_reason='resolution', exit_timestamp=?,
+                       bid_at_exit=COALESCE(?, bid_at_exit),
+                       ask_at_exit=COALESCE(?, ask_at_exit),
+                       exit_spread=COALESCE(?, exit_spread)
                    WHERE id=?""",
-                (status, exit_price, pnl, now, trade_id),
+                (
+                    status,
+                    exit_price,
+                    pnl,
+                    now,
+                    exit_bid,
+                    exit_ask,
+                    (exit_ask - exit_bid) if (exit_ask is not None and exit_bid is not None) else None,
+                    trade_id,
+                ),
             )
             # Return cost + profit/loss to balance
             self.conn.execute(
@@ -529,7 +933,8 @@ class DecisionTracker:
                                 pnl: float, status: str,
                                 exit_reason: str = "manual",
                                 time_remaining_s: float | None = None,
-                                bid_at_exit: float | None = None):
+                                bid_at_exit: float | None = None,
+                                ask_at_exit: float | None = None):
         """Close a paper trade early (profit-take or stop-loss) before market resolution."""
         row = self.conn.execute(
             "SELECT cost FROM paper_trades WHERE id = ? AND status = 'open'",
@@ -542,9 +947,21 @@ class DecisionTracker:
         self.conn.execute(
             """UPDATE paper_trades
                SET status=?, exit_price=?, pnl=?,
-                   exit_reason=?, exit_timestamp=?, time_remaining_s=?, bid_at_exit=?
+                   exit_reason=?, exit_timestamp=?, time_remaining_s=?, bid_at_exit=?,
+                   ask_at_exit=?, exit_spread=?
                WHERE id=?""",
-            (status, exit_price, pnl, exit_reason, now, time_remaining_s, bid_at_exit, trade_id),
+            (
+                status,
+                exit_price,
+                pnl,
+                exit_reason,
+                now,
+                time_remaining_s,
+                bid_at_exit,
+                ask_at_exit,
+                (ask_at_exit - bid_at_exit) if (ask_at_exit is not None and bid_at_exit is not None) else None,
+                trade_id,
+            ),
         )
         self.conn.execute(
             "UPDATE paper_capital SET current_balance = current_balance + ? WHERE id = 1",

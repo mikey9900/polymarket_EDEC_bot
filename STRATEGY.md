@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 3.2.27
+> Current version: 3.2.29
 
 ---
 
@@ -219,6 +219,9 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.26 | Removed `target_sell: 0.52` param from single_leg config | No longer used; replaced by `high_confidence_bid` as the exit trigger |
 | 3.2.27 | Dynamic loss cut — removed flat cap at `time_pressure_s` | Early entries (180s+) were cut at same 25% as 90s entries despite having 2× more time to recover |
 | 3.2.27 | Added `loss_cut_max_factor: 2.0` to single_leg + swing_leg | At 2×time_pressure_s (180s): 50% cut; at 1×(90s): 25%; linear to 0 at close |
+| 3.2.28 | Re-centered single_leg around `0.50–0.65` repricing with scalp-first exits | Recent trade sample strongly favored over-50c repricing over cheap-side runner entries |
+| 3.2.28 | Re-enabled `lead_lag`, increased throughput, and allowed same-window re-signals after short cooldowns | Aggressive windows need multiple shots when repricing keeps presenting |
+| 3.2.29 | Added richer run/trade telemetry plus compact CSV keying | Preserve more tuning evidence while keeping Git-exported trade files small |
 
 ---
 

@@ -20,32 +20,32 @@ dual_leg:
 
 single_leg:
   enabled: true
-  entry_max: 0.62
-  opposite_min: 0.4
-  min_time_remaining_s: 100
+  entry_max: 0.65
+  opposite_min: 0.5
+  min_time_remaining_s: 80
   min_book_depth_usd: 12.0
   hold_if_unfilled: true
-  order_size_usd: 2.0
-  min_velocity_30s: 0.1
-  loss_cut_pct: 0.22
-  loss_cut_max_factor: 1.6
-  high_confidence_bid: 0.76
-  time_pressure_s: 90.0
+  order_size_usd: 10.0
+  min_velocity_30s: 0.12
+  loss_cut_pct: 0.18
+  loss_cut_max_factor: 1.35
+  high_confidence_bid: 0.74
+  time_pressure_s: 75.0
   max_time_remaining_s: 190.0
   max_vel_divergence: 0.03
-  entry_min: 0.45
-  scalp_take_profit_bid: 0.62
-  scalp_min_profit_usd: 0.12
+  entry_min: 0.5
+  scalp_take_profit_bid: 0.64
+  scalp_min_profit_usd: 0.18
 
 lead_lag:
-  enabled: false
-  min_velocity_30s: 0.16
+  enabled: true
+  min_velocity_30s: 0.13
   min_entry: 0.5
-  max_entry: 0.6
-  target_sell: 0.67
-  min_time_remaining_s: 70
+  max_entry: 0.64
+  target_sell: 0.66
+  min_time_remaining_s: 65
   min_book_depth_usd: 12.0
-  order_size_usd: 2.0
+  order_size_usd: 10.0
 
 swing_leg:
   enabled: false
@@ -68,15 +68,15 @@ swing_leg:
   - doge
 
 execution:
-  order_size_usd: 2.0
+  order_size_usd: 10.0
   abort_timeout_s: 2.0
   max_slippage: 0.015
   dry_run: true
 
 risk:
   max_daily_loss_usd: 20.0
-  max_open_positions: 3
-  max_trades_per_hour: 12
+  max_open_positions: 8
+  max_trades_per_hour: 90
   session_profit_target: 0
 
 feeds:

@@ -29,7 +29,7 @@ MODE_LABELS = {
 
 
 BUDGET_OPTIONS = [1, 2, 5, 10, 15, 20]
-CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
+CAPITAL_OPTIONS = [5, 10, 20, 50, 100, 5000, 25000, 50000]
 
 
 class TelegramBot:
@@ -658,7 +658,7 @@ class TelegramBot:
                 InlineKeyboardButton("\u2139\uFE0F Commands", callback_data="help_panel"),
             ],
             [
-                InlineKeyboardButton(f"\U0001F3E6 Capital: ${capital_balance:.2f}", callback_data="capital"),
+                InlineKeyboardButton(f"\U0001F3E6 Capital: ${capital_balance:,.2f}", callback_data="capital"),
                 InlineKeyboardButton(f"\U0001F4B0 Budget: ${order_size:.0f}", callback_data="budget"),
             ],
             [
@@ -693,7 +693,7 @@ class TelegramBot:
         """Paper capital selection."""
         _, balance = self.tracker.get_paper_capital()
         buttons = [
-            InlineKeyboardButton(f"${amt}", callback_data=f"capital_{amt}")
+            InlineKeyboardButton(f"${amt:,}", callback_data=f"capital_{amt}")
             for amt in CAPITAL_OPTIONS
         ]
         rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
@@ -748,7 +748,7 @@ class TelegramBot:
         if data.startswith("capital_"):
             self._set_dashboard_view("main")
             amt = float(data.split("_")[1])
-            await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
+            await query.answer(f"✅ Capital set to ${amt:,.0f}", show_alert=False)
             if self.tracker:
                 self.tracker.set_paper_capital(amt)
             await self._do_cleanup()
@@ -760,7 +760,7 @@ class TelegramBot:
             _, balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
             await query.edit_message_text(
                 f"🏦 *Paper Capital*\n"
-                f"Current balance: *${balance:.2f}*\n\n"
+                f"Current balance: *${balance:,.2f}*\n\n"
                 f"_Select a new bankroll to start fresh:_",
                 parse_mode="Markdown",
                 reply_markup=self._capital_keyboard(),

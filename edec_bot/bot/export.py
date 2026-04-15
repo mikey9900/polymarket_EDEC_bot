@@ -65,6 +65,7 @@ def export_to_excel(db_path: str = "data/decisions.db",
     date_str = datetime.utcnow().strftime("%Y-%m-%d") if today_only else None
 
     _build_paper_trades_sheet(wb, conn, date_str)
+    _build_run_metadata_sheet(wb, conn)
     _build_trade_journal_sheet(wb, conn, date_str, "closed_loss")
     _build_trade_journal_sheet(wb, conn, date_str, "closed_win")
     _build_exit_reason_sheet(wb, conn, date_str)
@@ -196,6 +197,30 @@ def _summary(ws, start_row: int, items: list):
         _pnl_cell(vc)
 
 
+def _build_run_metadata_sheet(wb, conn):
+    ws = wb.create_sheet("Run Metadata")
+    headers = [
+        "Run ID", "Started At", "App Version", "Strategy Version",
+        "Config Path", "Config Hash", "Dry Run", "Initial Mode",
+        "Default Order Size $", "Initial Paper Capital $",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    rows = conn.execute("""
+        SELECT run_id, started_at, app_version, strategy_version,
+               config_path, config_hash, dry_run, initial_mode,
+               default_order_size_usd, initial_paper_capital
+        FROM runs
+        ORDER BY started_at DESC
+        LIMIT 50
+    """).fetchall()
+    for row in rows:
+        ws.append(list(row))
+    _auto_width(ws, cap=64)
+
+
 def _win_rate(wins, losses):
     return round((wins or 0) / max((wins or 0) + (losses or 0), 1) * 100, 1)
 
@@ -290,21 +315,14 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
     ws = wb.create_sheet(f"Last {limit} Trades")
 
     headers = [
-        # Identity
-        "ID", "Date", "Time", "Coin", "Strategy", "Side",
-        # Entry context
-        "Entry $", "Target $", "Shares", "Cost $",
-        "Time @ Entry (s)", "Vel 30s %", "Vel 60s %",
-        "Depth UP $", "Depth DOWN $", "Depth Ratio U/D", "Momentum Align",
-        # Decision
-        "Filters Passed", "Filters Failed", "Entry Reason",
-        # Exit
-        "Exit Reason", "Exit $", "Bid @ Exit $",
-        "Time @ Exit (s)", "Hold (s)",
-        # Result
-        "P&L $", "P&L %", "Fees $",
-        # Status
-        "Status",
+        "id", "d", "t", "c", "st", "sd",
+        "rid", "av", "sv", "ch", "md", "dr", "os", "cap", "wid", "ctx", "ov",
+        "ep", "tp", "eb", "ea", "es", "sh", "srq", "sfl", "b5", "cs", "fee",
+        "te", "ts", "v30", "v60", "du", "dd", "eds", "ods", "drt", "ma",
+        "fp", "ff", "why",
+        "er", "xp", "xb", "xa", "xs", "tx", "hd",
+        "pnl", "pp", "maxb", "minb", "ttmax", "ttmin", "tfp", "sc", "hc",
+        "status",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -317,18 +335,48 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             pt.coin,
             pt.strategy_type,
             pt.side,
+            pt.run_id,
+            pt.app_version,
+            pt.strategy_version,
+            pt.config_hash,
+            pt.mode,
+            pt.dry_run,
+            pt.order_size_usd,
+            pt.paper_capital_total,
+            pt.window_id,
+            pt.signal_context,
+            pt.signal_overlap_count,
             pt.entry_price,
             pt.target_price,
+            pt.entry_bid,
+            pt.entry_ask,
+            pt.entry_spread,
             pt.shares,
+            pt.shares_requested,
+            pt.shares_filled,
+            pt.blocked_min_5_shares,
             pt.cost,
             pt.fee_total,
+            pt.market_start_time,
             pt.exit_reason,
             pt.exit_price,
             pt.bid_at_exit,
+            pt.ask_at_exit,
+            pt.exit_spread,
             pt.pnl,
             pt.exit_timestamp,
             pt.time_remaining_s,
+            pt.max_bid_seen,
+            pt.min_bid_seen,
+            pt.time_to_max_bid_s,
+            pt.time_to_min_bid_s,
+            pt.first_profit_time_s,
+            pt.scalp_hit,
+            pt.high_confidence_hit,
             pt.status,
+            pt.entry_depth_side_usd,
+            pt.opposite_depth_usd,
+            pt.depth_ratio,
             d.filter_passed,
             d.filter_failed,
             d.coin_velocity_30s,
@@ -357,24 +405,20 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
 
         hold_s = None
-        if r[14] and r[1]:
+        if r[34] and r[1]:
             try:
                 t_in  = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                t_out = datetime.fromisoformat(str(r[14]).replace("Z", "+00:00"))
+                t_out = datetime.fromisoformat(str(r[34]).replace("Z", "+00:00"))
                 hold_s = round((t_out - t_in).total_seconds(), 1)
             except Exception:
                 pass
 
         pnl_pct = None
-        if r[8] and r[8] > 0 and r[13] is not None:
-            pnl_pct = round(r[13] / r[8] * 100, 2)
-
-        depth_ratio = None
-        if r[21] not in (None, 0) and r[22] is not None:
-            depth_ratio = round(r[21] / r[22], 3)
+        if r[25] and r[25] > 0 and r[33] is not None:
+            pnl_pct = round(r[33] / r[25] * 100, 2)
 
         side = str(r[4] or "").lower()
-        vel30 = r[19]
+        vel30 = r[49]
         if vel30 is None or side not in ("up", "down"):
             momentum_align = None
         else:
@@ -382,40 +426,27 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             momentum_align = "aligned" if aligned else "counter"
 
         out = [
-            r[0],           # ID
-            date_part,      # Date
-            time_part,      # Time
-            r[2],           # Coin
-            r[3],           # Strategy
-            r[4],           # Side
-            r[5],           # Entry $
-            r[6],           # Target $
-            r[7],           # Shares
-            r[8],           # Cost $
-            r[23],          # Time @ Entry (s)
-            round(r[19], 4) if r[19] is not None else None,   # Vel 30s %
-            round(r[20], 4) if r[20] is not None else None,   # Vel 60s %
-            round(r[21], 2) if r[21] is not None else None,   # Depth UP $
-            round(r[22], 2) if r[22] is not None else None,   # Depth DOWN $
-            depth_ratio,    # Depth Ratio U/D
-            momentum_align, # Momentum Align
-            r[17],          # Filters Passed
-            r[18],          # Filters Failed
-            r[24],          # Entry Reason
-            r[10],          # Exit Reason
-            r[11],          # Exit $
-            r[12],          # Bid @ Exit $
-            r[15],          # Time @ Exit (s)
-            hold_s,         # Hold (s)
-            r[13],          # P&L $
-            pnl_pct,        # P&L %
-            r[9],           # Fees $
-            r[16],          # Status
+            r[0], date_part, time_part, r[2], r[3], r[4],
+            r[5], r[6], r[7], r[8], r[9], int(bool(r[10])) if r[10] is not None else None,
+            r[11], r[12], r[13], r[14], r[15],
+            r[16], r[17], r[18], r[19], r[20], r[21], r[22], r[23], r[24], r[25], r[26],
+            r[53], r[27],
+            round(r[49], 4) if r[49] is not None else None,
+            round(r[50], 4) if r[50] is not None else None,
+            round(r[51], 2) if r[51] is not None else None,
+            round(r[52], 2) if r[52] is not None else None,
+            r[44], r[45], r[46], momentum_align,
+            r[47], r[48], r[54],
+            r[28], r[29], r[30], r[31], r[32], r[35], hold_s,
+            r[33], pnl_pct, r[36], r[37], r[38], r[39], r[40],
+            int(bool(r[41])) if r[41] is not None else None,
+            int(bool(r[42])) if r[42] is not None else None,
+            r[43],
         ]
         ws.append(out)
 
         # Row color by status
-        status_str = str(r[16] or "").lower()
+        status_str = str(r[43] or "").lower()
         if status_str == "closed_win":
             row_fill = WIN_FILL
         elif status_str == "closed_loss":
@@ -431,17 +462,17 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             for col in range(1, num_cols + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
 
-        _pnl_cell(ws.cell(row=ri, column=26))   # P&L $
-        _pnl_cell(ws.cell(row=ri, column=27))   # P&L %
-        _reason_cell(ws.cell(row=ri, column=21))  # Exit Reason
+        _pnl_cell(ws.cell(row=ri, column=49))   # P&L $
+        _pnl_cell(ws.cell(row=ri, column=50))   # P&L %
+        _reason_cell(ws.cell(row=ri, column=42))  # Exit Reason
 
     # Summary block below data
     total_rows = len(rows)
     if total_rows:
-        wins   = sum(1 for r in rows if str(r[16] or "").lower() == "closed_win")
-        losses = sum(1 for r in rows if str(r[16] or "").lower() == "closed_loss")
-        open_p = sum(1 for r in rows if str(r[16] or "").lower() == "open")
-        total_pnl = sum(r[13] for r in rows if r[13] is not None)
+        wins   = sum(1 for r in rows if str(r[43] or "").lower() == "closed_win")
+        losses = sum(1 for r in rows if str(r[43] or "").lower() == "closed_loss")
+        open_p = sum(1 for r in rows if str(r[43] or "").lower() == "open")
+        total_pnl = sum(r[33] for r in rows if r[33] is not None)
         _summary(ws, total_rows + 3, [
             ("Trades shown", total_rows),
             ("Wins", wins),
@@ -471,6 +502,7 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
         ("TRADE PROGRESS", 19, 22),
         ("RESULT",         23, 27),
         ("LEARNING",       28, 30),
+        ("RUNTIME & PATH", 31, 43),
     ]
     for title, c_start, c_end in sections:
         ws.merge_cells(start_row=1, start_column=c_start,
@@ -496,6 +528,10 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
         "Exit Reason", "Exit Price $", "P&L $", "P&L %", "Fees $",
         # LEARNING (28-30)
         "Momentum Alignment", "Exit Assessment", "Key Lesson",
+        # RUNTIME & PATH (31-43)
+        "Run ID", "App Ver", "Strategy Ver", "Config Hash", "Mode", "Order Size $",
+        "Signal Context", "Entry Spread $", "Exit Spread $", "Max Bid $", "Min Bid $",
+        "First Profit Time (s)", "HC Hit",
     ]
     ws.append(headers)
     _style_header(ws, len(headers), row=2)
@@ -524,6 +560,19 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             pt.time_remaining_s   AS exit_remaining,
             pt.bid_at_exit,
             pt.status,
+            pt.run_id,
+            pt.app_version,
+            pt.strategy_version,
+            pt.config_hash,
+            pt.mode,
+            pt.order_size_usd,
+            pt.signal_context,
+            pt.entry_spread,
+            pt.exit_spread,
+            pt.max_bid_seen,
+            pt.min_bid_seen,
+            pt.first_profit_time_s,
+            pt.high_confidence_hit,
             d.filter_passed,
             d.filter_failed,
             d.coin_velocity_30s,
@@ -567,9 +616,9 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
         if r[9] and r[9] > 0 and r[13] is not None:
             pnl_pct = round(r[13] / r[9] * 100, 2)
 
-        momentum = _momentum_alignment(str(r[4] or ""), r[20])
+        momentum = _momentum_alignment(str(r[4] or ""), r[33])
         exit_ass = _exit_assessment(str(r[11] or ""), r[6], r[16], r[12], r[15])
-        lesson   = _key_lesson(str(r[17] or ""), str(r[11] or ""), str(r[4] or ""), r[20])
+        lesson   = _key_lesson(str(r[17] or ""), str(r[11] or ""), str(r[4] or ""), r[33])
 
         out = [
             r[0],          # #
@@ -583,14 +632,14 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             r[7],          # Target $
             r[8],          # Shares
             r[9],          # Cost $
-            r[18],         # Filters Passed
-            r[19],         # Filters Failed
-            round(r[20], 4) if r[20] is not None else None,  # Vel 30s %
-            round(r[21], 4) if r[21] is not None else None,  # Vel 60s %
-            round(r[22], 2) if r[22] is not None else None,  # Book Depth UP $
-            round(r[23], 2) if r[23] is not None else None,  # Book Depth DOWN $
-            r[25],         # Why Entered
-            r[24],         # Time @ Entry (s)
+            r[31],         # Filters Passed
+            r[32],         # Filters Failed
+            round(r[33], 4) if r[33] is not None else None,  # Vel 30s %
+            round(r[34], 4) if r[34] is not None else None,  # Vel 60s %
+            round(r[35], 2) if r[35] is not None else None,  # Book Depth UP $
+            round(r[36], 2) if r[36] is not None else None,  # Book Depth DOWN $
+            r[38],         # Why Entered
+            r[37],         # Time @ Entry (s)
             r[15],         # Time @ Exit (s)
             hold_s,        # Hold Duration (s)
             r[16],         # Bid @ Exit $
@@ -602,6 +651,19 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             momentum,      # Momentum Alignment
             exit_ass,      # Exit Assessment
             lesson,        # Key Lesson
+            r[18],         # Run ID
+            r[19],         # App Ver
+            r[20],         # Strategy Ver
+            r[21],         # Config Hash
+            r[22],         # Mode
+            r[23],         # Order Size $
+            r[24],         # Signal Context
+            r[25],         # Entry Spread $
+            r[26],         # Exit Spread $
+            r[27],         # Max Bid $
+            r[28],         # Min Bid $
+            r[29],         # First Profit Time (s)
+            "yes" if r[30] else "no",  # HC Hit
         ]
         ws.append(out)
 
@@ -637,6 +699,12 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         "Status", "Exit Reason", "Exit Price $", "Bid At Exit $",
         "P&L $", "P&L %", "Time Left At Exit (s)", "Hold Duration (s)",
         "Market End Time",
+        "Run ID", "App Version", "Strategy Version", "Config Hash", "Mode", "Dry Run",
+        "Order Size $", "Paper Capital $", "Window ID", "Signal Context", "Overlap Count",
+        "Entry Bid $", "Entry Ask $", "Entry Spread $", "Exit Ask $", "Exit Spread $",
+        "Entry Depth $", "Opposite Depth $", "Depth Ratio",
+        "Max Bid Seen $", "Min Bid Seen $", "Time To Max Bid (s)", "Time To Min Bid (s)",
+        "First Profit Time (s)", "Scalp Hit", "High-Confidence Hit",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -648,7 +716,13 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         SELECT id, timestamp, coin, market_slug, strategy_type, side,
                entry_price, target_price, shares, cost, fee_total,
                status, exit_reason, exit_price, bid_at_exit, pnl,
-               time_remaining_s, exit_timestamp, market_end_time
+               time_remaining_s, exit_timestamp, market_end_time,
+               run_id, app_version, strategy_version, config_hash, mode, dry_run,
+               order_size_usd, paper_capital_total, window_id, signal_context, signal_overlap_count,
+               entry_bid, entry_ask, entry_spread, ask_at_exit, exit_spread,
+               entry_depth_side_usd, opposite_depth_usd, depth_ratio,
+               max_bid_seen, min_bid_seen, time_to_max_bid_s, time_to_min_bid_s,
+               first_profit_time_s, scalp_hit, high_confidence_hit
         FROM paper_trades {where}
         ORDER BY id DESC LIMIT 10000
     """, params)
@@ -666,7 +740,7 @@ def _build_paper_trades_sheet(wb, conn, date_str):
                 hold_s = round((e - o).total_seconds(), 1)
             except Exception:
                 pass
-        out = r[:16] + [pnl_pct, r[16], hold_s, r[18]]
+        out = r[:16] + [pnl_pct, r[16], hold_s, r[18]] + r[19:]
         ws.append(out)
 
         status = str(r[11] or "").lower()

@@ -61,6 +61,8 @@ class ExecutionEngine:
             result.total_cost = signal.combined_cost
             result.fee_total = signal.fee_total
             result.shares = self._calc_shares(signal.up_price)
+            result.shares_requested = result.shares
+            result.shares_filled = result.shares
             cost = signal.combined_cost * result.shares
             if self.tracker.has_paper_capital(cost):
                 self.tracker.log_paper_trade(
@@ -79,8 +81,10 @@ class ExecutionEngine:
         try:
             self.state = DualOrderState.PLACING_FIRST
             shares = self._calc_shares(signal.up_price)
+            result.shares_requested = shares
             if shares < 5:
                 result.status = "failed"
+                result.blocked_min_5_shares = True
                 result.error = f"Shares too small: {shares} (min 5)"
                 logger.warning(result.error)
                 return result
@@ -188,10 +192,10 @@ class ExecutionEngine:
     async def execute_single_leg(self, signal: TradeSignal, decision_id: int = 0) -> TradeResult:
         """Buy one side with a GTC limit.
 
-        single_leg: holds to high_confidence_bid (0.82) or resolution — no fixed sell order placed.
+        single_leg: aggressive scalp-first repricing with optional high-confidence runner.
         lead_lag:   immediately places a GTC sell at target_sell_price (Polymarket repricing play).
         """
-        result = TradeResult(signal=signal, strategy_type="single_leg",
+        result = TradeResult(signal=signal, strategy_type=signal.strategy_type,
                              side=signal.side, status="open")
 
         market = signal.market
@@ -204,22 +208,40 @@ class ExecutionEngine:
 
         order_size = self.order_size_usd
         shares = math.floor(order_size / signal.entry_price)
+        result.shares_requested = shares
+        result.shares_filled = shares
 
         if self.config.execution.dry_run:
             result.status = "dry_run"
             result.shares = shares
+            result.shares_filled = shares
             result.total_cost = signal.entry_price * shares
             result.fee_total = signal.fee_total
             cost = signal.entry_price * shares
             if self.tracker.has_paper_capital(cost):
                 trade_id = self.tracker.log_paper_trade(
-                    market.slug, market.coin, "single_leg", signal.side,
+                    market.slug, market.coin, signal.strategy_type, signal.side,
                     signal.entry_price, signal.target_sell_price, shares, signal.fee_total,
                     market_end_time=market.end_time.isoformat(),
+                    market_start_time=market.start_time.isoformat(),
+                    signal_context=signal.signal_context,
+                    signal_overlap_count=signal.signal_overlap_count,
+                    order_size_usd=order_size,
+                    shares_requested=shares,
+                    shares_filled=shares,
+                    blocked_min_5_shares=False,
+                    entry_bid=signal.entry_bid,
+                    entry_ask=signal.entry_ask or signal.entry_price,
+                    entry_spread=signal.entry_spread,
+                    entry_depth_side_usd=signal.entry_depth_side_usd,
+                    opposite_depth_usd=signal.opposite_depth_usd,
+                    depth_ratio=signal.depth_ratio,
+                    window_id=market.slug,
                 )
                 logger.info(
-                    f"[DRY RUN] [{coin}] Paper trade: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
-                    f"→ SELL@{signal.target_sell_price:.3f} | {shares} shares, cost=${cost:.2f}"
+                    f"[DRY RUN] [{coin}] Paper trade ({signal.strategy_type}): "
+                    f"BUY {signal.side.upper()}@{signal.entry_price:.3f} "
+                    f"→ EXIT@{signal.target_sell_price:.3f} | {shares} shares, cost=${cost:.2f}"
                 )
                 asyncio.create_task(self._monitor_paper_single_leg(
                     trade_id=trade_id,
@@ -236,11 +258,13 @@ class ExecutionEngine:
 
         if shares < 5:
             result.status = "failed"
+            result.blocked_min_5_shares = True
             result.error = f"Shares too small: {shares} (min 5)"
             logger.warning(f"[{coin}] {result.error}")
             return result
 
         result.shares = shares
+        result.shares_filled = shares
 
         try:
             # Place GTC buy limit at the current ask
@@ -287,10 +311,11 @@ class ExecutionEngine:
                 else:
                     logger.warning(f"[{coin}] Sell order placement failed: {sell_resp}. Will hold to resolution.")
             else:
-                # Single-leg momentum: no fixed sell — monitor holds to high_confidence_bid (0.82)
+                # Single-leg repricing: monitor for fast scalp, with high-confidence as runner fallback.
                 logger.info(
                     f"[{coin}] SINGLE-LEG BUY placed: {shares} {signal.side.upper()} "
-                    f"@ {signal.entry_price:.3f} (order {buy_order_id}) — holding to 0.82+ or loss_cut"
+                    f"@ {signal.entry_price:.3f} (order {buy_order_id}) — scalp@"
+                    f"{signal.target_sell_price:.2f}, runner@{self.config.single_leg.high_confidence_bid:.2f}"
                 )
 
             # Track this open position
@@ -330,10 +355,11 @@ class ExecutionEngine:
 
         Priority order each cycle:
         1. GTC sell already filled → done
-        2. High-confidence bid (≥ high_confidence_bid) → cancel sell, hold to resolution
-        3. Progressive loss cut → cancel sell, emergency sell now
-        4. Near-close fallback (30s) → emergency sell if not holding high-confidence
-        5. Market ended → clean up
+        2. [single_leg] Fast scalp exit once repricing pays us enough
+        3. High-confidence bid (≥ high_confidence_bid) → cancel sell, hold to resolution
+        4. Progressive loss cut → cancel sell, emergency sell now
+        5. Near-close fallback (30s) → emergency sell if not holding high-confidence
+        6. Market ended → clean up
         """
         coin = position.market.coin.upper()
         cfg = self.config.single_leg
@@ -377,6 +403,9 @@ class ExecutionEngine:
                 continue
 
             loss_pct = (position.entry_price - bid) / position.entry_price
+            fee_buy = self._per_share_fee(position.entry_price, position.market.fee_rate)
+            fee_sell = self._per_share_fee(bid, position.market.fee_rate)
+            net_pnl = (bid - position.entry_price - fee_buy - fee_sell) * position.shares
 
             # Dynamic loss cut: scales with time remaining, giving wider tolerance early.
             # At ≥(max_factor × time_pressure_s): max cut = loss_cut_pct × max_factor
@@ -385,7 +414,33 @@ class ExecutionEngine:
             time_factor = min(cfg.loss_cut_max_factor, remaining / cfg.time_pressure_s)
             dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
-            # ── 2. High-confidence: cancel sell, hold to resolution ──
+            # ── 2. Fast scalp exit for aggressive single-leg repricing ──
+            if (
+                position.strategy_type == "single_leg"
+                and bid >= cfg.scalp_take_profit_bid
+                and bid < cfg.high_confidence_bid
+                and net_pnl >= cfg.scalp_min_profit_usd
+            ):
+                try:
+                    scalp_price = max(0.01, bid - 0.01)
+                    sell_order = await asyncio.to_thread(
+                        self.client.create_order,
+                        {"token_id": position.token_id, "price": scalp_price,
+                         "size": position.shares, "side": "SELL"},
+                        {"tick_size": position.market.tick_size,
+                         "neg_risk": position.market.neg_risk},
+                    )
+                    await asyncio.to_thread(self.client.post_order, sell_order, "GTC")
+                    logger.info(
+                        f"[{coin}] SCALP EXIT @{scalp_price:.3f} "
+                        f"(net pnl=${net_pnl:+.4f}, target>={cfg.scalp_take_profit_bid:.2f})"
+                    )
+                except Exception as e:
+                    logger.error(f"[{coin}] Scalp sell failed: {e}")
+                self._open_positions.pop(position.buy_order_id, None)
+                return
+
+            # ── 3. High-confidence: cancel sell, hold to resolution ──
             if bid >= cfg.high_confidence_bid and not high_confidence_held:
                 if position.sell_order_id:
                     try:
@@ -400,7 +455,7 @@ class ExecutionEngine:
                 )
                 continue
 
-            # ── 3. Progressive loss cut ──
+            # ── 4. Progressive loss cut ──
             if not high_confidence_held and loss_pct > 0 and loss_pct >= dynamic_loss_cut:
                 if position.sell_order_id:
                     try:
@@ -426,7 +481,7 @@ class ExecutionEngine:
                 self._open_positions.pop(position.buy_order_id, None)
                 return
 
-            # ── 4. Near-close fallback ──
+            # ── 5. Near-close fallback ──
             if not high_confidence_held and remaining <= 30:
                 if position.sell_order_id:
                     try:
@@ -469,6 +524,8 @@ class ExecutionEngine:
 
         token_id = market.up_token_id if signal.side == "up" else market.down_token_id
         shares = math.floor(self.config.swing_leg.order_size_usd / signal.entry_price)
+        result.shares_requested = shares
+        result.shares_filled = shares
 
         if self.config.execution.dry_run:
             result.status = "dry_run"
@@ -486,6 +543,19 @@ class ExecutionEngine:
                 signal.entry_price, signal.target_sell_price, shares,
                 signal.fee_total * shares,
                 market_end_time=market.end_time.isoformat(),
+                market_start_time=market.start_time.isoformat(),
+                signal_context=signal.signal_context,
+                signal_overlap_count=signal.signal_overlap_count,
+                order_size_usd=self.config.swing_leg.order_size_usd,
+                shares_requested=shares,
+                shares_filled=shares,
+                entry_bid=signal.entry_bid,
+                entry_ask=signal.entry_ask or signal.entry_price,
+                entry_spread=signal.entry_spread,
+                entry_depth_side_usd=signal.entry_depth_side_usd,
+                opposite_depth_usd=signal.opposite_depth_usd,
+                depth_ratio=signal.depth_ratio,
+                window_id=market.slug,
             )
             logger.info(
                 f"[DRY RUN] [{coin}] SWING: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
@@ -506,6 +576,7 @@ class ExecutionEngine:
         # Live mode — place real GTC buy for first leg
         if shares < 5:
             result.status = "failed"
+            result.blocked_min_5_shares = True
             result.error = f"Shares too small: {shares}"
             return result
 
@@ -528,6 +599,7 @@ class ExecutionEngine:
             result.buy_order_id = buy_order_id
             result.total_cost = signal.entry_price * shares
             result.shares = shares
+            result.shares_filled = shares
 
             logger.info(
                 f"[{coin}] SWING LEG 1 placed: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
@@ -571,6 +643,13 @@ class ExecutionEngine:
         cfg = self.config.swing_leg
         coin = position.market.coin.upper()
         is_dry = self.config.execution.dry_run
+        monitor_started_at = datetime.now(timezone.utc)
+        max_bid_seen = None
+        min_bid_seen = None
+        time_to_max_bid_s = None
+        time_to_min_bid_s = None
+        first_profit_time_s = None
+        high_confidence_hit = False
 
         while True:
             await self._wait_book_update()
@@ -591,13 +670,35 @@ class ExecutionEngine:
 
             # ─── Mean-reversion monitoring ───
             bid = first_book.best_bid
+            ask = first_book.best_ask
             loss_pct = (
                 (position.first_entry_price - bid) / position.first_entry_price
                 if bid > 0 else 1.0
             )
+            elapsed_s = max(0.0, (datetime.now(timezone.utc) - monitor_started_at).total_seconds())
+            changed = False
+            if bid > 0 and (max_bid_seen is None or bid > max_bid_seen):
+                max_bid_seen = bid
+                time_to_max_bid_s = elapsed_s
+                changed = True
+            if bid > 0 and (min_bid_seen is None or bid < min_bid_seen):
+                min_bid_seen = bid
+                time_to_min_bid_s = elapsed_s
+                changed = True
 
             # Priority 1: High-confidence — first leg is nearly won, hold to resolution
             if bid >= cfg.high_confidence_bid:
+                high_confidence_hit = True
+                if is_dry and position.first_paper_trade_id:
+                    self.tracker.record_paper_trade_path(
+                        position.first_paper_trade_id,
+                        max_bid_seen=max_bid_seen,
+                        min_bid_seen=min_bid_seen,
+                        time_to_max_bid_s=time_to_max_bid_s,
+                        time_to_min_bid_s=time_to_min_bid_s,
+                        first_profit_time_s=first_profit_time_s,
+                        high_confidence_hit=True,
+                    )
                 logger.info(
                     f"[{coin}] SWING HIGH-CONFIDENCE @{bid:.3f} — "
                     f"holding {position.first_side.upper()} to resolution ({remaining:.0f}s)"
@@ -611,9 +712,28 @@ class ExecutionEngine:
             time_factor = min(cfg.loss_cut_max_factor, remaining / cfg.time_pressure_s)
             dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
+            if first_profit_time_s is None:
+                fee_buy = self._per_share_fee(position.first_entry_price, position.market.fee_rate)
+                fee_sell = self._per_share_fee(bid, position.market.fee_rate)
+                net_pnl_probe = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
+                if net_pnl_probe > 0:
+                    first_profit_time_s = elapsed_s
+                    changed = True
+
+            if is_dry and position.first_paper_trade_id and changed:
+                self.tracker.record_paper_trade_path(
+                    position.first_paper_trade_id,
+                    max_bid_seen=max_bid_seen,
+                    min_bid_seen=min_bid_seen,
+                    time_to_max_bid_s=time_to_max_bid_s,
+                    time_to_min_bid_s=time_to_min_bid_s,
+                    first_profit_time_s=first_profit_time_s,
+                    high_confidence_hit=high_confidence_hit,
+                )
+
             if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
                 exit_bid = max(bid, 0.01)
-                fee_val = (1.0 - exit_bid) * position.market.fee_rate * position.first_shares
+                fee_val = self._per_share_fee(exit_bid, position.market.fee_rate) * position.first_shares
                 pnl = (exit_bid - position.first_entry_price) * position.first_shares - fee_val
                 status = "closed_win" if pnl > 0 else "closed_loss"
                 logger.info(
@@ -624,7 +744,8 @@ class ExecutionEngine:
                 if is_dry and position.first_paper_trade_id:
                     self.tracker.close_paper_trade_early(
                         position.first_paper_trade_id, exit_bid, pnl, status,
-                        exit_reason="loss_cut", time_remaining_s=remaining, bid_at_exit=exit_bid,
+                        exit_reason="loss_cut", time_remaining_s=remaining,
+                        bid_at_exit=exit_bid, ask_at_exit=ask,
                     )
                 else:
                     try:
@@ -643,8 +764,8 @@ class ExecutionEngine:
                 return
 
             # Priority 3: Any net-positive exit after fees → sell first leg
-            fee_buy = (1.0 - position.first_entry_price) * position.market.fee_rate
-            fee_sell = (1.0 - bid) * position.market.fee_rate
+            fee_buy = self._per_share_fee(position.first_entry_price, position.market.fee_rate)
+            fee_sell = self._per_share_fee(bid, position.market.fee_rate)
             net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
             if net_pnl > 0:
                 pnl = net_pnl
@@ -655,7 +776,8 @@ class ExecutionEngine:
                     self.tracker.close_paper_trade_early(
                         position.first_paper_trade_id, bid, pnl,
                         "closed_win" if pnl > 0 else "closed_loss",
-                        exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="profit_target", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                 else:
                     try:
@@ -674,7 +796,7 @@ class ExecutionEngine:
 
             # Priority 4: Near-close (≤30s) — exit regardless of P&L
             if remaining <= 30:
-                fee_val = (1.0 - bid) * position.market.fee_rate * position.first_shares
+                fee_val = self._per_share_fee(bid, position.market.fee_rate) * position.first_shares
                 pnl = (bid - position.first_entry_price) * position.first_shares - fee_val
                 status = "closed_win" if pnl > 0 else "closed_loss"
                 logger.info(
@@ -683,7 +805,8 @@ class ExecutionEngine:
                 if is_dry and position.first_paper_trade_id:
                     self.tracker.close_paper_trade_early(
                         position.first_paper_trade_id, bid, pnl, status,
-                        exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="near_close", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                 else:
                     try:
@@ -719,6 +842,14 @@ class ExecutionEngine:
         """
         cfg = self.config.single_leg
         coin = market.coin.upper()
+        monitor_started_at = datetime.now(timezone.utc)
+        max_bid_seen = None
+        min_bid_seen = None
+        time_to_max_bid_s = None
+        time_to_min_bid_s = None
+        first_profit_time_s = None
+        scalp_hit = False
+        high_confidence_hit = False
 
         while True:
             await self._wait_book_update()
@@ -732,13 +863,36 @@ class ExecutionEngine:
             try:
                 book = await self._fetch_book_price(token_id)
                 bid = book.best_bid
+                ask = book.best_ask
                 if bid <= 0:
                     continue
+
+                elapsed_s = max(0.0, (datetime.now(timezone.utc) - monitor_started_at).total_seconds())
+                changed = False
+                if max_bid_seen is None or bid > max_bid_seen:
+                    max_bid_seen = bid
+                    time_to_max_bid_s = elapsed_s
+                    changed = True
+                if min_bid_seen is None or bid < min_bid_seen:
+                    min_bid_seen = bid
+                    time_to_min_bid_s = elapsed_s
+                    changed = True
 
                 loss_pct = (entry_price - bid) / entry_price      # positive = losing
 
                 # ── 1. High-confidence: nearly decided — let resolution pay $1 ──
                 if bid >= cfg.high_confidence_bid:
+                    high_confidence_hit = True
+                    self.tracker.record_paper_trade_path(
+                        trade_id,
+                        max_bid_seen=max_bid_seen,
+                        min_bid_seen=min_bid_seen,
+                        time_to_max_bid_s=time_to_max_bid_s,
+                        time_to_min_bid_s=time_to_min_bid_s,
+                        first_profit_time_s=first_profit_time_s,
+                        scalp_hit=scalp_hit,
+                        high_confidence_hit=True,
+                    )
                     logger.info(
                         f"[{coin}] Paper HIGH-CONFIDENCE @{bid:.3f} — "
                         f"holding to resolution ({remaining:.0f}s)"
@@ -748,14 +902,35 @@ class ExecutionEngine:
                 # ── 2. Net-positive exit (lead_lag only) ──
                 # single_leg rides to resolution (high_confidence or loss_cut) — don't exit early.
                 # lead_lag exits as soon as Polymarket has repriced past our entry (books caught up).
-                fee_buy = (1.0 - entry_price) * market.fee_rate
-                fee_sell = (1.0 - bid) * market.fee_rate
+                fee_buy = self._per_share_fee(entry_price, market.fee_rate)
+                fee_sell = self._per_share_fee(bid, market.fee_rate)
                 net_pnl = (bid - entry_price - fee_buy - fee_sell) * shares
+                if first_profit_time_s is None and net_pnl > 0:
+                    first_profit_time_s = elapsed_s
+                    changed = True
+                if bid >= cfg.scalp_take_profit_bid and not scalp_hit:
+                    scalp_hit = True
+                    changed = True
+                if bid >= cfg.high_confidence_bid and not high_confidence_hit:
+                    high_confidence_hit = True
+                    changed = True
+                if changed:
+                    self.tracker.record_paper_trade_path(
+                        trade_id,
+                        max_bid_seen=max_bid_seen,
+                        min_bid_seen=min_bid_seen,
+                        time_to_max_bid_s=time_to_max_bid_s,
+                        time_to_min_bid_s=time_to_min_bid_s,
+                        first_profit_time_s=first_profit_time_s,
+                        scalp_hit=scalp_hit,
+                        high_confidence_hit=high_confidence_hit,
+                    )
 
                 if strategy_type == "lead_lag" and net_pnl > 0:
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, net_pnl, "closed_win",
-                        exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="profit_target", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                     logger.info(
                         f"[{coin}] Paper SELL @{bid:.3f} (net pnl=${net_pnl:+.4f}, {remaining:.0f}s left)"
@@ -773,7 +948,8 @@ class ExecutionEngine:
                 ):
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, net_pnl, "closed_win",
-                        exit_reason="profit_target", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="profit_target", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                     logger.info(
                         f"[{coin}] Paper SCALP EXIT @{bid:.3f} "
@@ -788,12 +964,13 @@ class ExecutionEngine:
                 dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
                 if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
-                    fee = (1.0 - bid) * market.fee_rate
+                    fee = self._per_share_fee(bid, market.fee_rate)
                     pnl = (bid - entry_price) * shares - fee * shares
                     status = "closed_win" if pnl > 0 else "closed_loss"
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, pnl, status,
-                        exit_reason="loss_cut", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="loss_cut", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                     logger.info(
                         f"[{coin}] Paper LOSS CUT @{bid:.3f} "
@@ -804,12 +981,13 @@ class ExecutionEngine:
 
                 # ── 4. Near-close fallback: exit any position at ≤30s to avoid unknown outcome ──
                 if remaining <= 30:
-                    fee = (1.0 - bid) * market.fee_rate
+                    fee = self._per_share_fee(bid, market.fee_rate)
                     pnl = (bid - entry_price) * shares - fee * shares
                     status = "closed_win" if pnl > 0 else "closed_loss"
                     self.tracker.close_paper_trade_early(
                         trade_id, bid, pnl, status,
-                        exit_reason="near_close", time_remaining_s=remaining, bid_at_exit=bid,
+                        exit_reason="near_close", time_remaining_s=remaining,
+                        bid_at_exit=bid, ask_at_exit=ask,
                     )
                     logger.info(
                         f"[{coin}] Paper NEAR-CLOSE exit @{bid:.3f} pnl=${pnl:+.4f}"
@@ -902,6 +1080,10 @@ class ExecutionEngine:
         if price <= 0:
             return 0
         return math.floor(self.order_size_usd / price)
+
+    @staticmethod
+    def _per_share_fee(price: float, fee_rate: float) -> float:
+        return fee_rate * price * (1.0 - price)
 
     @staticmethod
     def _is_filled(response: dict) -> bool:

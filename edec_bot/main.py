@@ -3,6 +3,7 @@
 from version import __version__  # noqa: F401
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -36,6 +37,23 @@ def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
+
+
+def _strategy_version(doc_path: str = "STRATEGY.md") -> str:
+    try:
+        for line in Path(doc_path).read_text(encoding="utf-8").splitlines():
+            if "Current version:" in line:
+                return line.split("Current version:", 1)[1].strip()
+    except Exception:
+        pass
+    return "unknown"
+
+
+def _config_hash(config_path: str) -> str:
+    try:
+        return hashlib.sha1(Path(config_path).read_bytes()).hexdigest()[:12]
+    except Exception:
+        return "unknown"
 
 
 def _as_bool(v, default: bool) -> bool:
@@ -204,6 +222,10 @@ async def archive_scheduler_loop(
 async def main():
     config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
     config = load_config(config_path)
+    started_at = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    strategy_version = _strategy_version(Path(__file__).resolve().parent.parent / "STRATEGY.md")
+    config_hash = _config_hash(config_path)
+    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + f"-{config_hash}"
     logger.info(f"Using config: {config_path}")
     setup_logging(config)
 
@@ -222,7 +244,7 @@ async def main():
     # Init paper capital if not already set
     total, _ = tracker.get_paper_capital()
     if total == 0:
-        tracker.set_paper_capital(50.0)  # default $50 paper bankroll
+        tracker.set_paper_capital(5000.0)  # aggressive paper bankroll default
     risk_manager = RiskManager(config)
     price_queue: asyncio.Queue = asyncio.Queue()
     signal_queue: asyncio.Queue = asyncio.Queue()
@@ -235,12 +257,25 @@ async def main():
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
-    default_mode = os.getenv("EDEC_DEFAULT_MODE", "single")
+    default_mode = os.getenv("EDEC_DEFAULT_MODE", "lead")
     if default_mode:
         if strategy.set_mode(default_mode):
             logger.info(f"Default strategy mode from env: {default_mode}")
         else:
             logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
+
+    tracker.set_runtime_context({
+        "run_id": run_id,
+        "started_at": started_at,
+        "app_version": __version__,
+        "strategy_version": strategy_version,
+        "config_path": str(Path(config_path).resolve()),
+        "config_hash": config_hash,
+        "mode": strategy.mode,
+        "dry_run": config.execution.dry_run,
+        "order_size_usd": config.execution.order_size_usd,
+        "paper_capital_total": tracker.get_paper_capital()[0],
+    })
 
     # Initialize CLOB client
     clob_client = None

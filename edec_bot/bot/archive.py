@@ -60,6 +60,36 @@ def _select_all(
     return columns, rows
 
 
+def _latest_run_metadata(db_path: str) -> dict[str, Any] | None:
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = _table_columns(conn, "runs")
+        if not cols:
+            return None
+        row = conn.execute(
+            """SELECT run_id, started_at, app_version, strategy_version,
+                      config_path, config_hash, dry_run, initial_mode,
+                      default_order_size_usd, initial_paper_capital
+               FROM runs ORDER BY started_at DESC LIMIT 1"""
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "run_id": row[0],
+            "started_at": row[1],
+            "app_version": row[2],
+            "strategy_version": row[3],
+            "config_path": row[4],
+            "config_hash": row[5],
+            "dry_run": bool(row[6]),
+            "mode": row[7],
+            "order_size_usd": row[8],
+            "paper_capital_total": row[9],
+        }
+    finally:
+        conn.close()
+
+
 def _sheet_from_rows(wb: Workbook, sheet_name: str, columns: list[str], rows: list[tuple[Any, ...]]) -> None:
     ws = wb.create_sheet(sheet_name)
     if not columns:
@@ -99,13 +129,30 @@ def export_last_24h_excel(
             [
                 "id",
                 "timestamp",
+                "run_id",
+                "app_version",
+                "strategy_version",
+                "config_hash",
+                "mode",
+                "dry_run",
+                "order_size_usd",
+                "paper_capital_total",
                 "market_slug",
+                "window_id",
                 "coin",
                 "strategy_type",
+                "signal_context",
+                "signal_overlap_count",
                 "side",
                 "entry_price",
+                "entry_bid",
+                "entry_ask",
+                "entry_spread",
                 "target_price",
                 "shares",
+                "shares_requested",
+                "shares_filled",
+                "blocked_min_5_shares",
                 "cost",
                 "fee_total",
                 "status",
@@ -115,7 +162,20 @@ def export_last_24h_excel(
                 "exit_timestamp",
                 "time_remaining_s",
                 "bid_at_exit",
+                "ask_at_exit",
+                "exit_spread",
+                "market_start_time",
                 "market_end_time",
+                "entry_depth_side_usd",
+                "opposite_depth_usd",
+                "depth_ratio",
+                "max_bid_seen",
+                "min_bid_seen",
+                "time_to_max_bid_s",
+                "time_to_min_bid_s",
+                "first_profit_time_s",
+                "scalp_hit",
+                "high_confidence_hit",
             ],
         )
         pt_cols, pt_rows = _select_all(
@@ -137,7 +197,16 @@ def export_last_24h_excel(
                 "id",
                 "decision_id",
                 "timestamp",
+                "run_id",
+                "app_version",
+                "strategy_version",
+                "config_hash",
+                "mode",
+                "dry_run",
+                "order_size_usd",
+                "paper_capital_total",
                 "market_slug",
+                "window_id",
                 "coin",
                 "strategy_type",
                 "side",
@@ -148,6 +217,9 @@ def export_last_24h_excel(
                 "combined_cost",
                 "fee_total",
                 "shares",
+                "shares_requested",
+                "shares_filled",
+                "blocked_min_5_shares",
                 "status",
                 "abort_cost",
                 "error",
@@ -171,10 +243,23 @@ def export_last_24h_excel(
             [
                 "id",
                 "timestamp",
+                "run_id",
+                "app_version",
+                "strategy_version",
+                "config_hash",
+                "mode",
+                "dry_run",
+                "order_size_usd",
+                "paper_capital_total",
                 "market_slug",
+                "window_id",
                 "coin",
                 "strategy_type",
+                "signal_context",
+                "signal_overlap_count",
+                "suppressed_reason",
                 "market_end_time",
+                "market_start_time",
                 "up_best_ask",
                 "down_best_ask",
                 "combined_cost",
@@ -249,10 +334,40 @@ def export_recent_trades_csv_gz(
         pt_coin = "pt.coin" if "coin" in pt_cols else "'btc' AS coin"
         pt_strategy = "pt.strategy_type" if "strategy_type" in pt_cols else "'dual_leg' AS strategy_type"
         pt_market_end = "pt.market_end_time" if "market_end_time" in pt_cols else "NULL AS market_end_time"
+        pt_market_start = "pt.market_start_time" if "market_start_time" in pt_cols else "NULL AS market_start_time"
         pt_time_remaining = "pt.time_remaining_s" if "time_remaining_s" in pt_cols else "NULL AS time_remaining_s"
         pt_bid_exit = "pt.bid_at_exit" if "bid_at_exit" in pt_cols else "NULL AS bid_at_exit"
+        pt_ask_exit = "pt.ask_at_exit" if "ask_at_exit" in pt_cols else "NULL AS ask_at_exit"
+        pt_exit_spread = "pt.exit_spread" if "exit_spread" in pt_cols else "NULL AS exit_spread"
         pt_exit_reason = "pt.exit_reason" if "exit_reason" in pt_cols else "NULL AS exit_reason"
         pt_exit_timestamp = "pt.exit_timestamp" if "exit_timestamp" in pt_cols else "NULL AS exit_timestamp"
+        pt_run_id = "pt.run_id" if "run_id" in pt_cols else "NULL AS run_id"
+        pt_app_version = "pt.app_version" if "app_version" in pt_cols else "NULL AS app_version"
+        pt_strategy_version = "pt.strategy_version" if "strategy_version" in pt_cols else "NULL AS strategy_version"
+        pt_config_hash = "pt.config_hash" if "config_hash" in pt_cols else "NULL AS config_hash"
+        pt_mode = "pt.mode" if "mode" in pt_cols else "NULL AS mode"
+        pt_dry_run = "pt.dry_run" if "dry_run" in pt_cols else "NULL AS dry_run"
+        pt_order_size = "pt.order_size_usd" if "order_size_usd" in pt_cols else "NULL AS order_size_usd"
+        pt_paper_capital = "pt.paper_capital_total" if "paper_capital_total" in pt_cols else "NULL AS paper_capital_total"
+        pt_window_id = "pt.window_id" if "window_id" in pt_cols else "NULL AS window_id"
+        pt_signal_context = "pt.signal_context" if "signal_context" in pt_cols else "NULL AS signal_context"
+        pt_signal_overlap = "pt.signal_overlap_count" if "signal_overlap_count" in pt_cols else "NULL AS signal_overlap_count"
+        pt_shares_requested = "pt.shares_requested" if "shares_requested" in pt_cols else "NULL AS shares_requested"
+        pt_shares_filled = "pt.shares_filled" if "shares_filled" in pt_cols else "NULL AS shares_filled"
+        pt_blocked_min5 = "pt.blocked_min_5_shares" if "blocked_min_5_shares" in pt_cols else "NULL AS blocked_min_5_shares"
+        pt_entry_bid = "pt.entry_bid" if "entry_bid" in pt_cols else "NULL AS entry_bid"
+        pt_entry_ask = "pt.entry_ask" if "entry_ask" in pt_cols else "NULL AS entry_ask"
+        pt_entry_spread = "pt.entry_spread" if "entry_spread" in pt_cols else "NULL AS entry_spread"
+        pt_entry_depth = "pt.entry_depth_side_usd" if "entry_depth_side_usd" in pt_cols else "NULL AS entry_depth_side_usd"
+        pt_opp_depth = "pt.opposite_depth_usd" if "opposite_depth_usd" in pt_cols else "NULL AS opposite_depth_usd"
+        pt_depth_ratio = "pt.depth_ratio" if "depth_ratio" in pt_cols else "NULL AS depth_ratio"
+        pt_max_bid = "pt.max_bid_seen" if "max_bid_seen" in pt_cols else "NULL AS max_bid_seen"
+        pt_min_bid = "pt.min_bid_seen" if "min_bid_seen" in pt_cols else "NULL AS min_bid_seen"
+        pt_tmax = "pt.time_to_max_bid_s" if "time_to_max_bid_s" in pt_cols else "NULL AS time_to_max_bid_s"
+        pt_tmin = "pt.time_to_min_bid_s" if "time_to_min_bid_s" in pt_cols else "NULL AS time_to_min_bid_s"
+        pt_tprofit = "pt.first_profit_time_s" if "first_profit_time_s" in pt_cols else "NULL AS first_profit_time_s"
+        pt_scalp_hit = "pt.scalp_hit" if "scalp_hit" in pt_cols else "NULL AS scalp_hit"
+        pt_high_conf_hit = "pt.high_confidence_hit" if "high_confidence_hit" in pt_cols else "NULL AS high_confidence_hit"
 
         d_filter_passed = "d.filter_passed" if "filter_passed" in d_cols else "NULL AS filter_passed"
         d_filter_failed = "d.filter_failed" if "filter_failed" in d_cols else "NULL AS filter_failed"
@@ -293,13 +408,30 @@ def export_recent_trades_csv_gz(
             SELECT
                 pt.id AS trade_id,
                 pt.timestamp,
+                {pt_run_id},
+                {pt_app_version},
+                {pt_strategy_version},
+                {pt_config_hash},
+                {pt_mode},
+                {pt_dry_run},
+                {pt_order_size},
+                {pt_paper_capital},
                 pt.market_slug,
+                {pt_window_id},
                 {pt_coin},
                 {pt_strategy},
+                {pt_signal_context},
+                {pt_signal_overlap},
                 pt.side,
                 pt.entry_price,
+                {pt_entry_bid},
+                {pt_entry_ask},
+                {pt_entry_spread},
                 pt.target_price,
                 pt.shares,
+                {pt_shares_requested},
+                {pt_shares_filled},
+                {pt_blocked_min5},
                 pt.cost,
                 pt.fee_total,
                 pt.status,
@@ -309,7 +441,20 @@ def export_recent_trades_csv_gz(
                 {pt_exit_timestamp},
                 {pt_time_remaining},
                 {pt_bid_exit},
+                {pt_ask_exit},
+                {pt_exit_spread},
+                {pt_market_start},
                 {pt_market_end},
+                {pt_entry_depth},
+                {pt_opp_depth},
+                {pt_depth_ratio},
+                {pt_max_bid},
+                {pt_min_bid},
+                {pt_tmax},
+                {pt_tmin},
+                {pt_tprofit},
+                {pt_scalp_hit},
+                {pt_high_conf_hit},
                 {d_filter_passed},
                 {d_filter_failed},
                 {d_reason},
@@ -340,7 +485,26 @@ def export_recent_trades_csv_gz(
 
         with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(columns)
+            compact_names = {
+                "trade_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+                "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+                "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+                "window_id": "wid", "coin": "c", "strategy_type": "st", "signal_context": "ctx",
+                "signal_overlap_count": "ov", "side": "sd", "entry_price": "ep", "entry_bid": "eb",
+                "entry_ask": "ea", "entry_spread": "es", "target_price": "tp", "shares": "sh",
+                "shares_requested": "srq", "shares_filled": "sfl", "blocked_min_5_shares": "b5",
+                "cost": "cs", "fee_total": "fee", "status": "status", "exit_price": "xp",
+                "pnl": "pnl", "exit_reason": "er", "exit_timestamp": "xt", "time_remaining_s": "tx",
+                "bid_at_exit": "xb", "ask_at_exit": "xa", "exit_spread": "xs", "market_start_time": "ms",
+                "market_end_time": "me", "entry_depth_side_usd": "eds", "opposite_depth_usd": "ods",
+                "depth_ratio": "drt", "max_bid_seen": "maxb", "min_bid_seen": "minb",
+                "time_to_max_bid_s": "ttmax", "time_to_min_bid_s": "ttmin", "first_profit_time_s": "tfp",
+                "scalp_hit": "sc", "high_confidence_hit": "hc", "filter_passed": "fp",
+                "filter_failed": "ff", "decision_reason": "why", "coin_velocity_30s": "v30",
+                "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
+                "decision_time_remaining_s": "te",
+            }
+            writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
 
         return str(out_path), len(rows), oldest, newest
@@ -512,6 +676,7 @@ def run_daily_archive(
     latest_trades = str(output_path / f"{label}_latest_trades.csv.gz")
     shutil.copy2(excel_path, latest_excel)
     shutil.copy2(recent_path, latest_trades)
+    run_meta = _latest_run_metadata(db_path)
 
     index_path = output_path / f"{label}_latest_index.json"
     index = {
@@ -534,6 +699,7 @@ def run_daily_archive(
             "latest_trades_csv_gz": Path(latest_trades).name,
             "latest_index_json": index_path.name,
         },
+        "latest_run": run_meta,
         "dropbox_files": None,
     }
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")

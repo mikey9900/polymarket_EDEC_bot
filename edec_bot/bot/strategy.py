@@ -29,15 +29,22 @@ class StrategyEngine:
         # Start in "off" mode — user must press Start in Telegram to begin
         self._mode = "off"
         self._active = False  # scanning on/off
-        # Cooldown: track last signal price per (coin, strategy_type).
-        # Re-signal same window only when price improves by strategy threshold.
-        # Key = (coin, strategy_type), value = (market_slug, last_entry_price)
+        # Track recent signals per (coin, strategy_type).
+        # Repricing strategies can fire again in the same window after a short cooldown,
+        # even if the next entry is not strictly cheaper.
+        # Key = (coin, strategy_type), value = (market_slug, last_entry_price, last_signal_at)
         self._last_signal: dict[tuple, tuple] = {}
         self.MIN_PRICE_IMPROVEMENT = {
             "dual_leg": 0.03,    # 3c cheaper combined cost
-            "single_leg": 0.02,  # 2c cheaper entry
-            "lead_lag": 0.02,    # 2c cheaper entry
+            "single_leg": 0.01,  # 1c cheaper entry
+            "lead_lag": 0.01,    # 1c cheaper entry
             "swing_leg": 0.02,   # 2c cheaper entry
+        }
+        self.RESIGNAL_COOLDOWN_S = {
+            "dual_leg": 0.0,
+            "single_leg": 8.0,
+            "lead_lag": 6.0,
+            "swing_leg": 0.0,
         }
 
     @property
@@ -54,9 +61,9 @@ class StrategyEngine:
         return True
 
     def start_scanning(self):
-        """Start scanning — restores last mode or defaults to 'both'."""
+        """Start scanning — restores last mode or defaults to aggressive repricing."""
         if self._mode == "off":
-            self._mode = "both"
+            self._mode = "lead" if self.config.lead_lag.enabled else "both"
         self._active = True
         logger.info(f"Scanning started (mode={self._mode})")
 
@@ -110,49 +117,104 @@ class StrategyEngine:
         for coin, market in active_markets.items():
             up_book, down_book = self.scanner.get_books(coin)
             agg = self.aggregator.get_aggregated_price(coin)
+            coin_signals: list[TradeSignal] = []
 
             if self.dual_leg_enabled():
                 signal = self._evaluate_dual_leg(coin, market, up_book, down_book, agg)
-                if signal is not None and self._is_price_improvement("dual_leg", coin, market.slug, signal.combined_cost):
-                    self._last_signal[(coin, "dual_leg")] = (market.slug, signal.combined_cost)
-                    signals.append(signal)
+                if signal is not None:
+                    coin_signals.append(signal)
 
             if self.single_leg_enabled():
                 signal = self._evaluate_single_leg(coin, market, up_book, down_book, agg)
-                if signal is not None and self._is_price_improvement("single_leg", coin, market.slug, signal.entry_price):
-                    self._last_signal[(coin, "single_leg")] = (market.slug, signal.entry_price)
-                    signals.append(signal)
+                if signal is not None:
+                    coin_signals.append(signal)
 
             if self.lead_lag_enabled():
                 signal = self._evaluate_lead_lag(coin, market, up_book, down_book, agg)
-                if signal is not None and self._is_price_improvement("lead_lag", coin, market.slug, signal.entry_price):
-                    self._last_signal[(coin, "lead_lag")] = (market.slug, signal.entry_price)
-                    signals.append(signal)
+                if signal is not None:
+                    coin_signals.append(signal)
 
             if self.swing_leg_enabled():
                 signal = self._evaluate_swing_leg(coin, market, up_book, down_book, agg)
-                if signal is not None and self._is_price_improvement("swing_leg", coin, market.slug, signal.entry_price):
-                    self._last_signal[(coin, "swing_leg")] = (market.slug, signal.entry_price)
+                if signal is not None:
+                    coin_signals.append(signal)
+
+            if not coin_signals:
+                continue
+
+            strategy_names = [s.strategy_type for s in coin_signals]
+            signal_context = "+".join(strategy_names)
+            overlap_count = max(0, len(strategy_names) - 1)
+
+            for signal in coin_signals:
+                signal.signal_context = signal_context
+                signal.signal_overlap_count = overlap_count
+                if signal.decision_id:
+                    self.tracker.update_decision_signal_context(
+                        signal.decision_id,
+                        signal_context=signal_context,
+                        signal_overlap_count=overlap_count,
+                    )
+
+                gate_reason = self._signal_gate_reason(
+                    signal.strategy_type,
+                    coin,
+                    market.slug,
+                    signal.combined_cost if signal.strategy_type == "dual_leg" else signal.entry_price,
+                )
+                if gate_reason is None:
+                    self._record_signal(
+                        signal.strategy_type,
+                        coin,
+                        market.slug,
+                        signal.combined_cost if signal.strategy_type == "dual_leg" else signal.entry_price,
+                    )
                     signals.append(signal)
+                elif signal.decision_id:
+                    self.tracker.suppress_decision(signal.decision_id, gate_reason)
 
         return signals
 
     def _is_price_improvement(self, strategy: str, coin: str, slug: str, price: float) -> bool:
+        return self._signal_gate_reason(strategy, coin, slug, price) is None
+
+    def _signal_gate_reason(self, strategy: str, coin: str, slug: str, price: float) -> str | None:
         """
-        Returns True if this is worth signalling:
+        Returns None if this is worth signalling, otherwise the suppression reason:
         - New market window (different slug) → always signal
-        - Same window: re-signal only if price improved enough for that strategy.
-        - Same window, price same or worse → suppress
+        - Same window: re-signal immediately on meaningful price improvement
+        - Repricing strategies may re-arm after a short cooldown inside the same window
         """
         key = (coin, strategy)
         last = self._last_signal.get(key)
+        now = datetime.now(timezone.utc)
         if last is None:
-            return True                          # first ever signal for this coin/strategy
-        last_slug, last_price = last
+            return None
+        last_slug, last_price, last_at = last
         if last_slug != slug:
-            return True                          # new 5-min window — always evaluate
+            return None
         needed = self.MIN_PRICE_IMPROVEMENT.get(strategy, 0.03)
-        return (last_price - price) >= needed
+        if (last_price - price) >= needed:
+            return None
+        cooldown_s = self.RESIGNAL_COOLDOWN_S.get(strategy, 0.0)
+        if cooldown_s > 0 and (now - last_at).total_seconds() >= cooldown_s:
+            return None
+        age_s = (now - last_at).total_seconds()
+        return (
+            f"cooldown_active:{strategy}:age={age_s:.1f}s"
+            f":need_price_improve={needed:.2f}:last={last_price:.3f}:now={price:.3f}"
+        )
+
+    def _record_signal(self, strategy: str, coin: str, slug: str, price: float) -> None:
+        self._last_signal[(coin, strategy)] = (
+            slug,
+            price,
+            datetime.now(timezone.utc),
+        )
+
+    @staticmethod
+    def _per_share_fee(price: float, fee_rate: float) -> float:
+        return fee_rate * price * (1.0 - price)
 
     # -----------------------------------------------------------------------
     # Dual-leg filter chain
@@ -212,8 +274,8 @@ class StrategyEngine:
             failed_reason = f"Combined cost too high: {combined:.3f}"
 
         # Filter 6: Edge after fees
-        fee_up = (1.0 - up_book.best_ask) * market.fee_rate
-        fee_down = (1.0 - down_book.best_ask) * market.fee_rate
+        fee_up = self._per_share_fee(up_book.best_ask, market.fee_rate)
+        fee_down = self._per_share_fee(down_book.best_ask, market.fee_rate)
         fee_total = fee_up + fee_down
         total_cost = combined + fee_total
         expected_profit = 1.0 - total_cost
@@ -264,8 +326,10 @@ class StrategyEngine:
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = "All filters passed" if all_passed else failed_reason
 
-        self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                           filters, action, reason, "dual_leg")
+        decision_id = self._log_decision(
+            coin, market, up_book, down_book, agg, remaining,
+            filters, action, reason, "dual_leg"
+        )
 
         if not all_passed:
             return None
@@ -273,6 +337,7 @@ class StrategyEngine:
         signal = TradeSignal(
             market=market,
             strategy_type="dual_leg",
+            decision_id=decision_id,
             up_price=up_book.best_ask,
             down_price=down_book.best_ask,
             combined_cost=combined,
@@ -357,18 +422,24 @@ class StrategyEngine:
         if up_cheap:
             side = "up"
             entry_price = up_book.best_ask
+            entry_bid = up_book.best_bid
             opposite_price = down_book.best_ask
             entry_depth = up_book.ask_depth_usd
+            opposite_depth = down_book.ask_depth_usd
         elif down_cheap:
             side = "down"
             entry_price = down_book.best_ask
+            entry_bid = down_book.best_bid
             opposite_price = up_book.best_ask
             entry_depth = down_book.ask_depth_usd
+            opposite_depth = up_book.ask_depth_usd
         else:
             side = ""
             entry_price = min(up_book.best_ask, down_book.best_ask)
+            entry_bid = 0.0
             opposite_price = max(up_book.best_ask, down_book.best_ask)
             entry_depth = 0.0
+            opposite_depth = 0.0
 
         f = FilterResult("entry_threshold", entry_ok,
                          f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f}",
@@ -431,27 +502,37 @@ class StrategyEngine:
 
         all_passed = all(f.passed for f in filters)
 
-        # EV estimate: momentum entry holds to high_confidence_bid (0.82), then resolves at $1
-        notional_target = cfg.high_confidence_bid
-        fee_buy = (1.0 - entry_price) * market.fee_rate
-        fee_sell = (1.0 - notional_target) * market.fee_rate
+        # Aggressive mode treats single-leg as a fast repricing scalp first.
+        notional_target = cfg.scalp_take_profit_bid
+        fee_buy = self._per_share_fee(entry_price, market.fee_rate)
+        fee_sell = self._per_share_fee(notional_target, market.fee_rate)
         expected_profit = (notional_target - entry_price) - fee_buy - fee_sell
 
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = f"Single-leg {side.upper() if side else '?'} @{entry_price:.3f}" if all_passed else failed_reason
 
-        self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                           filters, action, reason, "single_leg")
+        decision_id = self._log_decision(
+            coin, market, up_book, down_book, agg, remaining,
+            filters, action, reason, "single_leg"
+        )
 
         if not all_passed:
             return None
 
+        depth_ratio = (entry_depth / opposite_depth) if opposite_depth else 0.0
         signal = TradeSignal(
             market=market,
             strategy_type="single_leg",
+            decision_id=decision_id,
             side=side,
             entry_price=entry_price,
             target_sell_price=notional_target,
+            entry_bid=entry_bid,
+            entry_ask=entry_price,
+            entry_spread=max(0.0, entry_price - entry_bid),
+            entry_depth_side_usd=entry_depth,
+            opposite_depth_usd=opposite_depth,
+            depth_ratio=depth_ratio,
             fee_total=fee_buy + fee_sell,
             expected_profit=expected_profit,
             time_remaining_s=remaining,
@@ -462,7 +543,7 @@ class StrategyEngine:
         logger.info(
             f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
             f"SINGLE-LEG SIGNAL [{coin.upper()}]: BUY {side.upper()}@{entry_price:.3f} → "
-            f"HOLD@{notional_target:.2f} | Est profit: ${expected_profit:.4f}"
+            f"SCALP@{notional_target:.2f} | Est profit: ${expected_profit:.4f}"
         )
         return signal
 
@@ -533,11 +614,15 @@ class StrategyEngine:
         if vel > 0:
             side = "up"
             entry_price = up_book.best_ask
+            entry_bid = up_book.best_bid
             entry_depth = up_book.ask_depth_usd
+            opposite_depth = down_book.ask_depth_usd
         else:
             side = "down"
             entry_price = down_book.best_ask
+            entry_bid = down_book.best_bid
             entry_depth = down_book.ask_depth_usd
+            opposite_depth = up_book.ask_depth_usd
 
         in_range = cfg.min_entry <= entry_price <= cfg.max_entry
         f = FilterResult("lag_window", in_range,
@@ -576,16 +661,18 @@ class StrategyEngine:
         # Profit estimate (entry → target sell)
         target_sell = cfg.target_sell
         fee_rate = market.fee_rate
-        fee_buy = (1.0 - entry_price) * fee_rate
-        fee_sell = (1.0 - target_sell) * fee_rate
+        fee_buy = self._per_share_fee(entry_price, fee_rate)
+        fee_sell = self._per_share_fee(target_sell, fee_rate)
         expected_profit = (target_sell - entry_price) - fee_buy - fee_sell
 
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = (f"Lead-lag {side.upper()} @{entry_price:.3f} vel={vel:.3f}%"
                   if all_passed else failed_reason)
 
-        self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                           filters, action, reason, "lead_lag")
+        decision_id = self._log_decision(
+            coin, market, up_book, down_book, agg, remaining,
+            filters, action, reason, "lead_lag"
+        )
 
         if not all_passed:
             return None
@@ -593,9 +680,16 @@ class StrategyEngine:
         signal = TradeSignal(
             market=market,
             strategy_type="lead_lag",
+            decision_id=decision_id,
             side=side,
             entry_price=entry_price,
             target_sell_price=target_sell,
+            entry_bid=entry_bid,
+            entry_ask=entry_price,
+            entry_spread=max(0.0, entry_price - entry_bid),
+            entry_depth_side_usd=entry_depth,
+            opposite_depth_usd=opposite_depth,
+            depth_ratio=(entry_depth / opposite_depth) if opposite_depth else 0.0,
             fee_total=fee_buy + fee_sell,
             expected_profit=expected_profit,
             time_remaining_s=remaining,
@@ -651,8 +745,10 @@ class StrategyEngine:
         if coin in cfg.disabled_coins:
             if not failed_reason:
                 failed_reason = f"Swing disabled on {coin.upper()} (momentum-driven, not mean-reversion)"
-            self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                               filters, "SKIP", failed_reason, "swing_leg")
+            self._log_decision(
+                coin, market, up_book, down_book, agg, remaining,
+                filters, "SKIP", failed_reason, "swing_leg"
+            )
             return None
 
         # Filter 3: Books available
@@ -664,8 +760,10 @@ class StrategyEngine:
         if not books_ok:
             if not failed_reason:
                 failed_reason = "Order books not available"
-            self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                               filters, "SKIP", failed_reason, "swing_leg")
+            self._log_decision(
+                coin, market, up_book, down_book, agg, remaining,
+                filters, "SKIP", failed_reason, "swing_leg"
+            )
             return None
 
         # Filter 4: One side must be cheap enough to enter as first leg
@@ -676,25 +774,35 @@ class StrategyEngine:
         if up_cheap and not dn_cheap:
             side = "up"
             entry_price = up_book.best_ask
+            entry_bid = up_book.best_bid
             entry_depth = up_book.ask_depth_usd
+            other_depth = down_book.ask_depth_usd
         elif dn_cheap and not up_cheap:
             side = "down"
             entry_price = down_book.best_ask
+            entry_bid = down_book.best_bid
             entry_depth = down_book.ask_depth_usd
+            other_depth = up_book.ask_depth_usd
         elif up_cheap and dn_cheap:
             # Both cheap — pick cheaper one as first leg
             if up_book.best_ask <= down_book.best_ask:
                 side = "up"
                 entry_price = up_book.best_ask
+                entry_bid = up_book.best_bid
                 entry_depth = up_book.ask_depth_usd
+                other_depth = down_book.ask_depth_usd
             else:
                 side = "down"
                 entry_price = down_book.best_ask
+                entry_bid = down_book.best_bid
                 entry_depth = down_book.ask_depth_usd
+                other_depth = up_book.ask_depth_usd
         else:
             side = ""
             entry_price = 0.0
+            entry_bid = 0.0
             entry_depth = 0.0
+            other_depth = 0.0
 
         f = FilterResult("first_leg_price", entry_ok,
                          f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f}",
@@ -817,19 +925,29 @@ class StrategyEngine:
         reason = (f"Swing {side.upper()}@{entry_price:.3f} — waiting for other leg"
                   if all_passed else failed_reason)
 
-        self._log_decision(coin, market, up_book, down_book, agg, remaining,
-                           filters, action, reason, "swing_leg")
+        decision_id = self._log_decision(
+            coin, market, up_book, down_book, agg, remaining,
+            filters, action, reason, "swing_leg"
+        )
 
         if not all_passed:
             return None
 
+        depth_ratio = (entry_depth / other_depth) if other_depth else 0.0
         signal = TradeSignal(
             market=market,
             strategy_type="swing_leg",
+            decision_id=decision_id,
             side=side,
             entry_price=entry_price,
             target_sell_price=cfg.first_leg_exit,
-            fee_total=(1.0 - entry_price) * market.fee_rate,
+            entry_bid=entry_bid,
+            entry_ask=entry_price,
+            entry_spread=max(0.0, entry_price - entry_bid),
+            entry_depth_side_usd=entry_depth,
+            opposite_depth_usd=other_depth,
+            depth_ratio=depth_ratio if depth_ratio is not None else 0.0,
+            fee_total=self._per_share_fee(entry_price, market.fee_rate),
             expected_profit=0.0,   # unknown until second leg is secured
             time_remaining_s=remaining,
             up_book=up_book,
@@ -851,11 +969,32 @@ class StrategyEngine:
     def _log_decision(self, coin, market, up_book, down_book, agg, remaining,
                       filters, action, reason, strategy_type) -> int:
         """Log decision to the tracker."""
+        paper_total, _ = self.tracker.get_paper_capital()
+        if strategy_type == "lead_lag":
+            order_size_usd = self.config.lead_lag.order_size_usd
+        elif strategy_type == "swing_leg":
+            order_size_usd = self.config.swing_leg.order_size_usd
+        elif strategy_type == "single_leg":
+            order_size_usd = self.config.single_leg.order_size_usd
+        else:
+            order_size_usd = self.config.execution.order_size_usd
+        ctx = self.tracker.get_runtime_context()
         decision = Decision(
             timestamp=datetime.now(timezone.utc),
+            run_id=str(ctx.get("run_id") or ""),
+            app_version=str(ctx.get("app_version") or ""),
+            strategy_version=str(ctx.get("strategy_version") or ""),
+            config_path=str(ctx.get("config_path") or ""),
+            config_hash=str(ctx.get("config_hash") or ""),
+            mode=self.mode,
+            dry_run=self.config.execution.dry_run,
+            order_size_usd=order_size_usd,
+            paper_capital_total=paper_total,
             market_slug=market.slug,
+            window_id=market.slug,
             coin=coin,
             market_end_time=market.end_time,
+            market_start_time=market.start_time,
             strategy_type=strategy_type,
             up_best_ask=up_book.best_ask if up_book else 0,
             down_best_ask=down_book.best_ask if down_book else 0,

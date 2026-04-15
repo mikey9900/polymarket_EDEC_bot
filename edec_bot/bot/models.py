@@ -64,6 +64,9 @@ class FilterResult:
 class TradeSignal:
     market: MarketInfo
     strategy_type: str        # "dual_leg" or "single_leg"
+    decision_id: int = 0
+    signal_context: str = ""
+    signal_overlap_count: int = 0
 
     # Dual-leg fields
     up_price: float = 0.0
@@ -74,6 +77,12 @@ class TradeSignal:
     side: str = ""            # "up" or "down"
     entry_price: float = 0.0
     target_sell_price: float = 0.0
+    entry_bid: float = 0.0
+    entry_ask: float = 0.0
+    entry_spread: float = 0.0
+    entry_depth_side_usd: float = 0.0
+    opposite_depth_usd: float = 0.0
+    depth_ratio: float = 0.0
 
     # Common
     fee_total: float = 0.0
@@ -141,6 +150,9 @@ class TradeResult:
     total_cost: float = 0.0
     fee_total: float = 0.0
     shares: float = 0.0
+    shares_requested: float = 0.0
+    shares_filled: float = 0.0
+    blocked_min_5_shares: bool = False
     status: str = "pending"   # success, aborted, partial_abort, failed, dry_run, open
     abort_cost: float = 0.0
     error: str = ""
@@ -153,6 +165,8 @@ class Decision:
     market_slug: str
     coin: str
     market_end_time: datetime
+    market_start_time: datetime
+    window_id: str
     strategy_type: str         # "dual_leg" or "single_leg"
     up_best_ask: float
     down_best_ask: float
@@ -167,3 +181,15 @@ class Decision:
     filter_results: list
     action: str               # "TRADE", "SKIP", "DRY_RUN_SIGNAL"
     reason: str
+    run_id: str = ""
+    app_version: str = ""
+    strategy_version: str = ""
+    config_path: str = ""
+    config_hash: str = ""
+    mode: str = ""
+    dry_run: bool = True
+    order_size_usd: float = 0.0
+    paper_capital_total: float = 0.0
+    signal_context: str = ""
+    signal_overlap_count: int = 0
+    suppressed_reason: str = ""

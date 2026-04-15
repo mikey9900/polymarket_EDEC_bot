@@ -58,6 +58,7 @@ class TelegramBot:
         self._cleanup_task: asyncio.Task | None = None
         self._refresh_lock = asyncio.Lock()
         self._ephemeral_msgs: list[int] = []  # message IDs to delete on next cleanup
+        self._dashboard_view: str = "main"
 
     async def start(self):
         """Initialize and start the Telegram bot."""
@@ -289,6 +290,7 @@ class TelegramBot:
                 reply_markup=self._main_keyboard(),
             )
             self._dashboard_message_id = msg.message_id
+            self._dashboard_view = "main"
             self._save_msg_id()
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
             if self._AUTO_EPHEMERAL_CLEAN:
@@ -340,6 +342,7 @@ class TelegramBot:
                 reply_markup=self._main_keyboard(),
             )
             self._dashboard_message_id = msg.message_id
+            self._dashboard_view = "main"
             self._save_msg_id()
         except Exception as e:
             logger.error(f"Failed to re-post dashboard: {e}")
@@ -436,10 +439,13 @@ class TelegramBot:
         await self._repost_dashboard()
         return stats
 
-    async def _refresh_dashboard(self):
+    async def _refresh_dashboard(self, force: bool = False):
         """Edit the existing dashboard message with fresh data.
         Falls back to re-posting if the message ID is lost."""
         if not self._app or not self.chat_id:
+            return
+
+        if self._dashboard_view != "main" and not force:
             return
 
         # No known message — re-create from scratch (no loop: calls repost, not cleanup)
@@ -694,6 +700,9 @@ class TelegramBot:
         rows.append([InlineKeyboardButton("« Back", callback_data="back")])
         return InlineKeyboardMarkup(rows)
 
+    def _set_dashboard_view(self, view: str) -> None:
+        self._dashboard_view = view
+
     async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard button presses."""
         query = update.callback_query
@@ -714,6 +723,7 @@ class TelegramBot:
 
         # --- Budget selection ---
         if data.startswith("budget_"):
+            self._set_dashboard_view("main")
             amt = float(data.split("_")[1])
             await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
             if self.executor:
@@ -722,6 +732,7 @@ class TelegramBot:
             return
 
         if data == "budget":
+            self._set_dashboard_view("budget")
             await query.answer()
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
             await query.edit_message_text(
@@ -735,6 +746,7 @@ class TelegramBot:
 
         # --- Capital selection ---
         if data.startswith("capital_"):
+            self._set_dashboard_view("main")
             amt = float(data.split("_")[1])
             await query.answer(f"✅ Capital set to ${amt:.0f}", show_alert=False)
             if self.tracker:
@@ -743,6 +755,7 @@ class TelegramBot:
             return
 
         if data == "capital":
+            self._set_dashboard_view("capital")
             await query.answer()
             _, balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
             await query.edit_message_text(
@@ -755,12 +768,14 @@ class TelegramBot:
             return
 
         if data == "back":
+            self._set_dashboard_view("main")
             await query.answer()
-            await self._refresh_dashboard()
+            await self._refresh_dashboard(force=True)
             return
 
         # --- Start / Stop / Kill ---
         if data == "start":
+            self._set_dashboard_view("main")
             await query.answer("▶️ Scanning started", show_alert=False)
             if self.strategy_engine:
                 self.strategy_engine.start_scanning()
@@ -770,6 +785,7 @@ class TelegramBot:
             return
 
         if data == "stop":
+            self._set_dashboard_view("main")
             await query.answer("⏸ Bot stopped", show_alert=False)
             if self.strategy_engine:
                 self.strategy_engine.stop_scanning()
@@ -778,6 +794,7 @@ class TelegramBot:
             return
 
         if data == "kill":
+            self._set_dashboard_view("main")
             await query.answer("🛑 Kill switch activated!", show_alert=True)
             if self.strategy_engine:
                 self.strategy_engine.stop_scanning()
@@ -786,11 +803,13 @@ class TelegramBot:
             return
 
         if data == "refresh":
+            self._set_dashboard_view("main")
             await query.answer("Refreshing dashboard...", show_alert=False)
-            await self._refresh_dashboard()
+            await self._refresh_dashboard(force=True)
             return
 
         if data == "clear_chat":
+            self._set_dashboard_view("main")
             await query.answer("Clearing chat history...", show_alert=True)
             stats = await self._clear_chat_history()
             note = (
@@ -804,6 +823,7 @@ class TelegramBot:
             return
 
         if data == "reset_stats":
+            self._set_dashboard_view("main")
             await query.answer("🗑 Stats reset!", show_alert=False)
             if self.tracker:
                 self.tracker.reset_paper_stats()
@@ -816,6 +836,7 @@ class TelegramBot:
         await query.answer()
 
         if data == "stats":
+            self._set_dashboard_view("stats")
             stats = self.tracker.get_daily_stats()
             paper = self.tracker.get_paper_stats()
             pnl_emoji = "📈" if paper["total_pnl"] >= 0 else "📉"
@@ -832,6 +853,7 @@ class TelegramBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data == "status":
+            self._set_dashboard_view("status")
             status = self.risk_manager.get_status()
             mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
             order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
@@ -845,6 +867,7 @@ class TelegramBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data == "trades":
+            self._set_dashboard_view("trades")
             trades = self.tracker.get_recent_trades(limit=5)
             if not trades:
                 text = "No trades yet."
@@ -859,6 +882,7 @@ class TelegramBot:
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
 
         elif data in ("export_today", "export_all"):
+            self._set_dashboard_view("main")
             # Export sends a document — run in thread pool so it never blocks the event loop
             if not self.export_fn:
                 self._track(await query.message.reply_text("Export not available."))
@@ -882,6 +906,7 @@ class TelegramBot:
             await self._repost_dashboard()
 
         elif data == "export_recent":
+            self._set_dashboard_view("main")
             if not self.export_recent_fn:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
@@ -904,6 +929,7 @@ class TelegramBot:
 
 
         elif data == "export_latest":
+            self._set_dashboard_view("main")
             wait_msg = await query.message.reply_text("⏳ Sending latest archive files...")
             self._track(wait_msg)
             try:
@@ -915,12 +941,15 @@ class TelegramBot:
             await self._repost_dashboard()
 
         elif data == "archive_health":
+            self._set_dashboard_view("archive_health")
             text = await self._build_archive_health_text()
             await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
         elif data == "help_panel":
+            self._set_dashboard_view("help_panel")
             text = self._commands_text()
             await query.edit_message_text(text, reply_markup=_back_kb)
         elif data == "filters":
+            self._set_dashboard_view("filters")
             stats = self.tracker.get_filter_stats()
             if not stats:
                 text = "No filter data yet."

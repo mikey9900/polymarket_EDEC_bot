@@ -18,13 +18,16 @@ from bot.archive import (
     run_daily_archive,
     sync_dropbox_latest_to_local,
 )
+from bot.dashboard_state import DashboardStateService
 from bot.export import export_to_excel, export_recent_to_excel
+from bot.live_api import LiveApiServer
 from bot.market_scanner import MarketScanner
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
 from bot.risk_manager import RiskManager
 from bot.strategy import StrategyEngine
 from bot.execution import ExecutionEngine
+from bot.runtime_defaults import default_strategy_mode
 from bot.tracker import DecisionTracker
 from bot.telegram_bot import TelegramBot
 
@@ -257,7 +260,7 @@ async def main():
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
 
-    default_mode = os.getenv("EDEC_DEFAULT_MODE", "lead")
+    default_mode = default_strategy_mode()
     if default_mode:
         if strategy.set_mode(default_mode):
             logger.info(f"Default strategy mode from env: {default_mode}")
@@ -333,6 +336,12 @@ async def main():
     dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/"
     default_repo_sync_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", default_repo_sync_dir)
+    dashboard_api_enabled = _as_bool(os.getenv("EDEC_DASHBOARD_API_ENABLED"), True)
+    dashboard_api_host = os.getenv("EDEC_DASHBOARD_API_HOST", "0.0.0.0")
+    dashboard_api_port = _as_int(os.getenv("EDEC_DASHBOARD_API_PORT"), 8099)
+    dashboard_update_ms = _as_int(os.getenv("EDEC_DASHBOARD_UPDATE_MS"), 250)
+    dashboard_history_sample_ms = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_SAMPLE_MS"), 1000)
+    dashboard_history_points = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_POINTS"), 600)
 
     def do_archive() -> dict:
         return run_daily_archive(
@@ -388,11 +397,30 @@ async def main():
         archive_health_fn=do_archive_health,
         repo_sync_fn=do_repo_sync_latest,
     )
+    dashboard_state = DashboardStateService(
+        config=config,
+        tracker=tracker,
+        risk_manager=risk_manager,
+        scanner=scanner,
+        strategy_engine=strategy,
+        executor=executor,
+        aggregator=aggregator,
+        update_interval_s=max(0.1, dashboard_update_ms / 1000.0),
+        history_sample_interval_s=max(dashboard_update_ms, dashboard_history_sample_ms) / 1000.0,
+        history_points=dashboard_history_points,
+    )
+    live_api = (
+        LiveApiServer(dashboard_state, host=dashboard_api_host, port=dashboard_api_port)
+        if dashboard_api_enabled else None
+    )
 
     feed_pairs = []
     tasks = []
 
     try:
+        if live_api:
+            await dashboard_state.start()
+            await live_api.start()
         await telegram.start()
 
         feed_pairs = start_all_feeds(config, price_queue)
@@ -454,6 +482,9 @@ async def main():
 
         await telegram.send_alert("🔴 EDEC Bot stopped")
         await telegram.stop()
+        if live_api:
+            await live_api.stop()
+            await dashboard_state.stop()
 
         tracker.close()
         logger.info("Shutdown complete")

@@ -880,6 +880,7 @@ class TelegramBot:
         file_specs = [
             ("latest_last24h_xlsx", "Dropbox latest 24h Excel export"),
             ("latest_trades_csv_gz", "Dropbox latest compressed trades export"),
+            ("latest_signals_csv_gz", "Dropbox latest compressed signals export"),
         ]
         if include_index:
             file_specs.append(("latest_index_json", "Dropbox latest index pointer"))
@@ -901,8 +902,9 @@ class TelegramBot:
             heading_ok if ok else heading_fail,
             f"Output dir: `{result.get('output_dir', 'unknown')}`",
             f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
+            f"Expanded Signals CSV: `{result.get('expanded_signals_csv') or 'none'}`",
         ]
-        for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
+        for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_signals_csv_gz", "latest_index_json"):
             d = downloads.get(key, {})
             status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
             if not d.get("ok") and d.get("remote_path"):
@@ -942,11 +944,12 @@ class TelegramBot:
             return (
                 paths.get("latest_excel"),
                 paths.get("latest_trades"),
+                paths.get("latest_signals"),
                 paths.get("latest_index"),
             )
 
-        excel, trades, index = _path_set()
-        if not ((excel and os.path.exists(excel)) or (trades and os.path.exists(trades))):
+        excel, trades, signals, index = _path_set()
+        if not ((excel and os.path.exists(excel)) or (trades and os.path.exists(trades)) or (signals and os.path.exists(signals))):
             if self.archive_fn:
                 loop = asyncio.get_event_loop()
                 try:
@@ -954,7 +957,7 @@ class TelegramBot:
                 except Exception:
                     pass
                 paths = self.archive_latest_fn() or {}
-                excel, trades, index = _path_set()
+                excel, trades, signals, index = _path_set()
 
         if excel and os.path.exists(excel):
             ok, error = await self._send_file_path(excel, "EDEC latest 24h Excel export")
@@ -966,6 +969,11 @@ class TelegramBot:
             files["latest_trades"] = {"sent": ok, "error": error, "path": trades}
         else:
             files["latest_trades"] = {"sent": False, "error": "Latest trades file not found", "path": trades}
+        if signals and os.path.exists(signals):
+            ok, error = await self._send_file_path(signals, "EDEC latest compressed signals export (500)")
+            files["latest_signals"] = {"sent": ok, "error": error, "path": signals}
+        else:
+            files["latest_signals"] = {"sent": False, "error": "Latest signals file not found", "path": signals}
         if include_index and index and os.path.exists(index):
             ok, error = await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
             files["latest_index"] = {"sent": ok, "error": error, "path": index}
@@ -981,7 +989,8 @@ class TelegramBot:
             "*Archive Completed*\n"
             f"24h paper/live/decisions: {row_counts.get('paper_trades_24h', 0)}/"
             f"{row_counts.get('live_trades_24h', 0)}/{row_counts.get('decisions_24h', 0)}\n"
-            f"Recent trades rows: {row_counts.get('recent_trades_rows', 0)}"
+            f"Recent trades/signals rows: {row_counts.get('recent_trades_rows', 0)}/"
+            f"{row_counts.get('recent_signals_rows', 0)}"
         )
         await self.send_alert(msg)
 
@@ -1390,6 +1399,7 @@ class TelegramBot:
                     {
                         "latest_excel": "Latest Excel send failed",
                         "latest_trades": "Latest trades send failed",
+                        "latest_signals": "Latest signals send failed",
                         "latest_index": "Latest index send failed",
                     },
                 )
@@ -1426,6 +1436,7 @@ class TelegramBot:
                     {
                         "latest_last24h_xlsx": "Synced Excel send failed",
                         "latest_trades_csv_gz": "Synced trades send failed",
+                        "latest_signals_csv_gz": "Synced signals send failed",
                         "latest_index_json": "Synced index send failed",
                     },
                 )
@@ -1724,6 +1735,7 @@ class TelegramBot:
                 {
                     "latest_excel": "Latest Excel send failed",
                     "latest_trades": "Latest trades send failed",
+                    "latest_signals": "Latest signals send failed",
                     "latest_index": "Latest index send failed",
                 },
             )
@@ -1756,6 +1768,7 @@ class TelegramBot:
                 {
                     "latest_last24h_xlsx": "Synced Excel send failed",
                     "latest_trades_csv_gz": "Synced trades send failed",
+                    "latest_signals_csv_gz": "Synced signals send failed",
                     "latest_index_json": "Synced index send failed",
                 },
             )
@@ -1786,7 +1799,8 @@ class TelegramBot:
             f"*Single-Leg*\n"
             f"  Entry max: {sl.entry_max}\n"
             f"  Opposite min: {sl.opposite_min}\n"
-            f"  Target sell: {sl.target_sell}\n"
+            f"  Scalp take-profit bid: {sl.scalp_take_profit_bid}\n"
+            f"  High-confidence bid: {sl.high_confidence_bid}\n"
             f"  Order size: ${sl.order_size_usd}\n"
             f"  Min time remaining: {sl.min_time_remaining_s}s\n"
             f"  Hold if unfilled: {sl.hold_if_unfilled}"

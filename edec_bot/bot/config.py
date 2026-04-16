@@ -1,4 +1,4 @@
-"""Configuration loader — reads config.yaml + .env into typed dataclasses."""
+"""Configuration loader - reads config.yaml + .env into typed dataclasses."""
 
 import os
 from dataclasses import dataclass, field
@@ -30,36 +30,46 @@ class SingleLegConfig:
     min_book_depth_usd: float
     hold_if_unfilled: bool
     order_size_usd: float
-    min_velocity_30s: float = 0.08   # coin must be actually moving (not a thin-book artifact)
-    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction of entry cost at time_pressure_s
-    loss_cut_max_factor: float = 2.0 # max multiplier on loss_cut_pct for early entries (≥2×time_pressure_s)
-    high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this (nearly resolved)
-    time_pressure_s: float = 90.0    # loss threshold shrinks linearly from loss_cut_max to 0 at close
-    max_time_remaining_s: float = 200.0  # don't enter if more than this many seconds remain (too early)
-    max_vel_divergence: float = 0.03     # vel60s must not oppose vel30s direction by more than this
-    entry_min: float = 0.15             # don't enter if ask already below this (market near-resolved)
-    scalp_take_profit_bid: float = 0.56  # single-leg scalp target before runner decision
-    scalp_min_profit_usd: float = 0.05   # require at least this net $ for early scalp exit
+    min_velocity_30s: float = 0.08
+    loss_cut_pct: float = 0.25
+    loss_cut_max_factor: float = 2.0
+    high_confidence_bid: float = 0.82
+    time_pressure_s: float = 90.0
+    max_time_remaining_s: float = 200.0
+    max_vel_divergence: float = 0.03
+    entry_min: float = 0.15
+    scalp_take_profit_bid: float = 0.56
+    scalp_min_profit_usd: float = 0.05
+    resignal_cooldown_s: float = 8.0
+    min_price_improvement: float = 0.01
 
 
 @dataclass(frozen=True)
 class SwingLegConfig:
     enabled: bool
-    first_leg_max: float       # Buy when ask <= this (e.g., 0.33)
-    first_leg_exit: float      # Sell when bid bounces to >= this (e.g., 0.55)
-    max_velocity_30s: float    # Skip if coin trending too hard (reversal less likely)
+    first_leg_max: float
+    first_leg_exit: float
+    max_velocity_30s: float
     min_time_remaining_s: float
     min_book_depth_usd: float
     order_size_usd: float
-    loss_cut_pct: float = 0.25       # exit if loss exceeds this fraction at time_pressure_s
-    loss_cut_max_factor: float = 2.0 # max multiplier on loss_cut_pct for early entries (≥2×time_pressure_s)
-    high_confidence_bid: float = 0.82  # hold to resolution if bid exceeds this
-    time_pressure_s: float = 90.0    # loss threshold shrinks linearly from loss_cut_max to 0 at close
-    max_time_remaining_s: float = 300.0  # don't enter if more than this many seconds remain (too early)
-    first_leg_min: float = 0.25         # don't enter if first leg ask already below this (near-resolved)
-    max_vel_divergence: float = 0.03    # reject if vel60s strongly opposes 30s direction
-    max_depth_ratio: float = 2.5        # reject if one book side has >2.5x depth of other (second leg unlikely)
-    disabled_coins: tuple = ()          # coins where swing_leg is disabled (e.g. BTC — too momentum-driven)
+    loss_cut_pct: float = 0.25
+    loss_cut_max_factor: float = 2.0
+    high_confidence_bid: float = 0.82
+    time_pressure_s: float = 90.0
+    max_time_remaining_s: float = 300.0
+    first_leg_min: float = 0.25
+    max_vel_divergence: float = 0.03
+    max_depth_ratio: float = 2.5
+    disabled_coins: tuple = ()
+
+
+@dataclass(frozen=True)
+class LeadLagCoinOverride:
+    min_velocity_30s: Optional[float] = None
+    min_entry: Optional[float] = None
+    max_entry: Optional[float] = None
+    min_book_depth_usd: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -68,10 +78,19 @@ class LeadLagConfig:
     min_velocity_30s: float
     min_entry: float
     max_entry: float
-    target_sell: float
     min_time_remaining_s: float
     min_book_depth_usd: float
     order_size_usd: float
+    target_sell: float = 0.66
+    resignal_cooldown_s: float = 6.0
+    min_price_improvement: float = 0.01
+    profit_take_delta: float = 0.06
+    profit_take_cap: float = 0.68
+    stall_window_s: float = 30.0
+    min_progress_delta: float = 0.02
+    hard_stop_loss_pct: float = 0.10
+    disabled_coins: tuple = ()
+    coin_overrides: dict[str, LeadLagCoinOverride] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -92,7 +111,7 @@ class RiskConfig:
 
 @dataclass(frozen=True)
 class FeedsConfig:
-    binance_symbols: dict   # {coin: symbol or None}
+    binance_symbols: dict
     coinbase_product: str
     coingecko_poll_interval_s: int
     price_staleness_max_s: float
@@ -116,7 +135,7 @@ class LoggingConfig:
 
 @dataclass(frozen=True)
 class Config:
-    coins: tuple              # ("btc", "eth", "sol", ...)
+    coins: tuple
     dual_leg: DualLegConfig
     single_leg: SingleLegConfig
     lead_lag: LeadLagConfig
@@ -134,8 +153,9 @@ class Config:
 def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
     """Read credentials from HA add-on options file if it exists."""
     import json
+
     try:
-        with open(ha_options_path, "r") as f:
+        with open(ha_options_path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
@@ -143,21 +163,29 @@ def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
 
 def load_config(config_path: str = "config.yaml") -> Config:
     """Load configuration from YAML file, HA options, or .env."""
-    # Load .env first (local dev fallback)
     env_path = Path(config_path).parent / ".env"
     load_dotenv(env_path)
 
-    # HA add-on options override .env if present
     ha = _load_ha_options()
 
-    with open(config_path, "r") as f:
+    with open(config_path, "r", encoding="utf-8") as f:
         raw = yaml.safe_load(f)
+
+    raw_lead_lag = dict(raw["lead_lag"])
+    lead_lag_overrides = {
+        str(coin): LeadLagCoinOverride(**(values or {}))
+        for coin, values in (raw_lead_lag.pop("coin_overrides", {}) or {}).items()
+    }
 
     return Config(
         coins=tuple(raw.get("coins", ["btc"])),
         dual_leg=DualLegConfig(**raw["dual_leg"]),
         single_leg=SingleLegConfig(**raw["single_leg"]),
-        lead_lag=LeadLagConfig(**raw["lead_lag"]),
+        lead_lag=LeadLagConfig(**{
+            **raw_lead_lag,
+            "disabled_coins": tuple(raw_lead_lag.get("disabled_coins", [])),
+            "coin_overrides": lead_lag_overrides,
+        }),
         swing_leg=SwingLegConfig(**{
             **raw["swing_leg"],
             "disabled_coins": tuple(raw["swing_leg"].get("disabled_coins", [])),

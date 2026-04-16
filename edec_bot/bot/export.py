@@ -27,10 +27,18 @@ REASON_FILLS = {
     "profit_target":   PatternFill(start_color="A9D18E", end_color="A9D18E", fill_type="solid"),  # medium green
     "high_confidence": PatternFill(start_color="9DC3E6", end_color="9DC3E6", fill_type="solid"),  # medium blue
     "loss_cut":        PatternFill(start_color="F4B183", end_color="F4B183", fill_type="solid"),  # orange
+    "stall_exit":      PatternFill(start_color="FFD966", end_color="FFD966", fill_type="solid"),  # amber
     "near_close":      PatternFill(start_color="FFE699", end_color="FFE699", fill_type="solid"),  # yellow
     "dead_leg":        PatternFill(start_color="C9B1D9", end_color="C9B1D9", fill_type="solid"),  # lavender
     "resolution":      PatternFill(start_color="D9D9D9", end_color="D9D9D9", fill_type="solid"),  # gray
     "manual":          PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid"),  # light gray
+}
+
+ACTION_FILLS = {
+    "TRADE": PatternFill(start_color="A9D18E", end_color="A9D18E", fill_type="solid"),
+    "DRY_RUN_SIGNAL": PatternFill(start_color="9DC3E6", end_color="9DC3E6", fill_type="solid"),
+    "SUPPRESSED": PatternFill(start_color="F4B183", end_color="F4B183", fill_type="solid"),
+    "SKIP": PatternFill(start_color="EDEDED", end_color="EDEDED", fill_type="solid"),
 }
 
 # Header fills
@@ -76,6 +84,7 @@ def export_to_excel(db_path: str = "data/decisions.db",
     _build_daily_summary_sheet(wb, conn)
     _build_trades_sheet(wb, conn, date_str)
     _build_decisions_sheet(wb, conn, date_str)
+    _build_signals_sheet(wb, conn, date_str)
     _build_filter_performance_sheet(wb, conn, date_str)
     _build_skipped_winners_sheet(wb, conn, date_str)
 
@@ -167,6 +176,14 @@ def _pnl_col(ws, col: int, start: int = 2):
 def _reason_cell(cell):
     """Color an exit_reason cell using REASON_FILLS palette."""
     fill = REASON_FILLS.get(str(cell.value or "").lower())
+    if fill:
+        cell.fill = fill
+        cell.font = Font(bold=True)
+
+
+def _action_cell(cell):
+    """Color an action cell for decision/signal sheets."""
+    fill = ACTION_FILLS.get(str(cell.value or "").upper())
     if fill:
         cell.fill = fill
         cell.font = Font(bold=True)
@@ -319,9 +336,11 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         "rid", "av", "sv", "ch", "md", "dr", "os", "cap", "wid", "ctx", "ov",
         "ep", "tp", "eb", "ea", "es", "sh", "srq", "sfl", "b5", "cs", "fee",
         "te", "ts", "v30", "v60", "du", "dd", "eds", "ods", "drt", "ma",
+        "sg", "sgv", "sge", "sgd", "sgs", "sgt", "sgb", "td", "hsd",
         "fp", "ff", "why",
         "er", "xp", "xb", "xa", "xs", "tx", "hd",
         "pnl", "pp", "maxb", "minb", "ttmax", "ttmin", "tfp", "sc", "hc",
+        "mfe", "mae", "pnp", "tnp", "sx",
         "status",
     ]
     ws.append(headers)
@@ -377,6 +396,15 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             pt.entry_depth_side_usd,
             pt.opposite_depth_usd,
             pt.depth_ratio,
+            pt.signal_score,
+            pt.score_velocity,
+            pt.score_entry,
+            pt.score_depth,
+            pt.score_spread,
+            pt.score_time,
+            pt.score_balance,
+            pt.target_delta,
+            pt.hard_stop_delta,
             d.filter_passed,
             d.filter_failed,
             d.coin_velocity_30s,
@@ -384,7 +412,12 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             d.up_depth_usd,
             d.down_depth_usd,
             d.time_remaining_s AS entry_remaining,
-            d.reason           AS decision_reason
+            d.reason           AS decision_reason,
+            pt.mfe,
+            pt.mae,
+            pt.peak_net_pnl,
+            pt.trough_net_pnl,
+            pt.stall_exit_triggered
         FROM paper_trades pt
         LEFT JOIN (
             SELECT market_slug, strategy_type, MAX(id) AS best_id
@@ -405,20 +438,20 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
         time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
 
         hold_s = None
-        if r[34] and r[1]:
+        if r[43] and r[1]:
             try:
                 t_in  = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                t_out = datetime.fromisoformat(str(r[34]).replace("Z", "+00:00"))
+                t_out = datetime.fromisoformat(str(r[43]).replace("Z", "+00:00"))
                 hold_s = round((t_out - t_in).total_seconds(), 1)
             except Exception:
                 pass
 
         pnl_pct = None
-        if r[25] and r[25] > 0 and r[33] is not None:
-            pnl_pct = round(r[33] / r[25] * 100, 2)
+        if r[25] and r[25] > 0 and r[42] is not None:
+            pnl_pct = round(r[42] / r[25] * 100, 2)
 
         side = str(r[4] or "").lower()
-        vel30 = r[49]
+        vel30 = r[55]
         if vel30 is None or side not in ("up", "down"):
             momentum_align = None
         else:
@@ -430,23 +463,25 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             r[5], r[6], r[7], r[8], r[9], int(bool(r[10])) if r[10] is not None else None,
             r[11], r[12], r[13], r[14], r[15],
             r[16], r[17], r[18], r[19], r[20], r[21], r[22], r[23], r[24], r[25], r[26],
-            r[53], r[27],
-            round(r[49], 4) if r[49] is not None else None,
-            round(r[50], 4) if r[50] is not None else None,
-            round(r[51], 2) if r[51] is not None else None,
-            round(r[52], 2) if r[52] is not None else None,
+            r[59], r[27],
+            round(r[55], 4) if r[55] is not None else None,
+            round(r[56], 4) if r[56] is not None else None,
+            round(r[57], 2) if r[57] is not None else None,
+            round(r[58], 2) if r[58] is not None else None,
             r[44], r[45], r[46], momentum_align,
-            r[47], r[48], r[54],
-            r[28], r[29], r[30], r[31], r[32], r[35], hold_s,
-            r[33], pnl_pct, r[36], r[37], r[38], r[39], r[40],
-            int(bool(r[41])) if r[41] is not None else None,
-            int(bool(r[42])) if r[42] is not None else None,
-            r[43],
+            r[47], r[48], r[49], r[50], r[51], r[52], r[53], r[54],
+            r[60], r[61], r[62],
+            r[28], r[29], r[30], r[31], r[32], r[33], hold_s,
+            r[42], pnl_pct, r[34], r[35], r[36], r[37], r[38],
+            int(bool(r[39])) if r[39] is not None else None,
+            int(bool(r[40])) if r[40] is not None else None,
+            r[63], r[64], r[65], r[66], int(bool(r[67])) if r[67] is not None else None,
+            r[41],
         ]
         ws.append(out)
 
         # Row color by status
-        status_str = str(r[43] or "").lower()
+        status_str = str(r[41] or "").lower()
         if status_str == "closed_win":
             row_fill = WIN_FILL
         elif status_str == "closed_loss":
@@ -462,17 +497,17 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             for col in range(1, num_cols + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
 
-        _pnl_cell(ws.cell(row=ri, column=49))   # P&L $
-        _pnl_cell(ws.cell(row=ri, column=50))   # P&L %
-        _reason_cell(ws.cell(row=ri, column=42))  # Exit Reason
+        _pnl_cell(ws.cell(row=ri, column=58))   # P&L $
+        _pnl_cell(ws.cell(row=ri, column=59))   # P&L %
+        _reason_cell(ws.cell(row=ri, column=54))  # Exit Reason
 
     # Summary block below data
     total_rows = len(rows)
     if total_rows:
-        wins   = sum(1 for r in rows if str(r[43] or "").lower() == "closed_win")
-        losses = sum(1 for r in rows if str(r[43] or "").lower() == "closed_loss")
-        open_p = sum(1 for r in rows if str(r[43] or "").lower() == "open")
-        total_pnl = sum(r[33] for r in rows if r[33] is not None)
+        wins   = sum(1 for r in rows if str(r[41] or "").lower() == "closed_win")
+        losses = sum(1 for r in rows if str(r[41] or "").lower() == "closed_loss")
+        open_p = sum(1 for r in rows if str(r[41] or "").lower() == "open")
+        total_pnl = sum(r[42] for r in rows if r[42] is not None)
         _summary(ws, total_rows + 3, [
             ("Trades shown", total_rows),
             ("Wins", wins),
@@ -705,6 +740,10 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         "Entry Depth $", "Opposite Depth $", "Depth Ratio",
         "Max Bid Seen $", "Min Bid Seen $", "Time To Max Bid (s)", "Time To Min Bid (s)",
         "First Profit Time (s)", "Scalp Hit", "High-Confidence Hit",
+        "Signal Score", "Score Velocity", "Score Entry", "Score Depth",
+        "Score Spread", "Score Time", "Score Balance",
+        "Target Delta", "Hard Stop Delta", "MFE", "MAE",
+        "Peak Net P&L", "Trough Net P&L", "Stall Exit",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -722,7 +761,11 @@ def _build_paper_trades_sheet(wb, conn, date_str):
                entry_bid, entry_ask, entry_spread, ask_at_exit, exit_spread,
                entry_depth_side_usd, opposite_depth_usd, depth_ratio,
                max_bid_seen, min_bid_seen, time_to_max_bid_s, time_to_min_bid_s,
-               first_profit_time_s, scalp_hit, high_confidence_hit
+               first_profit_time_s, scalp_hit, high_confidence_hit,
+               signal_score, score_velocity, score_entry, score_depth,
+               score_spread, score_time, score_balance,
+               target_delta, hard_stop_delta, mfe, mae,
+               peak_net_pnl, trough_net_pnl, stall_exit_triggered
         FROM paper_trades {where}
         ORDER BY id DESC LIMIT 10000
     """, params)
@@ -1203,7 +1246,58 @@ def _build_decisions_sheet(wb, conn, date_str):
 
 
 # ---------------------------------------------------------------------------
-# Sheet 10: Filter Performance
+# Sheet 10: Signals
+# ---------------------------------------------------------------------------
+
+def _build_signals_sheet(wb, conn, date_str):
+    ws = wb.create_sheet("Signals")
+    headers = [
+        "Timestamp", "Run ID", "Coin", "Strategy", "Mode", "Action", "Suppressed Reason",
+        "Reason", "Signal Context", "Overlap Count",
+        "Entry $", "Target $", "Expected Profit/Share $",
+        "Signal Score", "Score Velocity", "Score Entry", "Score Depth", "Score Spread", "Score Time", "Score Balance",
+        "Time Left (s)", "Velocity 30s %", "Velocity 60s %",
+        "Entry Bid $", "Entry Ask $", "Entry Spread $",
+        "Entry Depth $", "Opposite Depth $", "Depth Ratio",
+        "Resignal Cooldown (s)", "Min Price Improvement", "Last Signal Age (s)",
+        "Passed Filters", "Failed Filters",
+    ]
+    ws.append(headers)
+    _style_header(ws, len(headers))
+    _freeze(ws)
+
+    where = "WHERE timestamp LIKE ? AND action IN ('DRY_RUN_SIGNAL','TRADE','SUPPRESSED')" if date_str else "WHERE action IN ('DRY_RUN_SIGNAL','TRADE','SUPPRESSED')"
+    params = (f"{date_str}%",) if date_str else ()
+    rows = conn.execute(f"""
+        SELECT timestamp, run_id, coin, strategy_type, mode, action, suppressed_reason,
+               reason, signal_context, signal_overlap_count,
+               entry_price, target_price, expected_profit_per_share,
+               signal_score, score_velocity, score_entry, score_depth, score_spread, score_time, score_balance,
+               time_remaining_s, coin_velocity_30s, coin_velocity_60s,
+               entry_bid, entry_ask, entry_spread,
+               entry_depth_side_usd, opposite_depth_usd, depth_ratio,
+               resignal_cooldown_s, min_price_improvement, last_signal_age_s,
+               filter_passed, filter_failed
+        FROM decisions
+        {where}
+        ORDER BY id DESC LIMIT 10000
+    """, params)
+
+    for ri, row in enumerate(rows, start=2):
+        ws.append(list(row))
+        _action_cell(ws.cell(row=ri, column=6))
+        suppressed_cell = ws.cell(row=ri, column=7)
+        if suppressed_cell.value:
+            suppressed_cell.fill = LOSS_FILL
+            suppressed_cell.font = LOSS_FONT
+        _pnl_cell(ws.cell(row=ri, column=13))
+
+    _auto_width(ws)
+    ws.auto_filter.ref = ws.dimensions
+
+
+# ---------------------------------------------------------------------------
+# Sheet 11: Filter Performance
 # ---------------------------------------------------------------------------
 
 def _build_filter_performance_sheet(wb, conn, date_str):
@@ -1270,7 +1364,7 @@ def _build_filter_performance_sheet(wb, conn, date_str):
 
 
 # ---------------------------------------------------------------------------
-# Sheet 11: Skipped Winners
+# Sheet 12: Skipped Winners
 # ---------------------------------------------------------------------------
 
 def _build_skipped_winners_sheet(wb, conn, date_str):

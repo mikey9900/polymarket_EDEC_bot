@@ -45,7 +45,26 @@ CREATE TABLE IF NOT EXISTS decisions (
     filter_passed TEXT,
     filter_failed TEXT,
     action TEXT NOT NULL,
-    reason TEXT
+    reason TEXT,
+    entry_price REAL,
+    target_price REAL,
+    expected_profit_per_share REAL,
+    entry_bid REAL,
+    entry_ask REAL,
+    entry_spread REAL,
+    entry_depth_side_usd REAL,
+    opposite_depth_usd REAL,
+    depth_ratio REAL,
+    signal_score REAL,
+    score_velocity REAL,
+    score_entry REAL,
+    score_depth REAL,
+    score_spread REAL,
+    score_time REAL,
+    score_balance REAL,
+    resignal_cooldown_s REAL,
+    min_price_improvement REAL,
+    last_signal_age_s REAL
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -154,7 +173,21 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     time_to_min_bid_s REAL,
     first_profit_time_s REAL,
     scalp_hit INTEGER DEFAULT 0,
-    high_confidence_hit INTEGER DEFAULT 0
+    high_confidence_hit INTEGER DEFAULT 0,
+    signal_score REAL,
+    score_velocity REAL,
+    score_entry REAL,
+    score_depth REAL,
+    score_spread REAL,
+    score_time REAL,
+    score_balance REAL,
+    target_delta REAL,
+    hard_stop_delta REAL,
+    mfe REAL,
+    mae REAL,
+    peak_net_pnl REAL,
+    trough_net_pnl REAL,
+    stall_exit_triggered INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -299,6 +332,25 @@ class DecisionTracker:
             "suppressed_reason": "TEXT",
             "window_id": "TEXT",
             "market_start_time": "TEXT",
+            "entry_price": "REAL",
+            "target_price": "REAL",
+            "expected_profit_per_share": "REAL",
+            "entry_bid": "REAL",
+            "entry_ask": "REAL",
+            "entry_spread": "REAL",
+            "entry_depth_side_usd": "REAL",
+            "opposite_depth_usd": "REAL",
+            "depth_ratio": "REAL",
+            "signal_score": "REAL",
+            "score_velocity": "REAL",
+            "score_entry": "REAL",
+            "score_depth": "REAL",
+            "score_spread": "REAL",
+            "score_time": "REAL",
+            "score_balance": "REAL",
+            "resignal_cooldown_s": "REAL",
+            "min_price_improvement": "REAL",
+            "last_signal_age_s": "REAL",
         }
         for col, col_type in decision_new_cols.items():
             if col not in existing:
@@ -365,6 +417,20 @@ class DecisionTracker:
             "first_profit_time_s": "REAL",
             "scalp_hit": "INTEGER DEFAULT 0",
             "high_confidence_hit": "INTEGER DEFAULT 0",
+            "signal_score": "REAL",
+            "score_velocity": "REAL",
+            "score_entry": "REAL",
+            "score_depth": "REAL",
+            "score_spread": "REAL",
+            "score_time": "REAL",
+            "score_balance": "REAL",
+            "target_delta": "REAL",
+            "hard_stop_delta": "REAL",
+            "mfe": "REAL",
+            "mae": "REAL",
+            "peak_net_pnl": "REAL",
+            "trough_net_pnl": "REAL",
+            "stall_exit_triggered": "INTEGER DEFAULT 0",
         }
         for col, col_type in new_pt_cols.items():
             if col not in pt_cols:
@@ -443,8 +509,14 @@ class DecisionTracker:
                 up_best_ask, down_best_ask, combined_cost,
                 btc_price, coin_velocity_30s, coin_velocity_60s,
                 up_depth_usd, down_depth_usd, time_remaining_s,
-                feed_count, filter_passed, filter_failed, action, reason
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                feed_count, filter_passed, filter_failed, action, reason,
+                entry_price, target_price, expected_profit_per_share,
+                entry_bid, entry_ask, entry_spread,
+                entry_depth_side_usd, opposite_depth_usd, depth_ratio,
+                signal_score, score_velocity, score_entry, score_depth,
+                score_spread, score_time, score_balance,
+                resignal_cooldown_s, min_price_improvement, last_signal_age_s
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 decision.timestamp.isoformat(),
                 decision.run_id or self._runtime_value("run_id"),
@@ -479,6 +551,25 @@ class DecisionTracker:
                 ",".join(failed),
                 decision.action,
                 decision.reason,
+                decision.entry_price,
+                decision.target_price,
+                decision.expected_profit_per_share,
+                decision.entry_bid,
+                decision.entry_ask,
+                decision.entry_spread,
+                decision.entry_depth_side_usd,
+                decision.opposite_depth_usd,
+                decision.depth_ratio,
+                decision.signal_score,
+                decision.score_velocity,
+                decision.score_entry,
+                decision.score_depth,
+                decision.score_spread,
+                decision.score_time,
+                decision.score_balance,
+                decision.resignal_cooldown_s,
+                decision.min_price_improvement,
+                decision.last_signal_age_s,
             ),
         )
         self.conn.commit()
@@ -753,7 +844,16 @@ class DecisionTracker:
                         entry_depth_side_usd: float | None = None,
                         opposite_depth_usd: float | None = None,
                         depth_ratio: float | None = None,
-                        window_id: str | None = None) -> int:
+                        window_id: str | None = None,
+                        signal_score: float | None = None,
+                        score_velocity: float | None = None,
+                        score_entry: float | None = None,
+                        score_depth: float | None = None,
+                        score_spread: float | None = None,
+                        score_time: float | None = None,
+                        score_balance: float | None = None,
+                        target_delta: float | None = None,
+                        hard_stop_delta: float | None = None) -> int:
         """Open a paper trade and deduct cost from balance."""
         cost = entry_price * shares
         paper_total, _ = self.get_paper_capital()
@@ -764,8 +864,10 @@ class DecisionTracker:
                 market_slug, window_id, coin, strategy_type, signal_context, signal_overlap_count,
                 side, entry_price, target_price, shares, shares_requested, shares_filled,
                 blocked_min_5_shares, cost, fee_total, status, market_end_time, market_start_time,
-                entry_bid, entry_ask, entry_spread, entry_depth_side_usd, opposite_depth_usd, depth_ratio)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entry_bid, entry_ask, entry_spread, entry_depth_side_usd, opposite_depth_usd, depth_ratio,
+                signal_score, score_velocity, score_entry, score_depth, score_spread, score_time, score_balance,
+                target_delta, hard_stop_delta)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 datetime.utcnow().isoformat(),
                 self._runtime_value("run_id"),
@@ -800,6 +902,15 @@ class DecisionTracker:
                 entry_depth_side_usd,
                 opposite_depth_usd,
                 depth_ratio,
+                signal_score,
+                score_velocity,
+                score_entry,
+                score_depth,
+                score_spread,
+                score_time,
+                score_balance,
+                target_delta,
+                hard_stop_delta,
             ),
         )
         # Deduct from paper balance
@@ -824,12 +935,32 @@ class DecisionTracker:
         )
         self.conn.commit()
 
-    def suppress_decision(self, decision_id: int, reason: str) -> None:
+    def suppress_decision(
+        self,
+        decision_id: int,
+        reason: str,
+        *,
+        resignal_cooldown_s: float | None = None,
+        min_price_improvement: float | None = None,
+        last_signal_age_s: float | None = None,
+    ) -> None:
+        assignments = ["action = 'SUPPRESSED'", "suppressed_reason = ?"]
+        values: list[object] = [reason]
+        if resignal_cooldown_s is not None:
+            assignments.append("resignal_cooldown_s = ?")
+            values.append(resignal_cooldown_s)
+        if min_price_improvement is not None:
+            assignments.append("min_price_improvement = ?")
+            values.append(min_price_improvement)
+        if last_signal_age_s is not None:
+            assignments.append("last_signal_age_s = ?")
+            values.append(last_signal_age_s)
+        values.append(decision_id)
         self.conn.execute(
-            """UPDATE decisions
-               SET action = 'SUPPRESSED', suppressed_reason = ?
+            f"""UPDATE decisions
+               SET {', '.join(assignments)}
                WHERE id = ?""",
-            (reason, decision_id),
+            tuple(values),
         )
         self.conn.commit()
 
@@ -844,6 +975,10 @@ class DecisionTracker:
         first_profit_time_s: float | None = None,
         scalp_hit: bool | None = None,
         high_confidence_hit: bool | None = None,
+        mfe: float | None = None,
+        mae: float | None = None,
+        peak_net_pnl: float | None = None,
+        trough_net_pnl: float | None = None,
     ) -> None:
         assignments: list[str] = []
         values: list[object] = []
@@ -853,6 +988,10 @@ class DecisionTracker:
             "time_to_max_bid_s": time_to_max_bid_s,
             "time_to_min_bid_s": time_to_min_bid_s,
             "first_profit_time_s": first_profit_time_s,
+            "mfe": mfe,
+            "mae": mae,
+            "peak_net_pnl": peak_net_pnl,
+            "trough_net_pnl": trough_net_pnl,
         }
         for col, value in mapping.items():
             if value is not None:
@@ -939,7 +1078,8 @@ class DecisionTracker:
                                 exit_reason: str = "manual",
                                 time_remaining_s: float | None = None,
                                 bid_at_exit: float | None = None,
-                                ask_at_exit: float | None = None):
+                                ask_at_exit: float | None = None,
+                                stall_exit_triggered: bool | None = None):
         """Close a paper trade early (profit-take or stop-loss) before market resolution."""
         row = self.conn.execute(
             "SELECT cost FROM paper_trades WHERE id = ? AND status = 'open'",
@@ -953,7 +1093,7 @@ class DecisionTracker:
             """UPDATE paper_trades
                SET status=?, exit_price=?, pnl=?,
                    exit_reason=?, exit_timestamp=?, time_remaining_s=?, bid_at_exit=?,
-                   ask_at_exit=?, exit_spread=?
+                   ask_at_exit=?, exit_spread=?, stall_exit_triggered=COALESCE(?, stall_exit_triggered)
                WHERE id=?""",
             (
                 status,
@@ -965,6 +1105,7 @@ class DecisionTracker:
                 bid_at_exit,
                 ask_at_exit,
                 (ask_at_exit - bid_at_exit) if (ask_at_exit is not None and bid_at_exit is not None) else None,
+                int(bool(stall_exit_triggered)) if stall_exit_triggered is not None else None,
                 trade_id,
             ),
         )
@@ -1041,5 +1182,27 @@ class DecisionTracker:
         # Reverse so oldest is on left, newest is on right
         return [r[0].upper() for r in reversed(rows)]
 
+    def get_coin_recent_outcome_details(self, coin: str, limit: int = 6) -> list[dict]:
+        """Get last N resolution details for a coin (oldest first for display)."""
+        rows = self.conn.execute(
+            """SELECT market_slug, resolved_at, winner, btc_open_price, btc_close_price
+               FROM outcomes
+               WHERE market_slug LIKE ?
+               ORDER BY id DESC LIMIT ?""",
+            (f"{coin}-updown-5m-%", limit),
+        ).fetchall()
+        return [
+            {
+                "market_slug": row[0],
+                "resolved_at": row[1],
+                "winner": (row[2] or "").upper(),
+                "open_price": row[3],
+                "close_price": row[4],
+            }
+            for row in reversed(rows)
+        ]
+
     def close(self):
         self.conn.close()
+
+

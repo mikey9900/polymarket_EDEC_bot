@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timezone
 
 from bot.config import Config
@@ -26,24 +27,16 @@ class StrategyEngine:
         self.tracker = tracker
         self.risk_manager = risk_manager
         self._running = False
-        # Start in "off" mode — user must press Start in Telegram to begin
         self._mode = "off"
-        self._active = False  # scanning on/off
-        # Track recent signals per (coin, strategy_type).
-        # Repricing strategies can fire again in the same window after a short cooldown,
-        # even if the next entry is not strictly cheaper.
+        self._active = False
         # Key = (coin, strategy_type), value = (market_slug, last_entry_price, last_signal_at)
         self._last_signal: dict[tuple, tuple] = {}
         self.MIN_PRICE_IMPROVEMENT = {
-            "dual_leg": 0.03,    # 3c cheaper combined cost
-            "single_leg": 0.01,  # 1c cheaper entry
-            "lead_lag": 0.01,    # 1c cheaper entry
-            "swing_leg": 0.02,   # 2c cheaper entry
+            "dual_leg": 0.03,
+            "swing_leg": 0.02,
         }
         self.RESIGNAL_COOLDOWN_S = {
             "dual_leg": 0.0,
-            "single_leg": 8.0,
-            "lead_lag": 6.0,
             "swing_leg": 0.0,
         }
 
@@ -61,14 +54,14 @@ class StrategyEngine:
         return True
 
     def start_scanning(self):
-        """Start scanning — restores last mode or defaults to aggressive repricing."""
+        """Start scanning - restores last mode or defaults to both repricing engines."""
         if self._mode == "off":
-            self._mode = "lead" if self.config.lead_lag.enabled else "both"
+            self._mode = "both"
         self._active = True
         logger.info(f"Scanning started (mode={self._mode})")
 
     def stop_scanning(self):
-        """Stop scanning — preserves mode setting for next start."""
+        """Stop scanning - preserves mode setting for next start."""
         self._active = False
         logger.info("Scanning stopped")
 
@@ -156,13 +149,16 @@ class StrategyEngine:
                         signal_overlap_count=overlap_count,
                     )
 
-                gate_reason = self._signal_gate_reason(
+                gate = self._signal_gate_context(
                     signal.strategy_type,
                     coin,
                     market.slug,
                     signal.combined_cost if signal.strategy_type == "dual_leg" else signal.entry_price,
                 )
-                if gate_reason is None:
+                signal.resignal_cooldown_s = float(gate["resignal_cooldown_s"] or 0.0)
+                signal.min_price_improvement = float(gate["min_price_improvement"] or 0.0)
+                signal.last_signal_age_s = gate["last_signal_age_s"]
+                if gate["reason"] is None:
                     self._record_signal(
                         signal.strategy_type,
                         coin,
@@ -171,39 +167,85 @@ class StrategyEngine:
                     )
                     signals.append(signal)
                 elif signal.decision_id:
-                    self.tracker.suppress_decision(signal.decision_id, gate_reason)
+                    self.tracker.suppress_decision(
+                        signal.decision_id,
+                        str(gate["reason"]),
+                        resignal_cooldown_s=signal.resignal_cooldown_s,
+                        min_price_improvement=signal.min_price_improvement,
+                        last_signal_age_s=signal.last_signal_age_s,
+                    )
 
         return signals
 
     def _is_price_improvement(self, strategy: str, coin: str, slug: str, price: float) -> bool:
-        return self._signal_gate_reason(strategy, coin, slug, price) is None
+        gate = self._signal_gate_context(strategy, coin, slug, price)
+        return gate["reason"] is None
 
     def _signal_gate_reason(self, strategy: str, coin: str, slug: str, price: float) -> str | None:
-        """
-        Returns None if this is worth signalling, otherwise the suppression reason:
-        - New market window (different slug) → always signal
-        - Same window: re-signal immediately on meaningful price improvement
-        - Repricing strategies may re-arm after a short cooldown inside the same window
-        """
+        gate = self._signal_gate_context(strategy, coin, slug, price)
+        return gate["reason"]
+
+    def _strategy_gate_settings(self, strategy: str) -> tuple[float, float]:
+        if strategy == "single_leg":
+            return (
+                self.config.single_leg.min_price_improvement,
+                self.config.single_leg.resignal_cooldown_s,
+            )
+        if strategy == "lead_lag":
+            return (
+                self.config.lead_lag.min_price_improvement,
+                self.config.lead_lag.resignal_cooldown_s,
+            )
+        return (
+            self.MIN_PRICE_IMPROVEMENT.get(strategy, 0.03),
+            self.RESIGNAL_COOLDOWN_S.get(strategy, 0.0),
+        )
+
+    def _signal_gate_context(self, strategy: str, coin: str, slug: str, price: float) -> dict[str, float | str | None]:
         key = (coin, strategy)
         last = self._last_signal.get(key)
-        now = datetime.now(timezone.utc)
+        needed, cooldown_s = self._strategy_gate_settings(strategy)
         if last is None:
-            return None
+            return {
+                "reason": None,
+                "last_signal_age_s": None,
+                "min_price_improvement": needed,
+                "resignal_cooldown_s": cooldown_s,
+            }
+
         last_slug, last_price, last_at = last
+        now = datetime.now(timezone.utc)
+        age_s = max(0.0, (now - last_at).total_seconds())
         if last_slug != slug:
-            return None
-        needed = self.MIN_PRICE_IMPROVEMENT.get(strategy, 0.03)
+            return {
+                "reason": None,
+                "last_signal_age_s": age_s,
+                "min_price_improvement": needed,
+                "resignal_cooldown_s": cooldown_s,
+            }
         if (last_price - price) >= needed:
-            return None
-        cooldown_s = self.RESIGNAL_COOLDOWN_S.get(strategy, 0.0)
-        if cooldown_s > 0 and (now - last_at).total_seconds() >= cooldown_s:
-            return None
-        age_s = (now - last_at).total_seconds()
-        return (
-            f"cooldown_active:{strategy}:age={age_s:.1f}s"
-            f":need_price_improve={needed:.2f}:last={last_price:.3f}:now={price:.3f}"
-        )
+            return {
+                "reason": None,
+                "last_signal_age_s": age_s,
+                "min_price_improvement": needed,
+                "resignal_cooldown_s": cooldown_s,
+            }
+        if cooldown_s > 0 and age_s >= cooldown_s:
+            return {
+                "reason": None,
+                "last_signal_age_s": age_s,
+                "min_price_improvement": needed,
+                "resignal_cooldown_s": cooldown_s,
+            }
+        return {
+            "reason": (
+                f"cooldown_active:{strategy}:age={age_s:.1f}s"
+                f":need_price_improve={needed:.2f}:last={last_price:.3f}:now={price:.3f}"
+            ),
+            "last_signal_age_s": age_s,
+            "min_price_improvement": needed,
+            "resignal_cooldown_s": cooldown_s,
+        }
 
     def _record_signal(self, strategy: str, coin: str, slug: str, price: float) -> None:
         self._last_signal[(coin, strategy)] = (
@@ -215,6 +257,90 @@ class StrategyEngine:
     @staticmethod
     def _per_share_fee(price: float, fee_rate: float) -> float:
         return fee_rate * price * (1.0 - price)
+
+    @staticmethod
+    def _safe_ratio(numerator: float, denominator: float) -> float:
+        if denominator <= 0:
+            return 0.0
+        return numerator / denominator
+
+    def _lead_lag_params(self, coin: str) -> dict[str, float]:
+        cfg = self.config.lead_lag
+        coin_key = (coin or "").lower()
+        override = cfg.coin_overrides.get(coin_key)
+        return {
+            "min_velocity_30s": override.min_velocity_30s if override and override.min_velocity_30s is not None else cfg.min_velocity_30s,
+            "min_entry": override.min_entry if override and override.min_entry is not None else cfg.min_entry,
+            "max_entry": override.max_entry if override and override.max_entry is not None else cfg.max_entry,
+            "min_book_depth_usd": override.min_book_depth_usd if override and override.min_book_depth_usd is not None else cfg.min_book_depth_usd,
+            "min_time_remaining_s": cfg.min_time_remaining_s,
+            "order_size_usd": cfg.order_size_usd,
+            "profit_take_delta": cfg.profit_take_delta,
+            "profit_take_cap": cfg.profit_take_cap,
+            "stall_window_s": cfg.stall_window_s,
+            "min_progress_delta": cfg.min_progress_delta,
+            "hard_stop_loss_pct": cfg.hard_stop_loss_pct,
+            "resignal_cooldown_s": cfg.resignal_cooldown_s,
+            "min_price_improvement": cfg.min_price_improvement,
+        }
+
+    def _lead_lag_target_price(self, entry_price: float, coin: str) -> float:
+        params = self._lead_lag_params(coin)
+        return min(entry_price + params["profit_take_delta"], params["profit_take_cap"])
+
+    def _score_entry_component(self, entry_price: float, min_entry: float, max_entry: float) -> float:
+        if max_entry <= min_entry:
+            return 1.0
+        relative = (entry_price - min_entry) / max(max_entry - min_entry, 1e-9)
+        return max(0.0, min(1.0, 1.0 - relative))
+
+    def _score_time_component(self, remaining: float, min_remaining: float, max_remaining: float) -> float:
+        if remaining < min_remaining or remaining > max_remaining:
+            return 0.0
+        center = (min_remaining + max_remaining) / 2.0
+        half_window = max((max_remaining - min_remaining) / 2.0, 1.0)
+        return max(0.0, 1.0 - abs(remaining - center) / half_window)
+
+    def _score_balance_component(self, depth_ratio: float) -> float:
+        if depth_ratio <= 0:
+            return 0.0
+        symmetry_penalty = min(abs(math.log(depth_ratio, 2)), 1.0)
+        return max(0.0, 1.0 - symmetry_penalty)
+
+    def _repricing_score(
+        self,
+        *,
+        strategy_type: str,
+        velocity_30s: float,
+        entry_price: float,
+        min_entry: float,
+        max_entry: float,
+        entry_depth: float,
+        min_depth: float,
+        spread: float,
+        remaining: float,
+        min_remaining: float,
+        max_remaining: float,
+        depth_ratio: float,
+    ) -> dict[str, float]:
+        velocity_threshold = max(abs(min_entry - max_entry) / 2.0, 0.02)
+        score_velocity = max(0.0, min(35.0, 35.0 * min(abs(velocity_30s) / max(velocity_threshold, 1e-9), 1.0)))
+        score_entry = 20.0 * self._score_entry_component(entry_price, min_entry, max_entry)
+        score_depth = max(0.0, min(15.0, 15.0 * min(entry_depth / max(min_depth * 2.0, 1e-9), 1.0)))
+        score_spread = max(0.0, min(10.0, 10.0 * max(0.0, 1.0 - (spread / 0.04))))
+        score_time = 10.0 * self._score_time_component(remaining, min_remaining, max_remaining)
+        score_balance = 10.0 * self._score_balance_component(depth_ratio)
+        total = score_velocity + score_entry + score_depth + score_spread + score_time + score_balance
+        return {
+            "strategy_type": strategy_type,
+            "signal_score": round(total, 2),
+            "score_velocity": round(score_velocity, 2),
+            "score_entry": round(score_entry, 2),
+            "score_depth": round(score_depth, 2),
+            "score_spread": round(score_spread, 2),
+            "score_time": round(score_time, 2),
+            "score_balance": round(score_balance, 2),
+        }
 
     # -----------------------------------------------------------------------
     # Dual-leg filter chain
@@ -501,25 +627,49 @@ class StrategyEngine:
             failed_reason = "Risk limits breached"
 
         all_passed = all(f.passed for f in filters)
-
-        # Aggressive mode treats single-leg as a fast repricing scalp first.
         notional_target = cfg.scalp_take_profit_bid
         fee_buy = self._per_share_fee(entry_price, market.fee_rate)
         fee_sell = self._per_share_fee(notional_target, market.fee_rate)
         expected_profit = (notional_target - entry_price) - fee_buy - fee_sell
+        depth_ratio = self._safe_ratio(entry_depth, opposite_depth)
+        score_payload = self._repricing_score(
+            strategy_type="single_leg",
+            velocity_30s=agg.velocity_30s if agg else 0.0,
+            entry_price=entry_price,
+            min_entry=cfg.entry_min,
+            max_entry=cfg.entry_max,
+            entry_depth=entry_depth,
+            min_depth=cfg.min_book_depth_usd,
+            spread=max(0.0, entry_price - entry_bid),
+            remaining=remaining,
+            min_remaining=cfg.min_time_remaining_s,
+            max_remaining=cfg.max_time_remaining_s,
+            depth_ratio=depth_ratio,
+        )
 
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = f"Single-leg {side.upper() if side else '?'} @{entry_price:.3f}" if all_passed else failed_reason
 
         decision_id = self._log_decision(
             coin, market, up_book, down_book, agg, remaining,
-            filters, action, reason, "single_leg"
+            filters, action, reason, "single_leg",
+            entry_price=entry_price,
+            target_price=notional_target,
+            expected_profit_per_share=expected_profit,
+            entry_bid=entry_bid,
+            entry_ask=entry_price,
+            entry_spread=max(0.0, entry_price - entry_bid),
+            entry_depth_side_usd=entry_depth,
+            opposite_depth_usd=opposite_depth,
+            depth_ratio=depth_ratio,
+            resignal_cooldown_s=cfg.resignal_cooldown_s,
+            min_price_improvement=cfg.min_price_improvement,
+            **score_payload,
         )
 
         if not all_passed:
             return None
 
-        depth_ratio = (entry_depth / opposite_depth) if opposite_depth else 0.0
         signal = TradeSignal(
             market=market,
             strategy_type="single_leg",
@@ -539,6 +689,11 @@ class StrategyEngine:
             up_book=up_book,
             down_book=down_book,
             filter_results=filters,
+            target_delta=max(0.0, notional_target - entry_price),
+            hard_stop_delta=max(0.0, entry_price * cfg.loss_cut_pct),
+            resignal_cooldown_s=cfg.resignal_cooldown_s,
+            min_price_improvement=cfg.min_price_improvement,
+            **score_payload,
         )
         logger.info(
             f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
@@ -552,34 +707,34 @@ class StrategyEngine:
     # -----------------------------------------------------------------------
 
     def _evaluate_lead_lag(self, coin, market, up_book, down_book, agg) -> TradeSignal | None:
-        """
-        Lead-lag strategy: coin moved on Binance but Polymarket book hasn't fully repriced.
-        Buy the WINNING side early (momentum-following) and exit when books catch up.
-
-        Example: BTC drops 0.3% in 30s → DOWN should be worth ~0.65+ but still at 0.53.
-        Buy DOWN at 0.53, sell at 0.67 when Polymarket reprices.
-        """
+        """Momentum-following repricing strategy for fast over-50c attacks."""
         cfg = self.config.lead_lag
+        params = self._lead_lag_params(coin)
         filters: list[FilterResult] = []
         failed_reason = ""
 
-        # Filter 1: Market accepting orders
+        remaining = (market.end_time - datetime.now(timezone.utc)).total_seconds()
+        if (coin or "").lower() in cfg.disabled_coins:
+            self._log_decision(
+                coin, market, up_book, down_book, agg, remaining,
+                filters, "SKIP", f"Lead-lag disabled for {coin.upper()}", "lead_lag"
+            )
+            return None
+
         f = FilterResult("market_active", market.accepting_orders,
                          str(market.accepting_orders), "True")
         filters.append(f)
         if not f.passed:
             failed_reason = "Market not accepting orders"
 
-        # Filter 2: Time remaining
         now = datetime.now(timezone.utc)
         remaining = (market.end_time - now).total_seconds()
-        f = FilterResult("time_remaining", remaining > cfg.min_time_remaining_s,
-                         f"{remaining:.0f}s", f">{cfg.min_time_remaining_s}s")
+        f = FilterResult("time_remaining", remaining > params["min_time_remaining_s"],
+                         f"{remaining:.0f}s", f">{params['min_time_remaining_s']}s")
         filters.append(f)
         if not f.passed and not failed_reason:
             failed_reason = f"Only {remaining:.0f}s remaining"
 
-        # Filter 3: Books available
         books_ok = up_book is not None and down_book is not None
         f = FilterResult("books_available", books_ok,
                          f"up={'yes' if up_book else 'no'}, down={'yes' if down_book else 'no'}",
@@ -592,7 +747,6 @@ class StrategyEngine:
                                filters, "SKIP", failed_reason, "lead_lag")
             return None
 
-        # Filter 4: Coin must be moving significantly
         if agg is None:
             f = FilterResult("coin_velocity", False, "no price data", "price data required")
             filters.append(f)
@@ -601,16 +755,13 @@ class StrategyEngine:
             return None
 
         vel = agg.velocity_30s
-        vel_ok = abs(vel) >= cfg.min_velocity_30s
+        vel_ok = abs(vel) >= params["min_velocity_30s"]
         f = FilterResult("coin_velocity", vel_ok,
-                         f"30s={vel:.3f}%", f">={cfg.min_velocity_30s}%")
+                         f"30s={vel:.3f}%", f">={params['min_velocity_30s']}%")
         filters.append(f)
         if not f.passed and not failed_reason:
-            failed_reason = f"{coin.upper()} not moving enough: {vel:.3f}% (need >={cfg.min_velocity_30s}%)"
+            failed_reason = f"{coin.upper()} not moving enough: {vel:.3f}% (need >={params['min_velocity_30s']}%)"
 
-        # Filter 5: Identify direction and check if winning side is in the "lag window"
-        # Coin UP (+vel) → UP more likely to win → buy UP if UP ask still in range
-        # Coin DOWN (-vel) → DOWN more likely to win → buy DOWN if DOWN ask still in range
         if vel > 0:
             side = "up"
             entry_price = up_book.best_ask
@@ -624,32 +775,31 @@ class StrategyEngine:
             entry_depth = down_book.ask_depth_usd
             opposite_depth = up_book.ask_depth_usd
 
-        in_range = cfg.min_entry <= entry_price <= cfg.max_entry
+        spread = max(0.0, entry_price - entry_bid)
+        depth_ratio = self._safe_ratio(entry_depth, opposite_depth)
+        in_range = params["min_entry"] <= entry_price <= params["max_entry"]
         f = FilterResult("lag_window", in_range,
                          f"{side.upper()}@{entry_price:.3f}",
-                         f"[{cfg.min_entry:.2f}, {cfg.max_entry:.2f}]")
+                         f"[{params['min_entry']:.2f}, {params['max_entry']:.2f}]")
         filters.append(f)
         if not f.passed and not failed_reason:
-            if entry_price < cfg.min_entry:
+            if entry_price < params["min_entry"]:
                 failed_reason = f"{side.upper()}@{entry_price:.3f} already in single-leg range (too repriced)"
             else:
-                failed_reason = f"{side.upper()}@{entry_price:.3f} too high — market not moving in expected direction"
+                failed_reason = f"{side.upper()}@{entry_price:.3f} too high - market not moving in expected direction"
 
-        # Filter 6: Liquidity depth
-        f = FilterResult("liquidity_depth", entry_depth >= cfg.min_book_depth_usd,
-                         f"${entry_depth:.1f}", f">=${cfg.min_book_depth_usd}")
+        f = FilterResult("liquidity_depth", entry_depth >= params["min_book_depth_usd"],
+                         f"${entry_depth:.1f}", f">=${params['min_book_depth_usd']}")
         filters.append(f)
         if not f.passed and not failed_reason:
             failed_reason = f"Thin entry liquidity: ${entry_depth:.1f}"
 
-        # Filter 7: Feed count
         source_count = agg.source_count if agg else 0
         f = FilterResult("feed_count", source_count >= 2, str(source_count), ">=2")
         filters.append(f)
         if not f.passed and not failed_reason:
             failed_reason = f"Only {source_count} live feed(s)"
 
-        # Filter 8: Risk limits
         risk_ok = self.risk_manager.can_trade() if self.risk_manager else True
         f = FilterResult("risk_limits", risk_ok, "ok" if risk_ok else "blocked", "ok")
         filters.append(f)
@@ -657,13 +807,25 @@ class StrategyEngine:
             failed_reason = "Risk limits breached"
 
         all_passed = all(f.passed for f in filters)
-
-        # Profit estimate (entry → target sell)
-        target_sell = cfg.target_sell
+        target_sell = self._lead_lag_target_price(entry_price, coin)
         fee_rate = market.fee_rate
         fee_buy = self._per_share_fee(entry_price, fee_rate)
         fee_sell = self._per_share_fee(target_sell, fee_rate)
         expected_profit = (target_sell - entry_price) - fee_buy - fee_sell
+        score_payload = self._repricing_score(
+            strategy_type="lead_lag",
+            velocity_30s=vel,
+            entry_price=entry_price,
+            min_entry=params["min_entry"],
+            max_entry=params["max_entry"],
+            entry_depth=entry_depth,
+            min_depth=params["min_book_depth_usd"],
+            spread=spread,
+            remaining=remaining,
+            min_remaining=params["min_time_remaining_s"],
+            max_remaining=250.0,
+            depth_ratio=depth_ratio,
+        )
 
         action = ("DRY_RUN_SIGNAL" if self.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
         reason = (f"Lead-lag {side.upper()} @{entry_price:.3f} vel={vel:.3f}%"
@@ -671,7 +833,19 @@ class StrategyEngine:
 
         decision_id = self._log_decision(
             coin, market, up_book, down_book, agg, remaining,
-            filters, action, reason, "lead_lag"
+            filters, action, reason, "lead_lag",
+            entry_price=entry_price,
+            target_price=target_sell,
+            expected_profit_per_share=expected_profit,
+            entry_bid=entry_bid,
+            entry_ask=entry_price,
+            entry_spread=spread,
+            entry_depth_side_usd=entry_depth,
+            opposite_depth_usd=opposite_depth,
+            depth_ratio=depth_ratio,
+            resignal_cooldown_s=params["resignal_cooldown_s"],
+            min_price_improvement=params["min_price_improvement"],
+            **score_payload,
         )
 
         if not all_passed:
@@ -686,21 +860,27 @@ class StrategyEngine:
             target_sell_price=target_sell,
             entry_bid=entry_bid,
             entry_ask=entry_price,
-            entry_spread=max(0.0, entry_price - entry_bid),
+            entry_spread=spread,
             entry_depth_side_usd=entry_depth,
             opposite_depth_usd=opposite_depth,
-            depth_ratio=(entry_depth / opposite_depth) if opposite_depth else 0.0,
+            depth_ratio=depth_ratio,
             fee_total=fee_buy + fee_sell,
             expected_profit=expected_profit,
             time_remaining_s=remaining,
             up_book=up_book,
             down_book=down_book,
             filter_results=filters,
+            target_delta=max(0.0, target_sell - entry_price),
+            hard_stop_delta=max(0.0, entry_price * params["hard_stop_loss_pct"]),
+            resignal_cooldown_s=params["resignal_cooldown_s"],
+            min_price_improvement=params["min_price_improvement"],
+            **score_payload,
         )
         logger.info(
             f"{'[DRY RUN] ' if self.config.execution.dry_run else ''}"
             f"LEAD-LAG SIGNAL [{coin.upper()}]: BUY {side.upper()}@{entry_price:.3f} "
-            f"(vel={vel:+.3f}%) → SELL@{target_sell:.3f} | Est profit: ${expected_profit:.4f}"
+            f"(vel={vel:+.3f}%) -> SELL@{target_sell:.3f} | score={score_payload['signal_score']:.1f} "
+            f"| Est profit: ${expected_profit:.4f}"
         )
         return signal
 
@@ -967,7 +1147,7 @@ class StrategyEngine:
     # -----------------------------------------------------------------------
 
     def _log_decision(self, coin, market, up_book, down_book, agg, remaining,
-                      filters, action, reason, strategy_type) -> int:
+                      filters, action, reason, strategy_type, **extra_fields) -> int:
         """Log decision to the tracker."""
         paper_total, _ = self.tracker.get_paper_capital()
         if strategy_type == "lead_lag":
@@ -1009,5 +1189,11 @@ class StrategyEngine:
             filter_results=filters,
             action=action,
             reason=reason,
+            **extra_fields,
         )
         return self.tracker.log_decision(decision)
+
+
+
+
+

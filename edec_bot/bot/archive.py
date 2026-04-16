@@ -147,6 +147,16 @@ def _select_with_missing(conn: sqlite3.Connection, table: str, desired: list[str
     return ", ".join(pieces)
 
 
+def _aliased_select(table_alias: str, available_cols: set[str], mapping: list[tuple[str, str]]) -> str:
+    pieces: list[str] = []
+    for source, alias in mapping:
+        if source in available_cols:
+            pieces.append(f"{table_alias}.{source} AS {alias}")
+        else:
+            pieces.append(f"NULL AS {alias}")
+    return ", ".join(pieces)
+
+
 def _select_all(
     conn: sqlite3.Connection,
     query: str,
@@ -274,6 +284,20 @@ def export_last_24h_excel(
                 "first_profit_time_s",
                 "scalp_hit",
                 "high_confidence_hit",
+                "signal_score",
+                "score_velocity",
+                "score_entry",
+                "score_depth",
+                "score_spread",
+                "score_time",
+                "score_balance",
+                "target_delta",
+                "hard_stop_delta",
+                "mfe",
+                "mae",
+                "peak_net_pnl",
+                "trough_net_pnl",
+                "stall_exit_triggered",
             ],
         )
         pt_cols, pt_rows = _select_all(
@@ -386,6 +410,68 @@ def export_last_24h_excel(
         )
         _sheet_from_rows(wb, "Decisions 24h", d_cols, d_rows)
 
+        sig_select = _select_with_missing(
+            conn,
+            "decisions",
+            [
+                "id",
+                "timestamp",
+                "run_id",
+                "app_version",
+                "strategy_version",
+                "config_hash",
+                "mode",
+                "dry_run",
+                "order_size_usd",
+                "paper_capital_total",
+                "market_slug",
+                "window_id",
+                "coin",
+                "strategy_type",
+                "action",
+                "suppressed_reason",
+                "reason",
+                "signal_context",
+                "signal_overlap_count",
+                "entry_price",
+                "target_price",
+                "expected_profit_per_share",
+                "signal_score",
+                "score_velocity",
+                "score_entry",
+                "score_depth",
+                "score_spread",
+                "score_time",
+                "score_balance",
+                "time_remaining_s",
+                "coin_velocity_30s",
+                "coin_velocity_60s",
+                "entry_bid",
+                "entry_ask",
+                "entry_spread",
+                "entry_depth_side_usd",
+                "opposite_depth_usd",
+                "depth_ratio",
+                "resignal_cooldown_s",
+                "min_price_improvement",
+                "last_signal_age_s",
+                "filter_passed",
+                "filter_failed",
+            ],
+        )
+        sig_cols, sig_rows = _select_all(
+            conn,
+            f"""
+            SELECT {sig_select}
+            FROM decisions
+            WHERE timestamp >= ?
+              AND action IN ('DRY_RUN_SIGNAL', 'TRADE', 'SUPPRESSED')
+            ORDER BY id DESC
+            """,
+            (since_iso,),
+        )
+        _sheet_from_rows(wb, "Signals 24h", sig_cols, sig_rows)
+
         summary = wb.create_sheet("Summary")
         summary_headers = ["Metric", "Value"]
         summary.append(summary_headers)
@@ -397,6 +483,7 @@ def export_last_24h_excel(
             ("Paper Trades (24h)", len(pt_rows)),
             ("Live Trades (24h)", len(lt_rows)),
             ("Decisions (24h)", len(d_rows)),
+            ("Signals (24h)", len(sig_rows)),
         ]
         for r in summary_rows:
             summary.append(list(r))
@@ -411,6 +498,7 @@ def export_last_24h_excel(
             "paper_trades_24h": len(pt_rows),
             "live_trades_24h": len(lt_rows),
             "decisions_24h": len(d_rows),
+            "signals_24h": len(sig_rows),
         }
     finally:
         conn.close()
@@ -429,55 +517,88 @@ def export_recent_trades_csv_gz(
         pt_cols = _table_columns(conn, "paper_trades")
         d_cols = _table_columns(conn, "decisions")
 
-        pt_coin = "pt.coin" if "coin" in pt_cols else "'btc' AS coin"
-        pt_strategy = "pt.strategy_type" if "strategy_type" in pt_cols else "'dual_leg' AS strategy_type"
-        pt_market_end = "pt.market_end_time" if "market_end_time" in pt_cols else "NULL AS market_end_time"
-        pt_market_start = "pt.market_start_time" if "market_start_time" in pt_cols else "NULL AS market_start_time"
-        pt_time_remaining = "pt.time_remaining_s" if "time_remaining_s" in pt_cols else "NULL AS time_remaining_s"
-        pt_bid_exit = "pt.bid_at_exit" if "bid_at_exit" in pt_cols else "NULL AS bid_at_exit"
-        pt_ask_exit = "pt.ask_at_exit" if "ask_at_exit" in pt_cols else "NULL AS ask_at_exit"
-        pt_exit_spread = "pt.exit_spread" if "exit_spread" in pt_cols else "NULL AS exit_spread"
-        pt_exit_reason = "pt.exit_reason" if "exit_reason" in pt_cols else "NULL AS exit_reason"
-        pt_exit_timestamp = "pt.exit_timestamp" if "exit_timestamp" in pt_cols else "NULL AS exit_timestamp"
-        pt_run_id = "pt.run_id" if "run_id" in pt_cols else "NULL AS run_id"
-        pt_app_version = "pt.app_version" if "app_version" in pt_cols else "NULL AS app_version"
-        pt_strategy_version = "pt.strategy_version" if "strategy_version" in pt_cols else "NULL AS strategy_version"
-        pt_config_hash = "pt.config_hash" if "config_hash" in pt_cols else "NULL AS config_hash"
-        pt_mode = "pt.mode" if "mode" in pt_cols else "NULL AS mode"
-        pt_dry_run = "pt.dry_run" if "dry_run" in pt_cols else "NULL AS dry_run"
-        pt_order_size = "pt.order_size_usd" if "order_size_usd" in pt_cols else "NULL AS order_size_usd"
-        pt_paper_capital = "pt.paper_capital_total" if "paper_capital_total" in pt_cols else "NULL AS paper_capital_total"
-        pt_window_id = "pt.window_id" if "window_id" in pt_cols else "NULL AS window_id"
-        pt_signal_context = "pt.signal_context" if "signal_context" in pt_cols else "NULL AS signal_context"
-        pt_signal_overlap = "pt.signal_overlap_count" if "signal_overlap_count" in pt_cols else "NULL AS signal_overlap_count"
-        pt_shares_requested = "pt.shares_requested" if "shares_requested" in pt_cols else "NULL AS shares_requested"
-        pt_shares_filled = "pt.shares_filled" if "shares_filled" in pt_cols else "NULL AS shares_filled"
-        pt_blocked_min5 = "pt.blocked_min_5_shares" if "blocked_min_5_shares" in pt_cols else "NULL AS blocked_min_5_shares"
-        pt_entry_bid = "pt.entry_bid" if "entry_bid" in pt_cols else "NULL AS entry_bid"
-        pt_entry_ask = "pt.entry_ask" if "entry_ask" in pt_cols else "NULL AS entry_ask"
-        pt_entry_spread = "pt.entry_spread" if "entry_spread" in pt_cols else "NULL AS entry_spread"
-        pt_entry_depth = "pt.entry_depth_side_usd" if "entry_depth_side_usd" in pt_cols else "NULL AS entry_depth_side_usd"
-        pt_opp_depth = "pt.opposite_depth_usd" if "opposite_depth_usd" in pt_cols else "NULL AS opposite_depth_usd"
-        pt_depth_ratio = "pt.depth_ratio" if "depth_ratio" in pt_cols else "NULL AS depth_ratio"
-        pt_max_bid = "pt.max_bid_seen" if "max_bid_seen" in pt_cols else "NULL AS max_bid_seen"
-        pt_min_bid = "pt.min_bid_seen" if "min_bid_seen" in pt_cols else "NULL AS min_bid_seen"
-        pt_tmax = "pt.time_to_max_bid_s" if "time_to_max_bid_s" in pt_cols else "NULL AS time_to_max_bid_s"
-        pt_tmin = "pt.time_to_min_bid_s" if "time_to_min_bid_s" in pt_cols else "NULL AS time_to_min_bid_s"
-        pt_tprofit = "pt.first_profit_time_s" if "first_profit_time_s" in pt_cols else "NULL AS first_profit_time_s"
-        pt_scalp_hit = "pt.scalp_hit" if "scalp_hit" in pt_cols else "NULL AS scalp_hit"
-        pt_high_conf_hit = "pt.high_confidence_hit" if "high_confidence_hit" in pt_cols else "NULL AS high_confidence_hit"
-
-        d_filter_passed = "d.filter_passed" if "filter_passed" in d_cols else "NULL AS filter_passed"
-        d_filter_failed = "d.filter_failed" if "filter_failed" in d_cols else "NULL AS filter_failed"
-        d_reason = "d.reason AS decision_reason" if "reason" in d_cols else "NULL AS decision_reason"
-        d_vel_30 = "d.coin_velocity_30s" if "coin_velocity_30s" in d_cols else "NULL AS coin_velocity_30s"
-        d_vel_60 = "d.coin_velocity_60s" if "coin_velocity_60s" in d_cols else "NULL AS coin_velocity_60s"
-        d_up_depth = "d.up_depth_usd" if "up_depth_usd" in d_cols else "NULL AS up_depth_usd"
-        d_down_depth = "d.down_depth_usd" if "down_depth_usd" in d_cols else "NULL AS down_depth_usd"
-        d_time_remaining = (
-            "d.time_remaining_s AS decision_time_remaining_s"
-            if "time_remaining_s" in d_cols
-            else "NULL AS decision_time_remaining_s"
+        pt_select = _aliased_select(
+            "pt",
+            pt_cols,
+            [
+                ("id", "trade_id"),
+                ("timestamp", "timestamp"),
+                ("run_id", "run_id"),
+                ("app_version", "app_version"),
+                ("strategy_version", "strategy_version"),
+                ("config_hash", "config_hash"),
+                ("mode", "mode"),
+                ("dry_run", "dry_run"),
+                ("order_size_usd", "order_size_usd"),
+                ("paper_capital_total", "paper_capital_total"),
+                ("market_slug", "market_slug"),
+                ("window_id", "window_id"),
+                ("coin", "coin"),
+                ("strategy_type", "strategy_type"),
+                ("signal_context", "signal_context"),
+                ("signal_overlap_count", "signal_overlap_count"),
+                ("side", "side"),
+                ("entry_price", "entry_price"),
+                ("entry_bid", "entry_bid"),
+                ("entry_ask", "entry_ask"),
+                ("entry_spread", "entry_spread"),
+                ("target_price", "target_price"),
+                ("shares", "shares"),
+                ("shares_requested", "shares_requested"),
+                ("shares_filled", "shares_filled"),
+                ("blocked_min_5_shares", "blocked_min_5_shares"),
+                ("cost", "cost"),
+                ("fee_total", "fee_total"),
+                ("status", "status"),
+                ("exit_price", "exit_price"),
+                ("pnl", "pnl"),
+                ("exit_reason", "exit_reason"),
+                ("exit_timestamp", "exit_timestamp"),
+                ("time_remaining_s", "time_remaining_s"),
+                ("bid_at_exit", "bid_at_exit"),
+                ("ask_at_exit", "ask_at_exit"),
+                ("exit_spread", "exit_spread"),
+                ("market_start_time", "market_start_time"),
+                ("market_end_time", "market_end_time"),
+                ("entry_depth_side_usd", "entry_depth_side_usd"),
+                ("opposite_depth_usd", "opposite_depth_usd"),
+                ("depth_ratio", "depth_ratio"),
+                ("signal_score", "signal_score"),
+                ("score_velocity", "score_velocity"),
+                ("score_entry", "score_entry"),
+                ("score_depth", "score_depth"),
+                ("score_spread", "score_spread"),
+                ("score_time", "score_time"),
+                ("score_balance", "score_balance"),
+                ("target_delta", "target_delta"),
+                ("hard_stop_delta", "hard_stop_delta"),
+                ("max_bid_seen", "max_bid_seen"),
+                ("min_bid_seen", "min_bid_seen"),
+                ("time_to_max_bid_s", "time_to_max_bid_s"),
+                ("time_to_min_bid_s", "time_to_min_bid_s"),
+                ("first_profit_time_s", "first_profit_time_s"),
+                ("scalp_hit", "scalp_hit"),
+                ("high_confidence_hit", "high_confidence_hit"),
+                ("mfe", "mfe"),
+                ("mae", "mae"),
+                ("peak_net_pnl", "peak_net_pnl"),
+                ("trough_net_pnl", "trough_net_pnl"),
+                ("stall_exit_triggered", "stall_exit_triggered"),
+            ],
+        )
+        d_select = _aliased_select(
+            "d",
+            d_cols,
+            [
+                ("filter_passed", "filter_passed"),
+                ("filter_failed", "filter_failed"),
+                ("reason", "decision_reason"),
+                ("coin_velocity_30s", "coin_velocity_30s"),
+                ("coin_velocity_60s", "coin_velocity_60s"),
+                ("up_depth_usd", "up_depth_usd"),
+                ("down_depth_usd", "down_depth_usd"),
+                ("time_remaining_s", "decision_time_remaining_s"),
+            ],
         )
 
         has_pt_strategy = "strategy_type" in pt_cols
@@ -487,6 +608,7 @@ def export_recent_trades_csv_gz(
             LEFT JOIN (
                 SELECT market_slug, strategy_type, MAX(id) AS best_id
                 FROM decisions
+                WHERE action != 'SKIP'
                 GROUP BY market_slug, strategy_type
             ) top_d ON top_d.market_slug = pt.market_slug
                    AND top_d.strategy_type = pt.strategy_type
@@ -496,6 +618,7 @@ def export_recent_trades_csv_gz(
             LEFT JOIN (
                 SELECT market_slug, MAX(id) AS best_id
                 FROM decisions
+                WHERE action != 'SKIP'
                 GROUP BY market_slug
             ) top_d ON top_d.market_slug = pt.market_slug
             """
@@ -504,63 +627,8 @@ def export_recent_trades_csv_gz(
             conn,
             f"""
             SELECT
-                pt.id AS trade_id,
-                pt.timestamp,
-                {pt_run_id},
-                {pt_app_version},
-                {pt_strategy_version},
-                {pt_config_hash},
-                {pt_mode},
-                {pt_dry_run},
-                {pt_order_size},
-                {pt_paper_capital},
-                pt.market_slug,
-                {pt_window_id},
-                {pt_coin},
-                {pt_strategy},
-                {pt_signal_context},
-                {pt_signal_overlap},
-                pt.side,
-                pt.entry_price,
-                {pt_entry_bid},
-                {pt_entry_ask},
-                {pt_entry_spread},
-                pt.target_price,
-                pt.shares,
-                {pt_shares_requested},
-                {pt_shares_filled},
-                {pt_blocked_min5},
-                pt.cost,
-                pt.fee_total,
-                pt.status,
-                pt.exit_price,
-                pt.pnl,
-                {pt_exit_reason},
-                {pt_exit_timestamp},
-                {pt_time_remaining},
-                {pt_bid_exit},
-                {pt_ask_exit},
-                {pt_exit_spread},
-                {pt_market_start},
-                {pt_market_end},
-                {pt_entry_depth},
-                {pt_opp_depth},
-                {pt_depth_ratio},
-                {pt_max_bid},
-                {pt_min_bid},
-                {pt_tmax},
-                {pt_tmin},
-                {pt_tprofit},
-                {pt_scalp_hit},
-                {pt_high_conf_hit},
-                {d_filter_passed},
-                {d_filter_failed},
-                {d_reason},
-                {d_vel_30},
-                {d_vel_60},
-                {d_up_depth},
-                {d_down_depth},
-                {d_time_remaining}
+                {pt_select},
+                {d_select}
             FROM paper_trades pt
             {join_sql}
             LEFT JOIN decisions d ON d.id = top_d.best_id
@@ -597,10 +665,123 @@ def export_recent_trades_csv_gz(
                 "market_end_time": "me", "entry_depth_side_usd": "eds", "opposite_depth_usd": "ods",
                 "depth_ratio": "drt", "max_bid_seen": "maxb", "min_bid_seen": "minb",
                 "time_to_max_bid_s": "ttmax", "time_to_min_bid_s": "ttmin", "first_profit_time_s": "tfp",
+                "signal_score": "sg", "score_velocity": "sgv", "score_entry": "sge",
+                "score_depth": "sgd", "score_spread": "sgs", "score_time": "sgt",
+                "score_balance": "sgb", "target_delta": "td", "hard_stop_delta": "hsd",
                 "scalp_hit": "sc", "high_confidence_hit": "hc", "filter_passed": "fp",
                 "filter_failed": "ff", "decision_reason": "why", "coin_velocity_30s": "v30",
                 "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
-                "decision_time_remaining_s": "te",
+                "decision_time_remaining_s": "te", "mfe": "mfe", "mae": "mae",
+                "peak_net_pnl": "pnp", "trough_net_pnl": "tnp", "stall_exit_triggered": "sx",
+            }
+            writer.writerow([compact_names.get(col, col) for col in columns])
+            writer.writerows(rows)
+
+        return str(out_path), len(rows), oldest, newest
+    finally:
+        conn.close()
+
+
+def export_recent_signals_csv_gz(
+    db_path: str,
+    output_dir: str,
+    label: str,
+    limit: int,
+    now_utc: datetime | None = None,
+) -> tuple[str, int, int | None, int | None]:
+    now_utc = now_utc or _utc_now()
+    conn = sqlite3.connect(db_path)
+    try:
+        d_cols = _table_columns(conn, "decisions")
+        d_select = _aliased_select(
+            "d",
+            d_cols,
+            [
+                ("id", "decision_id"),
+                ("timestamp", "timestamp"),
+                ("run_id", "run_id"),
+                ("app_version", "app_version"),
+                ("strategy_version", "strategy_version"),
+                ("config_hash", "config_hash"),
+                ("mode", "mode"),
+                ("dry_run", "dry_run"),
+                ("order_size_usd", "order_size_usd"),
+                ("paper_capital_total", "paper_capital_total"),
+                ("market_slug", "market_slug"),
+                ("window_id", "window_id"),
+                ("coin", "coin"),
+                ("strategy_type", "strategy_type"),
+                ("action", "action"),
+                ("suppressed_reason", "suppressed_reason"),
+                ("reason", "reason"),
+                ("signal_context", "signal_context"),
+                ("signal_overlap_count", "signal_overlap_count"),
+                ("entry_price", "entry_price"),
+                ("target_price", "target_price"),
+                ("expected_profit_per_share", "expected_profit_per_share"),
+                ("signal_score", "signal_score"),
+                ("score_velocity", "score_velocity"),
+                ("score_entry", "score_entry"),
+                ("score_depth", "score_depth"),
+                ("score_spread", "score_spread"),
+                ("score_time", "score_time"),
+                ("score_balance", "score_balance"),
+                ("time_remaining_s", "time_remaining_s"),
+                ("coin_velocity_30s", "coin_velocity_30s"),
+                ("coin_velocity_60s", "coin_velocity_60s"),
+                ("entry_bid", "entry_bid"),
+                ("entry_ask", "entry_ask"),
+                ("entry_spread", "entry_spread"),
+                ("entry_depth_side_usd", "entry_depth_side_usd"),
+                ("opposite_depth_usd", "opposite_depth_usd"),
+                ("depth_ratio", "depth_ratio"),
+                ("resignal_cooldown_s", "resignal_cooldown_s"),
+                ("min_price_improvement", "min_price_improvement"),
+                ("last_signal_age_s", "last_signal_age_s"),
+                ("filter_passed", "filter_passed"),
+                ("filter_failed", "filter_failed"),
+            ],
+        )
+        columns, rows = _select_all(
+            conn,
+            f"""
+            SELECT {d_select}
+            FROM decisions d
+            WHERE d.action IN ('DRY_RUN_SIGNAL', 'TRADE', 'SUPPRESSED')
+            ORDER BY d.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        ids = [int(r[0]) for r in rows if r and r[0] is not None]
+        newest = max(ids) if ids else None
+        oldest = min(ids) if ids else None
+        id_start = f"{oldest:06d}" if oldest is not None else "000000"
+        id_end = f"{newest:06d}" if newest is not None else "000000"
+
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        date_stamp = now_utc.strftime("%Y-%m-%d")
+        time_stamp = now_utc.strftime("%H%M%S")
+        out_path = Path(output_dir) / f"{date_stamp}_{time_stamp}_{label}_signals_{id_start}-{id_end}.csv.gz"
+
+        with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            compact_names = {
+                "decision_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+                "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+                "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+                "window_id": "wid", "coin": "c", "strategy_type": "st", "action": "act",
+                "suppressed_reason": "sup", "reason": "why", "signal_context": "ctx",
+                "signal_overlap_count": "ov", "entry_price": "ep", "target_price": "tp",
+                "expected_profit_per_share": "eps", "signal_score": "sg", "score_velocity": "sgv",
+                "score_entry": "sge", "score_depth": "sgd", "score_spread": "sgs",
+                "score_time": "sgt", "score_balance": "sgb", "time_remaining_s": "te",
+                "coin_velocity_30s": "v30", "coin_velocity_60s": "v60", "entry_bid": "eb",
+                "entry_ask": "ea", "entry_spread": "es", "entry_depth_side_usd": "eds",
+                "opposite_depth_usd": "ods", "depth_ratio": "drt", "resignal_cooldown_s": "rcd",
+                "min_price_improvement": "mpi", "last_signal_age_s": "lsa",
+                "filter_passed": "fp", "filter_failed": "ff",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
@@ -764,6 +945,7 @@ def sync_dropbox_latest_to_local(
     output_dir: str = "data/dropbox_sync",
     label: str = "EDEC-BOT",
     expand_trades_csv: bool = True,
+    expand_signals_csv: bool = True,
 ) -> dict[str, Any]:
     """Pull stable latest archive files from Dropbox into a local folder."""
     dropbox_auth = _build_dropbox_auth(
@@ -783,12 +965,14 @@ def sync_dropbox_latest_to_local(
     latest_filenames = {
         "latest_last24h_xlsx": f"{label}_latest_last24h.xlsx",
         "latest_trades_csv_gz": f"{label}_latest_trades.csv.gz",
+        "latest_signals_csv_gz": f"{label}_latest_signals.csv.gz",
         "latest_index_json": f"{label}_latest_index.json",
     }
     remote_candidates = _dropbox_latest_remote_candidates(root, latest_filenames)
     local = {
         "latest_last24h_xlsx": str(out / f"{label}_latest_last24h.xlsx"),
         "latest_trades_csv_gz": str(out / f"{label}_latest_trades.csv.gz"),
+        "latest_signals_csv_gz": str(out / f"{label}_latest_signals.csv.gz"),
         "latest_index_json": str(out / f"{label}_latest_index.json"),
     }
 
@@ -833,6 +1017,13 @@ def sync_dropbox_latest_to_local(
         with gzip.open(gz_path, "rb") as f_in, open(csv_path, "wb") as f_out:
             shutil.copyfileobj(f_in, f_out)
         expanded_csv = str(csv_path)
+    expanded_signals_csv = None
+    if expand_signals_csv and downloads["latest_signals_csv_gz"].get("ok"):
+        gz_path = Path(local["latest_signals_csv_gz"])
+        csv_path = gz_path.with_suffix("")
+        with gzip.open(gz_path, "rb") as f_in, open(csv_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        expanded_signals_csv = str(csv_path)
 
     ok = all(bool(v.get("ok")) for v in downloads.values())
     return {
@@ -841,6 +1032,7 @@ def sync_dropbox_latest_to_local(
         "output_dir": str(out),
         "downloads": downloads,
         "expanded_trades_csv": expanded_csv,
+        "expanded_signals_csv": expanded_signals_csv,
     }
 
 
@@ -933,11 +1125,20 @@ def run_daily_archive(
         limit=recent_limit,
         now_utc=now_utc,
     )
+    recent_signals_path, recent_signals_count, oldest_signal_id, newest_signal_id = export_recent_signals_csv_gz(
+        db_path=db_path,
+        output_dir=output_dir,
+        label=label,
+        limit=recent_limit,
+        now_utc=now_utc,
+    )
 
     latest_excel = str(output_path / f"{label}_latest_last24h.xlsx")
     latest_trades = str(output_path / f"{label}_latest_trades.csv.gz")
+    latest_signals = str(output_path / f"{label}_latest_signals.csv.gz")
     shutil.copy2(excel_path, latest_excel)
     shutil.copy2(recent_path, latest_trades)
+    shutil.copy2(recent_signals_path, latest_signals)
     run_meta = _latest_run_metadata(db_path)
 
     index_path = output_path / f"{label}_latest_index.json"
@@ -946,19 +1147,27 @@ def run_daily_archive(
         "exported_at_utc": now_utc.isoformat(),
         "window_hours": 24,
         "recent_trades_limit": recent_limit,
+        "recent_signals_limit": recent_limit,
         "row_counts": {
             **counts,
             "recent_trades_rows": recent_count,
+            "recent_signals_rows": recent_signals_count,
         },
         "trade_id_range": {
             "oldest": oldest_id,
             "newest": newest_id,
         },
+        "signal_id_range": {
+            "oldest": oldest_signal_id,
+            "newest": newest_signal_id,
+        },
         "local_files": {
             "daily_last24h_xlsx": Path(excel_path).name,
             "daily_recent_trades_csv_gz": Path(recent_path).name,
+            "daily_recent_signals_csv_gz": Path(recent_signals_path).name,
             "latest_last24h_xlsx": Path(latest_excel).name,
             "latest_trades_csv_gz": Path(latest_trades).name,
+            "latest_signals_csv_gz": Path(latest_signals).name,
             "latest_index_json": index_path.name,
         },
         "latest_run": run_meta,
@@ -972,8 +1181,10 @@ def run_daily_archive(
         dbx_paths = {
             "daily_last24h_xlsx": f"{root}/daily-reports/{Path(excel_path).name}",
             "daily_recent_trades_csv_gz": f"{root}/daily-archives/{Path(recent_path).name}",
+            "daily_recent_signals_csv_gz": f"{root}/daily-archives/{Path(recent_signals_path).name}",
             "latest_last24h_xlsx": f"{root}/latest/{Path(latest_excel).name}",
             "latest_trades_csv_gz": f"{root}/latest/{Path(latest_trades).name}",
+            "latest_signals_csv_gz": f"{root}/latest/{Path(latest_signals).name}",
             "latest_index_json": f"{root}/latest/{index_path.name}",
         }
         upload_results = {
@@ -981,11 +1192,17 @@ def run_daily_archive(
             "daily_recent_trades_csv_gz": _dropbox_upload_file(
                 recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_auth
             ),
+            "daily_recent_signals_csv_gz": _dropbox_upload_file(
+                recent_signals_path, dbx_paths["daily_recent_signals_csv_gz"], dropbox_auth
+            ),
             "latest_last24h_xlsx": _dropbox_upload_file(
                 latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_auth
             ),
             "latest_trades_csv_gz": _dropbox_upload_file(
                 latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_auth
+            ),
+            "latest_signals_csv_gz": _dropbox_upload_file(
+                latest_signals, dbx_paths["latest_signals_csv_gz"], dropbox_auth
             ),
             "latest_index_json": _dropbox_upload_file(
                 str(index_path), dbx_paths["latest_index_json"], dropbox_auth
@@ -999,11 +1216,14 @@ def run_daily_archive(
     return {
         "excel_path": excel_path,
         "recent_path": recent_path,
+        "recent_signals_path": recent_signals_path,
         "latest_excel": latest_excel,
         "latest_trades": latest_trades,
+        "latest_signals": latest_signals,
         "index_path": str(index_path),
         "row_counts": index["row_counts"],
         "trade_id_range": index["trade_id_range"],
+        "signal_id_range": index["signal_id_range"],
         "dropbox_files": index["dropbox_files"],
         "dropbox_uploads": index["dropbox_uploads"],
     }
@@ -1015,6 +1235,7 @@ def latest_archive_paths(output_dir: str = "data/exports", label: str = "EDEC-BO
     return {
         "latest_excel": str(base / f"{label}_latest_last24h.xlsx"),
         "latest_trades": str(base / f"{label}_latest_trades.csv.gz"),
+        "latest_signals": str(base / f"{label}_latest_signals.csv.gz"),
         "latest_index": str(base / f"{label}_latest_index.json"),
     }
 
@@ -1056,6 +1277,7 @@ def archive_health_snapshot(
         "local": {
             "latest_excel_exists": Path(local_paths["latest_excel"]).exists(),
             "latest_trades_exists": Path(local_paths["latest_trades"]).exists(),
+            "latest_signals_exists": Path(local_paths["latest_signals"]).exists(),
             "latest_index_exists": Path(local_paths["latest_index"]).exists(),
         },
         "dropbox_live": None,
@@ -1066,6 +1288,7 @@ def archive_health_snapshot(
         latest_remote = {
             "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
             "latest_trades_csv_gz": f"{root}/latest/{label}_latest_trades.csv.gz",
+            "latest_signals_csv_gz": f"{root}/latest/{label}_latest_signals.csv.gz",
             "latest_index_json": f"{root}/latest/{label}_latest_index.json",
         }
         files: dict[str, Any] = {}
@@ -1116,3 +1339,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

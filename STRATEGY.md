@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 4.0.4
+> Current version: 4.0.5
 
 
 ---

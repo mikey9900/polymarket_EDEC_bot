@@ -1362,7 +1362,6 @@ class TelegramBot:
                 loop = asyncio.get_event_loop()
                 today_only = (data == "export_today")
                 path = await loop.run_in_executor(None, lambda: self.export_fn(today_only=today_only))
-                import os
                 with open(path, "rb") as f:
                     self._track(await query.message.reply_document(
                         document=f,

@@ -74,15 +74,17 @@ Use this when you want local workspace access to the latest files for AI analysi
 From `edec_bot/`:
 
 ```powershell
-python sync_dropbox_to_repo_latest.py --output-dir data/dropbox_sync
+python sync_dropbox_to_repo_latest.py
 ```
 
 This pulls from Dropbox `/EDEC-BOT/latest/` into:
 
-1. `data/dropbox_sync/EDEC-BOT_latest_last24h.xlsx`
-2. `data/dropbox_sync/EDEC-BOT_latest_trades.csv.gz`
-3. `data/dropbox_sync/EDEC-BOT_latest_trades.csv` (decompressed helper)
-4. `data/dropbox_sync/EDEC-BOT_latest_index.json`
+1. `dropbox_sync/EDEC-BOT_latest_last24h.xlsx`
+2. `dropbox_sync/EDEC-BOT_latest_trades.csv.gz`
+3. `dropbox_sync/EDEC-BOT_latest_trades.csv` (decompressed helper)
+4. `dropbox_sync/EDEC-BOT_latest_index.json`
+
+The Telegram `Sync Dropbox` button/command now also sends the synced files back into chat after a successful pull, so you can confirm the Excel arrived without separately pressing `Latest Archive`.
 
 Required env or arg:
 

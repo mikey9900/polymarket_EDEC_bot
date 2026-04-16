@@ -328,7 +328,8 @@ async def main():
     )
     dropbox_token = os.getenv("EDEC_DROPBOX_TOKEN") or ha_options.get("dropbox_token")
     dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/EDEC-BOT"
-    repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", "data/dropbox_sync")
+    default_repo_sync_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
+    repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", default_repo_sync_dir)
 
     def do_archive() -> dict:
         return run_daily_archive(

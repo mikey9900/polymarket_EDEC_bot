@@ -529,19 +529,63 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
-    async def _send_file_path(self, path: str, caption: str):
+    async def _send_file_path(self, path: str, caption: str) -> bool:
         if not self._app or not self.chat_id or not path:
-            return
+            return False
         if not os.path.exists(path):
-            return
-        with open(path, "rb") as f:
-            sent = await self._app.bot.send_document(
-                chat_id=self.chat_id,
-                document=f,
-                filename=os.path.basename(path),
-                caption=caption,
-            )
-        self._track(sent)
+            return False
+        try:
+            with open(path, "rb") as f:
+                sent = await self._app.bot.send_document(
+                    chat_id=self.chat_id,
+                    document=f,
+                    filename=os.path.basename(path),
+                    caption=caption,
+                )
+            self._track(sent)
+            return True
+        except Exception as e:
+            logger.error("Telegram send_document error for %s: %s", path, e)
+            return False
+
+    async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> bool:
+        downloads = (sync_result or {}).get("downloads", {})
+        sent_any = False
+        file_specs = [
+            ("latest_last24h_xlsx", "Dropbox latest 24h Excel export"),
+            ("latest_trades_csv_gz", "Dropbox latest compressed trades export"),
+        ]
+        if include_index:
+            file_specs.append(("latest_index_json", "Dropbox latest index pointer"))
+
+        for key, caption in file_specs:
+            item = downloads.get(key, {})
+            path = item.get("path")
+            if item.get("ok") and path and os.path.exists(path):
+                sent_any = await self._send_file_path(path, caption) or sent_any
+        return sent_any
+
+    def _repo_sync_message_lines(self, result: dict, heading_ok: str, heading_fail: str) -> list[str]:
+        ok = bool((result or {}).get("ok"))
+        downloads = (result or {}).get("downloads", {})
+        lines = [
+            heading_ok if ok else heading_fail,
+            f"Output dir: `{result.get('output_dir', 'unknown')}`",
+            f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
+        ]
+        for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
+            d = downloads.get(key, {})
+            status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
+            if not d.get("ok") and d.get("remote_path"):
+                status_txt += f"\n  path: `{d.get('remote_path')}`"
+            err = d.get("error")
+            if not d.get("ok") and err:
+                err_compact = " ".join(str(err).split())
+                if len(err_compact) > 180:
+                    err_compact = f"{err_compact[:177]}..."
+                status_txt += f"\n  error: `{err_compact}`"
+            lines.append(status_txt)
+        return lines
 
     async def send_latest_archive_files(self, include_index: bool = True) -> bool:
         if not self.archive_latest_fn:
@@ -568,14 +612,15 @@ class TelegramBot:
                 excel, trades, index = _path_set()
 
         if excel and os.path.exists(excel):
-            await self._send_file_path(excel, "EDEC latest 24h Excel export")
-            sent_any = True
+            sent_any = await self._send_file_path(excel, "EDEC latest 24h Excel export") or sent_any
         if trades and os.path.exists(trades):
-            await self._send_file_path(trades, "EDEC latest compressed trades export (500)")
-            sent_any = True
+            sent_any = (
+                await self._send_file_path(trades, "EDEC latest compressed trades export (500)") or sent_any
+            )
         if include_index and index and os.path.exists(index):
-            await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
-            sent_any = True
+            sent_any = (
+                await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)") or sent_any
+            )
         return sent_any
 
     async def alert_archive_complete(self, archive_result: dict):
@@ -619,6 +664,7 @@ class TelegramBot:
         label = health.get("label", idx.get("label", "EDEC-BOT"))
         exported = idx.get("exported_at_utc", "unknown")
         checked_at = health.get("checked_at_utc", "unknown")
+        upload_results = idx.get("dropbox_uploads") or {}
 
         live = health.get("dropbox_live")
         if live is None:
@@ -633,11 +679,19 @@ class TelegramBot:
                 miss = ", ".join(missing) if missing else "unknown"
                 dropbox_line = f"Dropbox live check: missing ({miss})"
 
+        upload_failures = [k for k, v in upload_results.items() if not v.get("ok")]
+        upload_line = (
+            f"Last upload result: failed ({', '.join(upload_failures)})"
+            if upload_failures
+            else "Last upload result: ok/unknown"
+        )
+
         return (
             f"Archive Health ({label})\n"
             f"Last export (UTC): {exported}\n"
             f"Live check (UTC): {checked_at}\n"
             f"{dropbox_line}\n"
+            f"{upload_line}\n"
             f"Rows 24h P/L/D: {rows.get('paper_trades_24h', 0)}/"
             f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}\n"
             f"Recent trades rows: {rows.get('recent_trades_rows', 0)}"
@@ -988,26 +1042,13 @@ class TelegramBot:
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(None, self.repo_sync_fn)
-                ok = bool(result.get("ok"))
-                downloads = result.get("downloads", {})
-                lines = [
-                    "✅ *Repo Sync Complete*" if ok else "⚠️ *Repo Sync Partial/Failed*",
-                    f"Output dir: `{result.get('output_dir', 'unknown')}`",
-                    f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
-                ]
-                for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
-                    d = downloads.get(key, {})
-                    status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
-                    if not d.get("ok") and d.get("remote_path"):
-                        status_txt += f"\n  path: `{d.get('remote_path')}`"
-                    err = d.get("error")
-                    if not d.get("ok") and err:
-                        err_compact = " ".join(str(err).split())
-                        if len(err_compact) > 180:
-                            err_compact = f"{err_compact[:177]}..."
-                        status_txt += f"\n  error: `{err_compact}`"
-                    lines.append(status_txt)
+                lines = self._repo_sync_message_lines(
+                    result,
+                    "✅ *Repo Sync Complete*",
+                    "⚠️ *Repo Sync Partial/Failed*",
+                )
                 self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+                await self.send_repo_sync_files(result, include_index=True)
             except Exception as e:
                 self._track(await query.message.reply_text(f"Repo sync error: {e}"))
             await self._repost_dashboard()
@@ -1311,19 +1352,13 @@ class TelegramBot:
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, self.repo_sync_fn)
-            ok = bool(result.get("ok"))
-            downloads = result.get("downloads", {})
-            lines = [
-                "*Repo Sync*" if ok else "*Repo Sync Failed*",
-                f"Output dir: `{result.get('output_dir', 'unknown')}`",
-                f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
-            ]
-            for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_index_json"):
-                d = downloads.get(key, {})
-                lines.append(
-                    f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
-                )
+            lines = self._repo_sync_message_lines(
+                result,
+                "*Repo Sync Complete*",
+                "*Repo Sync Failed*",
+            )
             self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+            await self.send_repo_sync_files(result, include_index=True)
         except Exception as e:
             self._track(await update.message.reply_text(f"Repo sync error: {e}"))
 

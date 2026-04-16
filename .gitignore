@@ -3,6 +3,12 @@ data/*
 !data/.gitkeep
 edec_bot/data/*
 !edec_bot/data/.gitkeep
+edec_bot/dropbox_sync/*
+!edec_bot/dropbox_sync/.gitkeep
+!edec_bot/dropbox_sync/*.xlsx
+!edec_bot/dropbox_sync/*.csv
+!edec_bot/dropbox_sync/*.csv.gz
+!edec_bot/dropbox_sync/*.json
 __pycache__/
 *.pyc
 *.pyo

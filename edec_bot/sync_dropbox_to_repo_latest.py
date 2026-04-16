@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 
 from bot.archive import sync_dropbox_latest_to_local
 
@@ -15,7 +16,8 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dropbox-token", default=os.getenv("EDEC_DROPBOX_TOKEN"))
     parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/EDEC-BOT"))
-    parser.add_argument("--output-dir", default=os.getenv("EDEC_REPO_SYNC_DIR", "data/dropbox_sync"))
+    default_output_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
+    parser.add_argument("--output-dir", default=os.getenv("EDEC_REPO_SYNC_DIR", default_output_dir))
     parser.add_argument("--label", default=os.getenv("EDEC_ARCHIVE_LABEL", "EDEC-BOT"))
     parser.add_argument(
         "--no-expand-trades-csv",

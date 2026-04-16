@@ -512,7 +512,7 @@ def export_recent_trades_csv_gz(
         conn.close()
 
 
-def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> None:
+def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> dict[str, Any]:
     with open(local_path, "rb") as fh:
         body = fh.read()
 
@@ -528,9 +528,33 @@ def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> None
             ),
         },
     )
-    with request.urlopen(req, timeout=30) as resp:
-        if resp.status < 200 or resp.status >= 300:
-            raise RuntimeError(f"Dropbox upload failed for {dropbox_path} with status {resp.status}")
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            if resp.status < 200 or resp.status >= 300:
+                return {
+                    "ok": False,
+                    "status": resp.status,
+                    "error": f"Unexpected Dropbox upload status {resp.status}",
+                    "path": dropbox_path,
+                }
+            return {
+                "ok": True,
+                "status": resp.status,
+                "bytes": len(body),
+                "path": dropbox_path,
+                "payload": payload,
+            }
+    except urlerror.HTTPError as e:
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8")
+        except Exception:
+            err_body = str(e)
+        return {"ok": False, "status": e.code, "error": err_body, "path": dropbox_path}
+    except Exception as e:
+        return {"ok": False, "status": None, "error": str(e), "path": dropbox_path}
 
 
 def _dropbox_get_metadata(dropbox_path: str, token: str) -> dict[str, Any]:
@@ -772,6 +796,7 @@ def run_daily_archive(
         },
         "latest_run": run_meta,
         "dropbox_files": None,
+        "dropbox_uploads": None,
     }
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
@@ -784,12 +809,23 @@ def run_daily_archive(
             "latest_trades_csv_gz": f"{root}/latest/{Path(latest_trades).name}",
             "latest_index_json": f"{root}/latest/{index_path.name}",
         }
-        _dropbox_upload_file(excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_token)
-        _dropbox_upload_file(recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_token)
-        _dropbox_upload_file(latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_token)
-        _dropbox_upload_file(latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_token)
-        _dropbox_upload_file(str(index_path), dbx_paths["latest_index_json"], dropbox_token)
+        upload_results = {
+            "daily_last24h_xlsx": _dropbox_upload_file(excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_token),
+            "daily_recent_trades_csv_gz": _dropbox_upload_file(
+                recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_token
+            ),
+            "latest_last24h_xlsx": _dropbox_upload_file(
+                latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_token
+            ),
+            "latest_trades_csv_gz": _dropbox_upload_file(
+                latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_token
+            ),
+            "latest_index_json": _dropbox_upload_file(
+                str(index_path), dbx_paths["latest_index_json"], dropbox_token
+            ),
+        }
         index["dropbox_files"] = dbx_paths
+        index["dropbox_uploads"] = upload_results
         index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     logger.info("Daily archive export complete: %s", json.dumps(index["local_files"]))
@@ -802,6 +838,7 @@ def run_daily_archive(
         "row_counts": index["row_counts"],
         "trade_id_range": index["trade_id_range"],
         "dropbox_files": index["dropbox_files"],
+        "dropbox_uploads": index["dropbox_uploads"],
     }
 
 

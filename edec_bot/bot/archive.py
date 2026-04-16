@@ -984,7 +984,7 @@ def sync_dropbox_latest_to_local(
         "latest_signals_csv_gz": f"{label}_latest_signals.csv.gz",
         "latest_index_json": f"{label}_latest_index.json",
     }
-    remote_candidates = _dropbox_latest_remote_candidates(root, latest_filenames)
+    remote_candidates = _dropbox_latest_remote_candidates(root, latest_filenames, label=label)
     local = {
         "latest_last24h_xlsx": str(out / f"{label}_latest_last24h.xlsx"),
         "latest_trades_csv_gz": str(out / f"{label}_latest_trades.csv.gz"),
@@ -1091,6 +1091,7 @@ def _normalize_dropbox_root(dropbox_root: str | None) -> str:
 def _dropbox_latest_remote_candidates(
     root: str,
     latest_filenames: dict[str, str],
+    label: str | None = None,
 ) -> dict[str, list[str]]:
     base = root.rstrip("/")
     candidate_dirs: list[str] = []
@@ -1098,6 +1099,12 @@ def _dropbox_latest_remote_candidates(
         candidate_dirs.extend([base, base[: -len("/latest")] or "/"])
     else:
         candidate_dirs.extend([f"{base}/latest", base])
+    normalized_label = _safe_label(label or "")
+    if normalized_label:
+        label_base = f"{base}/{normalized_label}" if base else f"/{normalized_label}"
+        candidate_dirs.extend([f"{label_base}/latest", label_base])
+        if base != "/":
+            candidate_dirs.extend([f"/{normalized_label}/latest", f"/{normalized_label}"])
 
     seen_dirs: set[str] = set()
     unique_dirs: list[str] = []

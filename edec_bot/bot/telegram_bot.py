@@ -1378,12 +1378,24 @@ class TelegramBot:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
                 return
-            wait_msg = await query.message.reply_text("⏳ Building Last 100 trades/signals CSVs (Dropbox sync first)...")
+            wait_msg = await query.message.reply_text("⏳ Building Last 100 trades/signals CSVs (archive + Dropbox sync)...")
             self._track(wait_msg)
             try:
                 loop = asyncio.get_event_loop()
                 trades_path = None
                 signals_path = None
+                archive_error = None
+                if self.archive_fn:
+                    try:
+                        archive_result = await loop.run_in_executor(None, self.archive_fn)
+                        latest_trades = archive_result.get("latest_trades")
+                        latest_signals = archive_result.get("latest_signals")
+                        if latest_trades and os.path.exists(latest_trades):
+                            trades_path = latest_trades
+                        if latest_signals and os.path.exists(latest_signals):
+                            signals_path = latest_signals
+                    except Exception as e:
+                        archive_error = str(e)
                 if self.repo_sync_fn:
                     try:
                         sync_result = await loop.run_in_executor(None, self.repo_sync_fn)
@@ -1395,8 +1407,7 @@ class TelegramBot:
                             signals_path = synced_signals_csv
                     except Exception:
                         # Fall back to local DB export if Dropbox sync fails.
-                        trades_path = None
-                        signals_path = None
+                        pass
                 if not trades_path:
                     trades_path = await loop.run_in_executor(None, self.export_recent_fn)
                 with open(trades_path, "rb") as f:
@@ -1422,6 +1433,11 @@ class TelegramBot:
                                 filename=os.path.basename(latest_signals),
                                 caption="🧠 Latest Signals CSV.GZ — companion dataset for filter/skip analysis",
                             ))
+                if archive_error:
+                    self._track(await query.message.reply_text(
+                        f"⚠️ Dropbox archive upload failed; used local fallback.\n`{archive_error}`",
+                        parse_mode="Markdown",
+                    ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))
             await self._repost_dashboard()

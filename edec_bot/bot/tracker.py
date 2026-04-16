@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
 
 CREATE TABLE IF NOT EXISTS paper_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER REFERENCES decisions(id),
     timestamp TEXT NOT NULL,
     run_id TEXT,
     app_version TEXT,
@@ -218,6 +219,7 @@ CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_decision ON paper_trades(decision_id);
 """
 
 
@@ -239,6 +241,7 @@ class DecisionTracker:
         self.conn.executescript("""
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id INTEGER REFERENCES decisions(id),
                 timestamp TEXT NOT NULL,
                 run_id TEXT,
                 app_version TEXT,
@@ -381,6 +384,7 @@ class DecisionTracker:
         # Add new paper_trades columns (added in v1.3.3)
         pt_cols = {row[1] for row in self.conn.execute("PRAGMA table_info(paper_trades)")}
         new_pt_cols = {
+            "decision_id": "INTEGER REFERENCES decisions(id)",
             "run_id": "TEXT",
             "app_version": "TEXT",
             "strategy_version": "TEXT",
@@ -830,6 +834,7 @@ class DecisionTracker:
     def log_paper_trade(self, market_slug: str, coin: str, strategy_type: str,
                         side: str, entry_price: float, target_price: float,
                         shares: float, fee_total: float,
+                        decision_id: int | None = None,
                         market_end_time: str | None = None,
                         market_start_time: str | None = None,
                         signal_context: str = "",
@@ -857,9 +862,56 @@ class DecisionTracker:
         """Open a paper trade and deduct cost from balance."""
         cost = entry_price * shares
         paper_total, _ = self.get_paper_capital()
+        values = (
+            decision_id,
+            datetime.utcnow().isoformat(),
+            self._runtime_value("run_id"),
+            self._runtime_value("app_version"),
+            self._runtime_value("strategy_version"),
+            self._runtime_value("config_path"),
+            self._runtime_value("config_hash"),
+            self._runtime_value("mode"),
+            int(bool(self._runtime_value("dry_run", True))),
+            order_size_usd if order_size_usd is not None else self._runtime_value("order_size_usd"),
+            paper_total,
+            market_slug,
+            window_id or market_slug,
+            coin,
+            strategy_type,
+            signal_context,
+            signal_overlap_count,
+            side,
+            entry_price,
+            target_price,
+            shares,
+            shares_requested if shares_requested is not None else shares,
+            shares_filled if shares_filled is not None else shares,
+            int(bool(blocked_min_5_shares)),
+            cost,
+            fee_total,
+            "open",
+            market_end_time,
+            market_start_time,
+            entry_bid,
+            entry_ask if entry_ask is not None else entry_price,
+            entry_spread,
+            entry_depth_side_usd,
+            opposite_depth_usd,
+            depth_ratio,
+            signal_score,
+            score_velocity,
+            score_entry,
+            score_depth,
+            score_spread,
+            score_time,
+            score_balance,
+            target_delta,
+            hard_stop_delta,
+        )
+        placeholders = ", ".join("?" for _ in values)
         cursor = self.conn.execute(
-            """INSERT INTO paper_trades
-               (timestamp, run_id, app_version, strategy_version, config_path, config_hash,
+            f"""INSERT INTO paper_trades
+               (decision_id, timestamp, run_id, app_version, strategy_version, config_path, config_hash,
                 mode, dry_run, order_size_usd, paper_capital_total,
                 market_slug, window_id, coin, strategy_type, signal_context, signal_overlap_count,
                 side, entry_price, target_price, shares, shares_requested, shares_filled,
@@ -867,51 +919,8 @@ class DecisionTracker:
                 entry_bid, entry_ask, entry_spread, entry_depth_side_usd, opposite_depth_usd, depth_ratio,
                 signal_score, score_velocity, score_entry, score_depth, score_spread, score_time, score_balance,
                 target_delta, hard_stop_delta)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                datetime.utcnow().isoformat(),
-                self._runtime_value("run_id"),
-                self._runtime_value("app_version"),
-                self._runtime_value("strategy_version"),
-                self._runtime_value("config_path"),
-                self._runtime_value("config_hash"),
-                self._runtime_value("mode"),
-                int(bool(self._runtime_value("dry_run", True))),
-                order_size_usd if order_size_usd is not None else self._runtime_value("order_size_usd"),
-                paper_total,
-                market_slug,
-                window_id or market_slug,
-                coin,
-                strategy_type,
-                signal_context,
-                signal_overlap_count,
-                side,
-                entry_price,
-                target_price,
-                shares,
-                shares_requested if shares_requested is not None else shares,
-                shares_filled if shares_filled is not None else shares,
-                int(bool(blocked_min_5_shares)),
-                cost,
-                fee_total,
-                market_end_time,
-                market_start_time,
-                entry_bid,
-                entry_ask if entry_ask is not None else entry_price,
-                entry_spread,
-                entry_depth_side_usd,
-                opposite_depth_usd,
-                depth_ratio,
-                signal_score,
-                score_velocity,
-                score_entry,
-                score_depth,
-                score_spread,
-                score_time,
-                score_balance,
-                target_delta,
-                hard_stop_delta,
-            ),
+               VALUES ({placeholders})""",
+            values,
         )
         # Deduct from paper balance
         self.conn.execute(

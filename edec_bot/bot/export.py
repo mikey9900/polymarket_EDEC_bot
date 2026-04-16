@@ -330,6 +330,8 @@ def _key_lesson(status: str, reason: str, side: str, vel_30s: float | None) -> s
 def _build_recent_trades_sheet(wb, conn, limit: int):
     """Single compact sheet: last N trades with all key fields for AI analysis."""
     ws = wb.create_sheet(f"Last {limit} Trades")
+    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
 
     headers = [
         "id", "d", "t", "c", "st", "sd",
@@ -347,7 +349,7 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
     _style_header(ws, len(headers))
     _freeze(ws)
 
-    rows = conn.execute("""
+    rows = conn.execute(f"""
         SELECT
             pt.id,
             pt.timestamp,
@@ -426,7 +428,7 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             GROUP BY market_slug, strategy_type
         ) top_d ON top_d.market_slug   = pt.market_slug
                AND top_d.strategy_type = pt.strategy_type
-        LEFT JOIN decisions d ON d.id = top_d.best_id
+        LEFT JOIN decisions d ON d.id = {decision_join_id}
         ORDER BY pt.id DESC
         LIMIT ?
     """, (limit,)).fetchall()
@@ -529,6 +531,8 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
     """Detailed per-trade journal with entry reasoning, market context, and lessons."""
     sheet_name = "Loss Journal" if status == "closed_loss" else "Win Journal"
     ws = wb.create_sheet(sheet_name)
+    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
 
     # Row 1 — section divider labels (merged cells)
     sections = [
@@ -624,7 +628,7 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             GROUP BY market_slug, strategy_type
         ) top_d ON top_d.market_slug   = pt.market_slug
                AND top_d.strategy_type = pt.strategy_type
-        LEFT JOIN decisions d ON d.id = top_d.best_id
+        LEFT JOIN decisions d ON d.id = {decision_join_id}
         WHERE pt.status = ? {extra}
         ORDER BY pt.timestamp DESC
     """, params).fetchall()

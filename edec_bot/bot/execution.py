@@ -68,6 +68,7 @@ class ExecutionEngine:
                 self.tracker.log_paper_trade(
                     signal.market.slug, signal.market.coin, "dual_leg", "both",
                     signal.combined_cost, 1.0, result.shares, signal.fee_total,
+                    decision_id=signal.decision_id or decision_id,
                     market_end_time=signal.market.end_time.isoformat(),
                 )
                 logger.info(
@@ -214,6 +215,7 @@ class ExecutionEngine:
                 trade_id = self.tracker.log_paper_trade(
                     market.slug, market.coin, signal.strategy_type, signal.side,
                     signal.entry_price, signal.target_sell_price, shares, signal.fee_total,
+                    decision_id=signal.decision_id or decision_id,
                     market_end_time=market.end_time.isoformat(),
                     market_start_time=market.start_time.isoformat(),
                     signal_context=signal.signal_context,
@@ -595,6 +597,7 @@ class ExecutionEngine:
                 market.slug, market.coin, "swing_leg", signal.side,
                 signal.entry_price, signal.target_sell_price, shares,
                 signal.fee_total * shares,
+                decision_id=signal.decision_id or decision_id,
                 market_end_time=market.end_time.isoformat(),
                 market_start_time=market.start_time.isoformat(),
                 signal_context=signal.signal_context,

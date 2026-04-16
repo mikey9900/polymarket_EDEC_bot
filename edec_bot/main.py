@@ -18,9 +18,7 @@ from bot.archive import (
     run_daily_archive,
     sync_dropbox_latest_to_local,
 )
-from bot.dashboard_state import DashboardStateService
 from bot.export import export_to_excel, export_recent_to_excel
-from bot.live_api import LiveApiServer
 from bot.market_scanner import MarketScanner
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
@@ -30,6 +28,17 @@ from bot.execution import ExecutionEngine
 from bot.runtime_defaults import default_strategy_mode
 from bot.tracker import DecisionTracker
 from bot.telegram_bot import TelegramBot
+
+_dashboard_api_import_error = None
+try:
+    from bot.dashboard_state import DashboardStateService
+    from bot.live_api import LiveApiServer
+except ModuleNotFoundError as exc:
+    if exc.name not in ("bot.dashboard_state", "bot.live_api"):
+        raise
+    DashboardStateService = None
+    LiveApiServer = None
+    _dashboard_api_import_error = exc
 
 logger = logging.getLogger("edec")
 
@@ -397,22 +406,28 @@ async def main():
         archive_health_fn=do_archive_health,
         repo_sync_fn=do_repo_sync_latest,
     )
-    dashboard_state = DashboardStateService(
-        config=config,
-        tracker=tracker,
-        risk_manager=risk_manager,
-        scanner=scanner,
-        strategy_engine=strategy,
-        executor=executor,
-        aggregator=aggregator,
-        update_interval_s=max(0.1, dashboard_update_ms / 1000.0),
-        history_sample_interval_s=max(dashboard_update_ms, dashboard_history_sample_ms) / 1000.0,
-        history_points=dashboard_history_points,
-    )
-    live_api = (
-        LiveApiServer(dashboard_state, host=dashboard_api_host, port=dashboard_api_port)
-        if dashboard_api_enabled else None
-    )
+    dashboard_state = None
+    live_api = None
+    if dashboard_api_enabled:
+        if DashboardStateService is None or LiveApiServer is None:
+            logger.warning(
+                "Dashboard API disabled because optional modules are unavailable: %s",
+                _dashboard_api_import_error,
+            )
+        else:
+            dashboard_state = DashboardStateService(
+                config=config,
+                tracker=tracker,
+                risk_manager=risk_manager,
+                scanner=scanner,
+                strategy_engine=strategy,
+                executor=executor,
+                aggregator=aggregator,
+                update_interval_s=max(0.1, dashboard_update_ms / 1000.0),
+                history_sample_interval_s=max(dashboard_update_ms, dashboard_history_sample_ms) / 1000.0,
+                history_points=dashboard_history_points,
+            )
+            live_api = LiveApiServer(dashboard_state, host=dashboard_api_host, port=dashboard_api_port)
 
     feed_pairs = []
     tasks = []

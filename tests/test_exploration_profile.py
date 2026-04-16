@@ -18,6 +18,7 @@ from bot.execution import ExecutionEngine
 from bot.models import Decision, FilterResult
 from bot.runtime_defaults import default_strategy_mode
 from bot.strategy import StrategyEngine
+from bot.export import export_to_excel
 from bot.tracker import DecisionTracker
 
 
@@ -286,6 +287,164 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertIn("act", signals_rows[0])
         self.assertIn("sup", signals_rows[0])
         self.assertEqual(signals_rows[1][signals_rows[0].index("act")], "SUPPRESSED")
+
+    def test_trade_exports_keep_decision_metadata_for_same_window_refires(self):
+        scratch_root = ROOT / ".tmp_testdata" / "decision_link_case"
+        if scratch_root.exists():
+            shutil.rmtree(scratch_root, ignore_errors=True)
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        db_path = str(scratch_root / "decisions.db")
+        out_dir = scratch_root / "exports"
+        tracker = DecisionTracker(db_path)
+        self.addCleanup(lambda: shutil.rmtree(scratch_root, ignore_errors=True))
+        self.addCleanup(tracker.conn.close)
+        tracker.set_paper_capital(5000.0)
+        tracker.set_runtime_context(
+            {
+                "run_id": "run-refire",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "app_version": "3.4.test",
+                "strategy_version": "3.2.test",
+                "config_path": "config_phase_a_single.yaml",
+                "config_hash": "abc123",
+                "dry_run": True,
+                "mode": "both",
+                "order_size_usd": 10.0,
+                "paper_capital_total": 5000.0,
+            }
+        )
+        now = datetime.now(timezone.utc)
+        market_slug = "xrp-2026-04-15-1200"
+        filters = [FilterResult("risk_limits", True, "ok", "ok")]
+
+        first_id = tracker.log_decision(
+            Decision(
+                timestamp=now,
+                market_slug=market_slug,
+                window_id=market_slug,
+                coin="xrp",
+                market_end_time=now + timedelta(minutes=5),
+                market_start_time=now,
+                strategy_type="lead_lag",
+                up_best_ask=0.55,
+                down_best_ask=0.45,
+                combined_cost=1.0,
+                btc_price=85000.0,
+                coin_velocity_30s=0.11,
+                coin_velocity_60s=0.14,
+                up_depth_usd=30.0,
+                down_depth_usd=14.0,
+                time_remaining_s=150.0,
+                feed_count=3,
+                filter_results=filters,
+                action="DRY_RUN_SIGNAL",
+                reason="first refire",
+                run_id="run-refire",
+                mode="both",
+                dry_run=True,
+                order_size_usd=10.0,
+                paper_capital_total=5000.0,
+                signal_context="lead_lag",
+                signal_overlap_count=1,
+                entry_price=0.55,
+                target_price=0.61,
+                expected_profit_per_share=0.02,
+            )
+        )
+        trade_one = tracker.log_paper_trade(
+            market_slug=market_slug,
+            coin="xrp",
+            strategy_type="lead_lag",
+            side="up",
+            entry_price=0.55,
+            target_price=0.61,
+            shares=18,
+            fee_total=0.5,
+            decision_id=first_id,
+            window_id=market_slug,
+        )
+        tracker.close_paper_trade_early(
+            trade_one,
+            exit_price=0.57,
+            pnl=0.22,
+            status="closed_win",
+            exit_reason="profit_target",
+            time_remaining_s=110.0,
+            bid_at_exit=0.57,
+            ask_at_exit=0.58,
+        )
+
+        second_id = tracker.log_decision(
+            Decision(
+                timestamp=now + timedelta(seconds=3),
+                market_slug=market_slug,
+                window_id=market_slug,
+                coin="xrp",
+                market_end_time=now + timedelta(minutes=5),
+                market_start_time=now,
+                strategy_type="lead_lag",
+                up_best_ask=0.58,
+                down_best_ask=0.42,
+                combined_cost=1.0,
+                btc_price=85000.0,
+                coin_velocity_30s=0.29,
+                coin_velocity_60s=0.33,
+                up_depth_usd=42.0,
+                down_depth_usd=13.0,
+                time_remaining_s=145.0,
+                feed_count=3,
+                filter_results=filters,
+                action="DRY_RUN_SIGNAL",
+                reason="second refire",
+                run_id="run-refire",
+                mode="both",
+                dry_run=True,
+                order_size_usd=10.0,
+                paper_capital_total=5000.0,
+                signal_context="lead_lag",
+                signal_overlap_count=1,
+                entry_price=0.58,
+                target_price=0.64,
+                expected_profit_per_share=0.02,
+            )
+        )
+        trade_two = tracker.log_paper_trade(
+            market_slug=market_slug,
+            coin="xrp",
+            strategy_type="lead_lag",
+            side="up",
+            entry_price=0.58,
+            target_price=0.64,
+            shares=17,
+            fee_total=0.5,
+            decision_id=second_id,
+            window_id=market_slug,
+        )
+        tracker.close_paper_trade_early(
+            trade_two,
+            exit_price=0.54,
+            pnl=-0.68,
+            status="closed_loss",
+            exit_reason="loss_cut",
+            time_remaining_s=100.0,
+            bid_at_exit=0.54,
+            ask_at_exit=0.55,
+        )
+
+        trades_path, trades_count, _, _ = export_recent_trades_csv_gz(db_path, str(out_dir), "EDEC-BOT", 10)
+        workbook_path = export_to_excel(db_path, str(out_dir))
+
+        self.assertEqual(trades_count, 2)
+        self.assertTrue(Path(workbook_path).exists())
+
+        with gzip.open(trades_path, "rt", encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+
+        by_id = {row["id"]: row for row in rows}
+        self.assertEqual(by_id[str(trade_one)]["why"], "first refire")
+        self.assertEqual(by_id[str(trade_two)]["why"], "second refire")
+        self.assertEqual(by_id[str(trade_one)]["v30"], "0.11")
+        self.assertEqual(by_id[str(trade_two)]["v30"], "0.29")
 
 
 if __name__ == "__main__":

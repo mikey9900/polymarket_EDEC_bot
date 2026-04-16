@@ -24,6 +24,8 @@ from bot.export import _auto_width, _freeze, _style_header
 
 logger = logging.getLogger(__name__)
 
+_OPTIONAL_LATEST_KEYS = {"latest_signals_csv_gz"}
+
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -124,6 +126,19 @@ def _dropbox_error_details(raw_error: str) -> dict[str, Any]:
         details["friendly"] = "Dropbox file not found at the configured path."
 
     return details
+
+
+def _is_optional_latest_missing(item: dict[str, Any] | None, key: str) -> bool:
+    if key not in _OPTIONAL_LATEST_KEYS:
+        return False
+    info = item or {}
+    if info.get("ok"):
+        return False
+    details = info.get("error_details") or {}
+    if details.get("reason") == "path_not_found":
+        return True
+    err_text = str(info.get("error") or "").lower()
+    return "path/not_found" in err_text
 
 
 def _db_iso(ts: datetime) -> str:
@@ -600,6 +615,7 @@ def export_recent_trades_csv_gz(
                 ("time_remaining_s", "decision_time_remaining_s"),
             ],
         )
+        decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
 
         has_pt_strategy = "strategy_type" in pt_cols
         has_d_strategy = "strategy_type" in d_cols
@@ -631,7 +647,7 @@ def export_recent_trades_csv_gz(
                 {d_select}
             FROM paper_trades pt
             {join_sql}
-            LEFT JOIN decisions d ON d.id = top_d.best_id
+            LEFT JOIN decisions d ON d.id = {decision_join_id}
             ORDER BY pt.id DESC
             LIMIT ?
             """,
@@ -1004,9 +1020,15 @@ def sync_dropbox_latest_to_local(
                 "ok": False,
                 "status": attempts[-1].get("status") if attempts else None,
                 "error": attempts[-1].get("error") if attempts else "No Dropbox path candidates built",
+                "error_details": attempts[-1].get("error_details") if attempts else None,
                 "path": local[key],
                 "remote_path": candidates[0] if candidates else None,
             }
+        if _is_optional_latest_missing(chosen, key):
+            chosen["optional_missing"] = True
+            details = dict(chosen.get("error_details") or {})
+            details.setdefault("friendly", "Optional latest signals file is not in Dropbox yet.")
+            chosen["error_details"] = details
         chosen["attempts"] = attempts
         downloads[key] = chosen
 
@@ -1025,7 +1047,8 @@ def sync_dropbox_latest_to_local(
             shutil.copyfileobj(f_in, f_out)
         expanded_signals_csv = str(csv_path)
 
-    ok = all(bool(v.get("ok")) for v in downloads.values())
+    required_keys = tuple(key for key in downloads.keys() if key not in _OPTIONAL_LATEST_KEYS)
+    ok = all(bool(downloads[key].get("ok")) for key in required_keys)
     return {
         "ok": ok,
         "checked_at_utc": _utc_now().isoformat(),
@@ -1294,7 +1317,10 @@ def archive_health_snapshot(
         files: dict[str, Any] = {}
         for key, p in latest_remote.items():
             files[key] = {"path": p, **_dropbox_get_metadata(p, dropbox_auth)}
-        live_ok = all(bool(v.get("exists")) for v in files.values())
+            if _is_optional_latest_missing(files[key], key):
+                files[key]["optional_missing"] = True
+        required_keys = tuple(key for key in files.keys() if key not in _OPTIONAL_LATEST_KEYS)
+        live_ok = all(bool(files[key].get("exists")) for key in required_keys)
         health["dropbox_live"] = {
             "enabled": True,
             "ok": live_ok,

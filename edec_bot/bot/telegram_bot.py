@@ -25,6 +25,8 @@ from version import __version__
 
 logger = logging.getLogger(__name__)
 
+_OPTIONAL_FILE_KEYS = {"latest_signals", "latest_signals_csv_gz"}
+
 # Mode labels for display
 MODE_LABELS = {
     "both": "🟢 ALL enabled strategies",
@@ -891,6 +893,14 @@ class TelegramBot:
             if item.get("ok") and path and os.path.exists(path):
                 ok, error = await self._send_file_path(path, caption)
                 results[key] = {"sent": ok, "error": error, "path": path}
+            elif key in _OPTIONAL_FILE_KEYS and item.get("optional_missing"):
+                results[key] = {
+                    "sent": False,
+                    "skipped": True,
+                    "optional_missing": True,
+                    "error": None,
+                    "path": path,
+                }
             else:
                 results[key] = {"sent": False, "error": "File not available after Dropbox sync", "path": path}
         return results
@@ -906,6 +916,10 @@ class TelegramBot:
         ]
         for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_signals_csv_gz", "latest_index_json"):
             d = downloads.get(key, {})
+            if key in _OPTIONAL_FILE_KEYS and d.get("optional_missing"):
+                status_txt = f"`{key}`: optional-missing"
+                lines.append(status_txt)
+                continue
             status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
             if not d.get("ok") and d.get("remote_path"):
                 status_txt += f"\n  path: `{d.get('remote_path')}`"
@@ -926,7 +940,7 @@ class TelegramBot:
         lines: list[str] = []
         for key, label in label_map.items():
             info = send_result.get(key, {}) if send_result else {}
-            if info.get("sent"):
+            if info.get("sent") or info.get("optional_missing"):
                 continue
             error = " ".join(str(info.get("error") or "unknown error").split())
             if len(error) > 180:
@@ -973,7 +987,13 @@ class TelegramBot:
             ok, error = await self._send_file_path(signals, "EDEC latest compressed signals export (500)")
             files["latest_signals"] = {"sent": ok, "error": error, "path": signals}
         else:
-            files["latest_signals"] = {"sent": False, "error": "Latest signals file not found", "path": signals}
+            files["latest_signals"] = {
+                "sent": False,
+                "skipped": True,
+                "optional_missing": True,
+                "error": None,
+                "path": signals,
+            }
         if include_index and index and os.path.exists(index):
             ok, error = await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
             files["latest_index"] = {"sent": ok, "error": error, "path": index}

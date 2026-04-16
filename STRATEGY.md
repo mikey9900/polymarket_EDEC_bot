@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 3.2.32
+> Current version: 4.0.0
 
 ---
 
@@ -225,6 +225,7 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.30 | Fixed tracker startup migrations so older SQLite databases upgrade before new `run_id` indexes are created | Prevent addon boot failure on existing Home Assistant installs with pre-telemetry databases |
 | 3.2.31 | Updated Telegram mode help to reflect `lead` and the currently enabled strategy set | Avoid stale `/mode` instructions that implied the bot was only built around the older dual/single combinations |
 | 3.2.32 | Shifted the exploration profile to `both` by default, loosened repricing filters, added lead-lag stall/hard-stop exits, XRP overrides, deterministic signal scoring, and compact signals exports | Collect 500+ dry-run/day with much richer prediction telemetry before the next tuning pass |
+| 4.0.0 | Linked paper trades directly to their originating decisions, kept optional latest-signals delivery non-fatal, and hardened optional dashboard imports | Make the new exploration exports trustworthy and keep the addon resilient while Dropbox/dashboard pieces are still rolling out |
 
 ---
 

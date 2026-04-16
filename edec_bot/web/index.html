@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>EDEC Terminal</title>
+    <link rel="stylesheet" href="__EDEC_BASE_PATH__/assets/app.css">
+    <script>
+      window.__EDEC_BASE_PATH__ = "__EDEC_BASE_PATH__";
+    </script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark">E</div>
+          <div>
+            <p class="eyebrow">Home Assistant Trading Panel</p>
+            <h1>EDEC Terminal</h1>
+          </div>
+        </div>
+        <div class="status-cluster">
+          <div class="status-pill" id="pill-connection">Connecting</div>
+          <div class="status-pill" id="pill-mode">Mode</div>
+          <div class="status-pill" id="pill-run">Dry Run</div>
+          <div class="status-pill" id="pill-updated">Waiting for data</div>
+        </div>
+      </header>
+
+      <main class="dashboard-grid">
+        <section class="panel hero-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Live Focus</p>
+              <h2 id="focus-title">Market Overview</h2>
+              <p class="panel-note focus-subtitle" id="focus-subtitle">Waiting for market context</p>
+            </div>
+            <div class="hero-toolbar">
+              <div class="focus-chooser" id="focus-chooser"></div>
+              <div class="chip-row window-row" id="chart-window-row"></div>
+            </div>
+          </div>
+
+          <div class="hero-body">
+            <div class="hero-main">
+              <div class="focus-stats" id="focus-stats"></div>
+
+              <div class="chart-card">
+                <canvas id="focus-chart" width="1200" height="420" aria-label="Live chart"></canvas>
+                <div class="chart-hud">
+                  <div class="chart-legend">
+                    <span><i class="legend-dot spot"></i> Spot</span>
+                    <span><i class="legend-dot reference"></i> Strike / Reference</span>
+                    <span><i class="legend-dot up"></i> UP ask</span>
+                    <span><i class="legend-dot down"></i> DOWN ask</span>
+                  </div>
+                  <div class="chart-status" id="chart-status">Waiting for live series</div>
+                </div>
+              </div>
+
+              <section class="resolution-panel">
+                <div class="resolution-head">
+                  <div>
+                    <p class="eyebrow">Previous Resolutions</p>
+                    <h3>Recent Market Outcomes</h3>
+                  </div>
+                  <p class="panel-note">Winner, price move, and close level from the most recent resolved markets</p>
+                </div>
+                <div class="resolution-rail" id="resolution-rail"></div>
+              </section>
+            </div>
+
+            <aside class="hero-side">
+              <div class="metrics-grid">
+                <article class="metric-card">
+                  <p class="metric-label">Paper Balance</p>
+                  <p class="metric-value" id="metric-balance">$0.00</p>
+                  <p class="metric-meta" id="metric-capital">of $0.00 capital</p>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">P&amp;L</p>
+                  <p class="metric-value" id="metric-pnl">$0.00</p>
+                  <p class="metric-meta" id="metric-winrate">Win rate --</p>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">Open Positions</p>
+                  <p class="metric-value" id="metric-open">0</p>
+                  <p class="metric-meta" id="metric-trades">0 trades tracked</p>
+                </article>
+                <article class="metric-card">
+                  <p class="metric-label">Budget</p>
+                  <p class="metric-value" id="metric-budget">$0</p>
+                  <p class="metric-meta" id="metric-state">Stopped</p>
+                </article>
+              </div>
+
+              <div class="action-panel">
+                <div class="action-group">
+                  <p class="eyebrow">Quick Actions</p>
+                  <div class="button-row">
+                    <button class="action-btn positive" data-action="start">Resume</button>
+                    <button class="action-btn muted" data-action="stop">Pause</button>
+                    <button class="action-btn danger" data-action="kill">Kill</button>
+                    <button class="action-btn ghost" data-action="reset-stats">Reset</button>
+                  </div>
+                </div>
+
+                <div class="action-group">
+                  <p class="eyebrow">Budget Presets</p>
+                  <div class="chip-row" id="budget-row"></div>
+                </div>
+
+                <div class="action-group">
+                  <p class="eyebrow">Capital Presets</p>
+                  <div class="chip-row" id="capital-row"></div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </section>
+
+        <section class="panel board-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Market Board</p>
+              <h2>All Coins</h2>
+            </div>
+            <p class="panel-note">Live order books, mini trends, and recent market outcomes</p>
+          </div>
+          <div class="market-board" id="market-board"></div>
+        </section>
+
+        <section class="panel tape-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">Trade Tape</p>
+              <h2>Recent Trades</h2>
+            </div>
+          </div>
+          <div class="tape-list" id="recent-trades"></div>
+        </section>
+
+        <section class="panel system-panel">
+          <div class="panel-head compact">
+            <div>
+              <p class="eyebrow">System</p>
+              <h2>Runtime</h2>
+            </div>
+          </div>
+          <dl class="system-list" id="system-list"></dl>
+        </section>
+      </main>
+    </div>
+
+    <div class="toast-stack" id="toast-stack"></div>
+
+    <div class="modal-shell hidden" id="confirm-modal">
+      <div class="modal-card">
+        <p class="eyebrow">Confirm Action</p>
+        <h3 id="confirm-title">Are you sure?</h3>
+        <p id="confirm-body">This action will change the live bot state.</p>
+        <div class="button-row modal-actions">
+          <button class="action-btn ghost" id="confirm-cancel">Cancel</button>
+          <button class="action-btn danger" id="confirm-approve">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="__EDEC_BASE_PATH__/assets/app.js"></script>
+  </body>
+</html>

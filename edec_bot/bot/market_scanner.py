@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -16,6 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 class MarketScanner:
+    _REF_PRICE_KEYS = (
+        "referencePrice",
+        "reference_price",
+        "strikePrice",
+        "strike_price",
+        "startPrice",
+        "start_price",
+        "startingPrice",
+        "initialPrice",
+        "initial_price",
+        "resolutionSourcePrice",
+    )
+
     def __init__(self, config: Config):
         self.config = config
         self.coins = list(config.coins)
@@ -157,6 +171,8 @@ class MarketScanner:
 
             end_str = market.get("endDate", event.get("endDate", ""))
             start_str = market.get("eventStartTime", market.get("startDate", ""))
+            question = self._extract_question(event, market)
+            reference_price = self._extract_reference_price(event, market, question)
 
             return MarketInfo(
                 event_id=event.get("id", ""),
@@ -171,6 +187,9 @@ class MarketScanner:
                 tick_size=self.config.polymarket.tick_size,
                 neg_risk=market.get("negRisk", False),
                 accepting_orders=market.get("acceptingOrders", True),
+                question=question,
+                reference_price=reference_price,
+                reference_label=question or event.get("slug", market.get("slug", "")),
             )
         except Exception as e:
             logger.error(f"[{coin.upper()}] Parse error: {e}")
@@ -317,3 +336,63 @@ class MarketScanner:
             return datetime.fromisoformat(time_str.replace("Z", "+00:00"))
         except ValueError:
             return datetime.now(timezone.utc)
+
+    @staticmethod
+    def _as_mapping(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return None
+            return parsed if isinstance(parsed, dict) else None
+        return None
+
+    def _extract_question(self, event: dict, market: dict) -> str:
+        for container in (market, event):
+            for key in ("question", "title", "shortTitle", "description", "subtitle"):
+                value = container.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        return ""
+
+    def _extract_reference_price(self, event: dict, market: dict, question: str) -> float | None:
+        containers = [market, event]
+        for parent in (market, event):
+            for key in ("metadata", "meta", "extraData"):
+                nested = self._as_mapping(parent.get(key))
+                if nested:
+                    containers.append(nested)
+
+        for container in containers:
+            for key in self._REF_PRICE_KEYS:
+                value = container.get(key)
+                parsed = self._parse_price(value)
+                if parsed is not None:
+                    return parsed
+
+        if question:
+            direct = re.search(r"\$([0-9][0-9,]*(?:\.\d+)?)", question)
+            if direct:
+                return self._parse_price(direct.group(1))
+            contextual = re.search(
+                r"(?:above|below|over|under|at)\s+\$?([0-9][0-9,]*(?:\.\d+)?)",
+                question,
+                re.IGNORECASE,
+            )
+            if contextual:
+                return self._parse_price(contextual.group(1))
+        return None
+
+    @staticmethod
+    def _parse_price(value) -> float | None:
+        if value is None or value == "":
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        text = str(value).strip().replace("$", "").replace(",", "")
+        try:
+            return float(text)
+        except Exception:
+            return None

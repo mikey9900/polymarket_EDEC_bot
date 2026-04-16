@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import RetryAfter
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from bot.config import Config
@@ -34,6 +34,12 @@ CAPITAL_OPTIONS = [5, 10, 20, 50, 100, 5000, 25000, 50000]
 
 
 class TelegramBot:
+    _SEND_FILE_ATTEMPTS = max(1, int(os.getenv("EDEC_TG_SEND_FILE_ATTEMPTS", "3")))
+    _SEND_FILE_CONNECT_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_CONNECT_TIMEOUT", "30"))
+    _SEND_FILE_READ_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_READ_TIMEOUT", "120"))
+    _SEND_FILE_WRITE_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_WRITE_TIMEOUT", "120"))
+    _SEND_FILE_POOL_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_POOL_TIMEOUT", "30"))
+
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
@@ -535,19 +541,67 @@ class TelegramBot:
             return False, "Telegram app/chat is not configured"
         if not os.path.exists(path):
             return False, "File does not exist"
-        try:
-            with open(path, "rb") as f:
-                sent = await self._app.bot.send_document(
-                    chat_id=self.chat_id,
-                    document=f,
-                    filename=os.path.basename(path),
-                    caption=caption,
+        attempts = max(1, self._SEND_FILE_ATTEMPTS)
+        for attempt in range(1, attempts + 1):
+            try:
+                with open(path, "rb") as f:
+                    sent = await self._app.bot.send_document(
+                        chat_id=self.chat_id,
+                        document=f,
+                        filename=os.path.basename(path),
+                        caption=caption,
+                        connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
+                        read_timeout=self._SEND_FILE_READ_TIMEOUT,
+                        write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
+                        pool_timeout=self._SEND_FILE_POOL_TIMEOUT,
+                    )
+                self._track(sent)
+                return True, None
+            except RetryAfter as e:
+                delay = float(e.retry_after)
+                logger.warning(
+                    "Telegram send_document rate-limited for %s on attempt %s/%s; retry in %.1fs",
+                    path,
+                    attempt,
+                    attempts,
+                    delay,
                 )
-            self._track(sent)
-            return True, None
-        except Exception as e:
-            logger.error("Telegram send_document error for %s: %s", path, e)
-            return False, str(e)
+                if attempt >= attempts:
+                    return False, f"RetryAfter {delay:.1f}s"
+                await asyncio.sleep(delay)
+            except (TimedOut, TimeoutError) as e:
+                delay = min(5.0 * attempt, 15.0)
+                logger.warning(
+                    "Telegram send_document timed out for %s on attempt %s/%s; retry in %.1fs: %s",
+                    path,
+                    attempt,
+                    attempts,
+                    delay,
+                    e,
+                )
+                if attempt >= attempts:
+                    return False, str(e)
+                await asyncio.sleep(delay)
+            except NetworkError as e:
+                err_text = str(e)
+                delay = min(5.0 * attempt, 15.0)
+                if "timed out" in err_text.lower() and attempt < attempts:
+                    logger.warning(
+                        "Telegram send_document network timeout for %s on attempt %s/%s; retry in %.1fs: %s",
+                        path,
+                        attempt,
+                        attempts,
+                        delay,
+                        err_text,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("Telegram send_document network error for %s: %s", path, err_text)
+                return False, err_text
+            except Exception as e:
+                logger.error("Telegram send_document error for %s: %s", path, e)
+                return False, str(e)
+        return False, "Unknown Telegram send failure"
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         downloads = (sync_result or {}).get("downloads", {})

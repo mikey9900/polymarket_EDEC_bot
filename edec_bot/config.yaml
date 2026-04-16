@@ -16,7 +16,7 @@ dual_leg:
   price_threshold: 0.45        # Max ask per side
   max_combined_cost: 0.99      # YES ask + NO ask must be below this (after fees need ~0.05 edge)
   min_edge_after_fees: 0.05    # Minimum net profit per share
-  min_time_remaining_s: 60     # Skip if less than this many seconds left
+  min_time_remaining_s: 90     # Phase 1: stricter late-entry cutoff
   max_velocity_30s: 0.15       # Skip if coin moved >X% in 30s (trending against dual-leg)
   max_velocity_60s: 0.25
   min_book_depth_usd: 10.0     # Min USD depth at target price on each side
@@ -26,15 +26,15 @@ single_leg:
   enabled: true
   entry_max: 0.32              # Buy when one side's ask is at or below this (tighter = better EV)
   opposite_min: 0.62           # Other side must be >= this (confirms real directional move)
-  min_time_remaining_s: 60     # Faster mode: allow later entries in active windows
+  min_time_remaining_s: 110    # Phase 1: avoid late-window entries
   min_book_depth_usd: 5.0      # Min USD depth at entry price
   hold_if_unfilled: true       # Hold position to resolution if not exited by monitor
   order_size_usd: 3.0          # Dollar amount per trade
   min_velocity_30s: 0.08       # Coin must have moved >=0.08% in 30s (proves real directional move, not just thin book)
-  loss_cut_pct: 0.25           # Exit if loss exceeds this % at time_pressure_s remaining
-  loss_cut_max_factor: 2.0     # Max multiplier: at 2×time_pressure_s (180s), cut = 2×loss_cut_pct (50%)
+  loss_cut_pct: 0.18           # Phase 1: tighter loss cap (was 0.25)
+  loss_cut_max_factor: 2.0     # Max multiplier: at 2×time_pressure_s, cut = 2×loss_cut_pct
   high_confidence_bid: 0.82    # Once bid reaches this, hold to $1 resolution (momentum confirmed)
-  time_pressure_s: 90.0        # Cut = loss_cut_pct*min(max_factor, remaining/time_pressure_s)
+  time_pressure_s: 75.0        # Phase 1: tighten dynamic stop sooner
   max_time_remaining_s: 240.0  # Faster mode: start scanning opportunities earlier in the window
   max_vel_divergence: 0.03     # Reject if vel60s opposes trade direction by >0.03% (counter-trend divergence)
   entry_min: 0.15              # Skip if ask already below this — market near-resolved, recovery unreachable
@@ -48,7 +48,7 @@ lead_lag:
   min_entry: 0.48             # Winning-side ask must be >=0.48 (some repricing has begun)
   max_entry: 0.62             # Must be <=0.62 (widened from 0.60 — was missing valid lag entries)
   target_sell: 0.67           # Exit price when books have fully repriced
-  min_time_remaining_s: 60    # Need time for repricing to propagate
+  min_time_remaining_s: 90    # Phase 1: avoid thin end-of-window repricing
   min_book_depth_usd: 5.0
   order_size_usd: 3.0
 
@@ -59,13 +59,13 @@ swing_leg:
   first_leg_max: 0.33         # Buy when ask <= this (tightened from 0.40 — sim showed 0.30-0.33 blocks 82% of losses)
   first_leg_exit: 0.55        # Sell when bid bounces to >= this (raised from 0.52 — improve win size)
   max_velocity_30s: 0.12      # Skip if coin trending too hard (tightened from 0.20 — chop regime kills swing)
-  min_time_remaining_s: 110   # Faster mode: allow later swing entries
+  min_time_remaining_s: 150   # Phase 1: avoid late mean-reversion entries
   min_book_depth_usd: 5.0
   order_size_usd: 3.0
-  loss_cut_pct: 0.25          # Exit if loss exceeds this % at time_pressure_s remaining
-  loss_cut_max_factor: 2.0    # Max multiplier: at 2×time_pressure_s (180s), cut = 2×loss_cut_pct (50%)
+  loss_cut_pct: 0.20          # Phase 1: tighter loss cap (was 0.25)
+  loss_cut_max_factor: 2.0    # Max multiplier: at 2×time_pressure_s, cut = 2×loss_cut_pct
   high_confidence_bid: 0.82   # Hold to resolution if bid exceeds this
-  time_pressure_s: 90.0       # Cut = loss_cut_pct*min(max_factor, remaining/time_pressure_s)
+  time_pressure_s: 75.0       # Phase 1: tighten dynamic stop sooner
   max_time_remaining_s: 240.0 # Faster mode: start swing opportunities earlier in the window
   first_leg_min: 0.25         # Skip if first leg ask already below this (raised from 0.20 — 0.20-0.24 zone is bid-evaporation)
   max_vel_divergence: 0.03    # Reject if vel60s strongly opposes vel30s direction

@@ -327,6 +327,9 @@ async def main():
         True,
     )
     dropbox_token = os.getenv("EDEC_DROPBOX_TOKEN") or ha_options.get("dropbox_token")
+    dropbox_refresh_token = os.getenv("EDEC_DROPBOX_REFRESH_TOKEN") or ha_options.get("dropbox_refresh_token")
+    dropbox_app_key = os.getenv("EDEC_DROPBOX_APP_KEY") or ha_options.get("dropbox_app_key")
+    dropbox_app_secret = os.getenv("EDEC_DROPBOX_APP_SECRET") or ha_options.get("dropbox_app_secret")
     dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/EDEC-BOT"
     default_repo_sync_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", default_repo_sync_dir)
@@ -338,6 +341,9 @@ async def main():
             label=archive_label,
             recent_limit=archive_recent_limit,
             dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
             dropbox_root=str(dropbox_root),
         )
 
@@ -349,14 +355,20 @@ async def main():
             output_dir=archive_output_dir,
             label=archive_label,
             dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
             dropbox_root=str(dropbox_root),
         )
 
     def do_repo_sync_latest() -> dict:
-        if not dropbox_token:
-            raise RuntimeError("Dropbox token not configured")
+        if not dropbox_token and not dropbox_refresh_token:
+            raise RuntimeError("Dropbox token or refresh-token auth is not configured")
         return sync_dropbox_latest_to_local(
             dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
             dropbox_root=str(dropbox_root),
             output_dir=repo_sync_dir,
             label=archive_label,

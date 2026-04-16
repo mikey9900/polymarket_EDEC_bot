@@ -578,6 +578,9 @@ class TelegramBot:
             status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
             if not d.get("ok") and d.get("remote_path"):
                 status_txt += f"\n  path: `{d.get('remote_path')}`"
+            friendly = ((d.get("error_details") or {}).get("friendly") or "").strip()
+            if not d.get("ok") and friendly:
+                status_txt += f"\n  fix: `{friendly}`"
             err = d.get("error")
             if not d.get("ok") and err:
                 err_compact = " ".join(str(err).split())
@@ -673,8 +676,14 @@ class TelegramBot:
             ok = bool(live.get("ok"))
             files = live.get("files", {})
             missing = [k for k, v in files.items() if not v.get("exists")]
+            auth_failed = [
+                k for k, v in files.items()
+                if ((v.get("error_details") or {}).get("reason") in ("expired_access_token", "invalid_access_token"))
+            ]
             if ok:
                 dropbox_line = "Dropbox live check: ok"
+            elif auth_failed:
+                dropbox_line = "Dropbox live check: token expired/invalid"
             else:
                 miss = ", ".join(missing) if missing else "unknown"
                 dropbox_line = f"Dropbox live check: missing ({miss})"

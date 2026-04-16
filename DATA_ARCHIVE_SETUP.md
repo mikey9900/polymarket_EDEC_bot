@@ -21,7 +21,7 @@ Local output folder: `edec_bot/data/exports/`
 
 ## Dropbox Layout
 
-If `EDEC_DROPBOX_TOKEN` is set:
+If Dropbox auth is set (`EDEC_DROPBOX_TOKEN` or refresh-token credentials):
 
 1. `/EDEC-BOT/daily-reports/` -> daily Excel
 2. `/EDEC-BOT/daily-archives/` -> daily compressed trades files
@@ -40,7 +40,8 @@ Optional args:
 1. `--db-path data/decisions.db`
 2. `--output-dir data/exports`
 3. `--dropbox-token <token>` (or env var)
-4. `--dropbox-root /EDEC-BOT` (or env var)
+4. `--dropbox-refresh-token <token>` + `--dropbox-app-key` + `--dropbox-app-secret`
+5. `--dropbox-root /EDEC-BOT` (or env var)
 
 ## Home Assistant Add-on Settings (recommended for HA OS)
 
@@ -53,10 +54,14 @@ Set these in the add-on UI (`Configuration` tab):
 4. `archive_label: "EDEC-BOT"`
 5. `archive_output_dir: "data/exports"`
 6. `archive_telegram_files: true`
-7. `dropbox_token: "<token>"`
-8. `dropbox_root: "/EDEC-BOT"`
+7. `dropbox_token: "<token>"` for quick/manual testing
+8. `dropbox_refresh_token: "<refresh-token>"` for automatic renewal
+9. `dropbox_app_key: "<app-key>"`
+10. `dropbox_app_secret: "<app-secret>"`
+11. `dropbox_root: "/EDEC-BOT"`
 
 No separate HA `shell_command` is required when using add-on options.
+The bot will prefer refresh-token auth when those fields are present, and fall back to `dropbox_token` otherwise.
 
 ## Telegram Integration
 
@@ -88,4 +93,5 @@ The Telegram `Sync Dropbox` button/command now also sends the synced files back 
 
 Required env or arg:
 
-1. `EDEC_DROPBOX_TOKEN` (or `--dropbox-token`)
+1. `EDEC_DROPBOX_TOKEN` for direct token auth
+2. Or `EDEC_DROPBOX_REFRESH_TOKEN` + `EDEC_DROPBOX_APP_KEY` + `EDEC_DROPBOX_APP_SECRET` for auto-renewed auth

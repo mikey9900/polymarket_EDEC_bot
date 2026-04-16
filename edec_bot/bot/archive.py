@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 from urllib import error as urlerror
+from urllib.parse import urlencode
 
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
@@ -26,6 +27,103 @@ logger = logging.getLogger(__name__)
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _build_dropbox_auth(
+    dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
+) -> dict[str, Any] | None:
+    auth = {
+        "access_token": (dropbox_token or "").strip(),
+        "refresh_token": (dropbox_refresh_token or "").strip(),
+        "app_key": (dropbox_app_key or "").strip(),
+        "app_secret": (dropbox_app_secret or "").strip(),
+        "_cached_access_token": None,
+        "_cached_expires_at": None,
+    }
+    if auth["refresh_token"]:
+        if not auth["app_key"] or not auth["app_secret"]:
+            raise RuntimeError(
+                "Dropbox refresh token requires both dropbox_app_key and dropbox_app_secret."
+            )
+        return auth
+    if auth["access_token"]:
+        return auth
+    return None
+
+
+def _resolve_dropbox_access_token(dropbox_auth: dict[str, Any]) -> str:
+    cached_token = dropbox_auth.get("_cached_access_token")
+    cached_expires_at = dropbox_auth.get("_cached_expires_at")
+    now_ts = _utc_now().timestamp()
+    if cached_token and isinstance(cached_expires_at, (int, float)) and cached_expires_at > now_ts + 60:
+        return str(cached_token)
+
+    refresh_token = str(dropbox_auth.get("refresh_token") or "").strip()
+    if refresh_token:
+        payload = urlencode(
+            {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": str(dropbox_auth.get("app_key") or ""),
+                "client_secret": str(dropbox_auth.get("app_secret") or ""),
+            }
+        ).encode("utf-8")
+        req = request.Request(
+            url="https://api.dropboxapi.com/oauth2/token",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        with request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8")
+            token_payload = json.loads(raw) if raw else {}
+            access_token = str(token_payload.get("access_token") or "").strip()
+            expires_in = int(token_payload.get("expires_in") or 0)
+            if not access_token:
+                raise RuntimeError("Dropbox OAuth refresh succeeded but returned no access_token.")
+            dropbox_auth["_cached_access_token"] = access_token
+            dropbox_auth["_cached_expires_at"] = now_ts + max(0, expires_in)
+            return access_token
+
+    access_token = str(dropbox_auth.get("access_token") or "").strip()
+    if not access_token:
+        raise RuntimeError("Dropbox authentication is not configured.")
+    return access_token
+
+
+def _dropbox_error_details(raw_error: str) -> dict[str, Any]:
+    text = (raw_error or "").strip()
+    details: dict[str, Any] = {"raw": text}
+    if not text:
+        return details
+    try:
+        payload = json.loads(text)
+    except Exception:
+        if "required scope '" in text:
+            scope = text.split("required scope '", 1)[1].split("'", 1)[0]
+            details["reason"] = "missing_scope"
+            details["friendly"] = f"Dropbox app is missing required scope {scope}. Enable it in the app console and mint a new token."
+        return details
+
+    summary = str(payload.get("error_summary") or "")
+    error_obj = payload.get("error") or {}
+    tag = error_obj.get(".tag") if isinstance(error_obj, dict) else None
+    details.update({"payload": payload, "summary": summary, "tag": tag})
+
+    if tag == "expired_access_token":
+        details["reason"] = "expired_access_token"
+        details["friendly"] = "Dropbox access token expired. Update the configured Dropbox token."
+    elif tag == "invalid_access_token":
+        details["reason"] = "invalid_access_token"
+        details["friendly"] = "Dropbox access token is invalid. Update the configured Dropbox token."
+    elif summary.startswith("path/not_found/"):
+        details["reason"] = "path_not_found"
+        details["friendly"] = "Dropbox file not found at the configured path."
+
+    return details
 
 
 def _db_iso(ts: datetime) -> str:
@@ -512,23 +610,24 @@ def export_recent_trades_csv_gz(
         conn.close()
 
 
-def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> dict[str, Any]:
+def _dropbox_upload_file(local_path: str, dropbox_path: str, dropbox_auth: dict[str, Any]) -> dict[str, Any]:
     with open(local_path, "rb") as fh:
         body = fh.read()
 
-    req = request.Request(
-        url="https://content.dropboxapi.com/2/files/upload",
-        data=body,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/octet-stream",
-            "Dropbox-API-Arg": json.dumps(
-                {"path": dropbox_path, "mode": "overwrite", "autorename": False, "mute": True}
-            ),
-        },
-    )
     try:
+        token = _resolve_dropbox_access_token(dropbox_auth)
+        req = request.Request(
+            url="https://content.dropboxapi.com/2/files/upload",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/octet-stream",
+                "Dropbox-API-Arg": json.dumps(
+                    {"path": dropbox_path, "mode": "overwrite", "autorename": False, "mute": True}
+                ),
+            },
+        )
         with request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
@@ -552,22 +651,35 @@ def _dropbox_upload_file(local_path: str, dropbox_path: str, token: str) -> dict
             err_body = e.read().decode("utf-8")
         except Exception:
             err_body = str(e)
-        return {"ok": False, "status": e.code, "error": err_body, "path": dropbox_path}
+        return {
+            "ok": False,
+            "status": e.code,
+            "error": err_body,
+            "error_details": _dropbox_error_details(err_body),
+            "path": dropbox_path,
+        }
     except Exception as e:
-        return {"ok": False, "status": None, "error": str(e), "path": dropbox_path}
+        return {
+            "ok": False,
+            "status": None,
+            "error": str(e),
+            "error_details": _dropbox_error_details(str(e)),
+            "path": dropbox_path,
+        }
 
 
-def _dropbox_get_metadata(dropbox_path: str, token: str) -> dict[str, Any]:
-    req = request.Request(
-        url="https://api.dropboxapi.com/2/files/get_metadata",
-        data=json.dumps({"path": dropbox_path}).encode("utf-8"),
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
-    )
+def _dropbox_get_metadata(dropbox_path: str, dropbox_auth: dict[str, Any]) -> dict[str, Any]:
     try:
+        token = _resolve_dropbox_access_token(dropbox_auth)
+        req = request.Request(
+            url="https://api.dropboxapi.com/2/files/get_metadata",
+            data=json.dumps({"path": dropbox_path}).encode("utf-8"),
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
         with request.urlopen(req, timeout=20) as resp:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
@@ -580,24 +692,40 @@ def _dropbox_get_metadata(dropbox_path: str, token: str) -> dict[str, Any]:
             body = str(e)
         # Dropbox uses 409 for not_found
         if e.code == 409:
-            return {"exists": False, "status": e.code, "error": body}
-        return {"exists": False, "status": e.code, "error": body}
+            return {
+                "exists": False,
+                "status": e.code,
+                "error": body,
+                "error_details": _dropbox_error_details(body),
+            }
+        return {
+            "exists": False,
+            "status": e.code,
+            "error": body,
+            "error_details": _dropbox_error_details(body),
+        }
     except Exception as e:
-        return {"exists": False, "status": None, "error": str(e)}
+        return {
+            "exists": False,
+            "status": None,
+            "error": str(e),
+            "error_details": _dropbox_error_details(str(e)),
+        }
 
 
-def _dropbox_download_file(dropbox_path: str, token: str, local_path: str) -> dict[str, Any]:
-    req = request.Request(
-        url="https://content.dropboxapi.com/2/files/download",
-        data=b"",
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "text/plain; charset=utf-8",
-            "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
-        },
-    )
+def _dropbox_download_file(dropbox_path: str, dropbox_auth: dict[str, Any], local_path: str) -> dict[str, Any]:
     try:
+        token = _resolve_dropbox_access_token(dropbox_auth)
+        req = request.Request(
+            url="https://content.dropboxapi.com/2/files/download",
+            data=b"",
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "text/plain; charset=utf-8",
+                "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
+            },
+        )
         with request.urlopen(req, timeout=30) as resp:
             body = resp.read()
             p = Path(local_path)
@@ -610,19 +738,43 @@ def _dropbox_download_file(dropbox_path: str, token: str, local_path: str) -> di
             body = e.read().decode("utf-8")
         except Exception:
             body = str(e)
-        return {"ok": False, "status": e.code, "error": body, "path": str(local_path)}
+        return {
+            "ok": False,
+            "status": e.code,
+            "error": body,
+            "error_details": _dropbox_error_details(body),
+            "path": str(local_path),
+        }
     except Exception as e:
-        return {"ok": False, "status": None, "error": str(e), "path": str(local_path)}
+        return {
+            "ok": False,
+            "status": None,
+            "error": str(e),
+            "error_details": _dropbox_error_details(str(e)),
+            "path": str(local_path),
+        }
 
 
 def sync_dropbox_latest_to_local(
-    dropbox_token: str,
+    dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
     dropbox_root: str = "/EDEC-BOT",
     output_dir: str = "data/dropbox_sync",
     label: str = "EDEC-BOT",
     expand_trades_csv: bool = True,
 ) -> dict[str, Any]:
     """Pull stable latest archive files from Dropbox into a local folder."""
+    dropbox_auth = _build_dropbox_auth(
+        dropbox_token=dropbox_token,
+        dropbox_refresh_token=dropbox_refresh_token,
+        dropbox_app_key=dropbox_app_key,
+        dropbox_app_secret=dropbox_app_secret,
+    )
+    if not dropbox_auth:
+        raise RuntimeError("Dropbox authentication is not configured.")
+
     label = _safe_label(label)
     root = _normalize_dropbox_root(dropbox_root)
     out = Path(output_dir)
@@ -647,7 +799,7 @@ def sync_dropbox_latest_to_local(
         for remote_path in candidates:
             res = _dropbox_download_file(
                 dropbox_path=remote_path,
-                token=dropbox_token,
+                dropbox_auth=dropbox_auth,
                 local_path=local[key],
             )
             attempts.append(
@@ -656,6 +808,7 @@ def sync_dropbox_latest_to_local(
                     "ok": bool(res.get("ok")),
                     "status": res.get("status"),
                     "error": res.get("error"),
+                    "error_details": res.get("error_details"),
                 }
             )
             if res.get("ok"):
@@ -746,9 +899,18 @@ def run_daily_archive(
     label: str = "EDEC-BOT",
     recent_limit: int = 500,
     dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
     dropbox_root: str = "/EDEC-BOT",
 ) -> dict[str, Any]:
     now_utc = _utc_now()
+    dropbox_auth = _build_dropbox_auth(
+        dropbox_token=dropbox_token,
+        dropbox_refresh_token=dropbox_refresh_token,
+        dropbox_app_key=dropbox_app_key,
+        dropbox_app_secret=dropbox_app_secret,
+    )
     label = _safe_label(label)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -800,7 +962,7 @@ def run_daily_archive(
     }
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
-    if dropbox_token:
+    if dropbox_auth:
         root = _normalize_dropbox_root(dropbox_root)
         dbx_paths = {
             "daily_last24h_xlsx": f"{root}/daily-reports/{Path(excel_path).name}",
@@ -810,18 +972,18 @@ def run_daily_archive(
             "latest_index_json": f"{root}/latest/{index_path.name}",
         }
         upload_results = {
-            "daily_last24h_xlsx": _dropbox_upload_file(excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_token),
+            "daily_last24h_xlsx": _dropbox_upload_file(excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_auth),
             "daily_recent_trades_csv_gz": _dropbox_upload_file(
-                recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_token
+                recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_auth
             ),
             "latest_last24h_xlsx": _dropbox_upload_file(
-                latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_token
+                latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_auth
             ),
             "latest_trades_csv_gz": _dropbox_upload_file(
-                latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_token
+                latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_auth
             ),
             "latest_index_json": _dropbox_upload_file(
-                str(index_path), dbx_paths["latest_index_json"], dropbox_token
+                str(index_path), dbx_paths["latest_index_json"], dropbox_auth
             ),
         }
         index["dropbox_files"] = dbx_paths
@@ -867,9 +1029,18 @@ def archive_health_snapshot(
     output_dir: str = "data/exports",
     label: str = "EDEC-BOT",
     dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
     dropbox_root: str = "/EDEC-BOT",
 ) -> dict[str, Any]:
     label = _safe_label(label)
+    dropbox_auth = _build_dropbox_auth(
+        dropbox_token=dropbox_token,
+        dropbox_refresh_token=dropbox_refresh_token,
+        dropbox_app_key=dropbox_app_key,
+        dropbox_app_secret=dropbox_app_secret,
+    )
     local_paths = latest_archive_paths(output_dir=output_dir, label=label)
     index = read_latest_index(output_dir=output_dir, label=label)
 
@@ -885,7 +1056,7 @@ def archive_health_snapshot(
         "dropbox_live": None,
     }
 
-    if dropbox_token:
+    if dropbox_auth:
         root = _normalize_dropbox_root(dropbox_root)
         latest_remote = {
             "latest_last24h_xlsx": f"{root}/latest/{label}_latest_last24h.xlsx",
@@ -894,7 +1065,7 @@ def archive_health_snapshot(
         }
         files: dict[str, Any] = {}
         for key, p in latest_remote.items():
-            files[key] = {"path": p, **_dropbox_get_metadata(p, dropbox_token)}
+            files[key] = {"path": p, **_dropbox_get_metadata(p, dropbox_auth)}
         live_ok = all(bool(v.get("exists")) for v in files.values())
         health["dropbox_live"] = {
             "enabled": True,
@@ -914,6 +1085,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--label", default="EDEC-BOT")
     parser.add_argument("--recent-limit", type=int, default=500)
     parser.add_argument("--dropbox-token", default=os.getenv("EDEC_DROPBOX_TOKEN"))
+    parser.add_argument("--dropbox-refresh-token", default=os.getenv("EDEC_DROPBOX_REFRESH_TOKEN"))
+    parser.add_argument("--dropbox-app-key", default=os.getenv("EDEC_DROPBOX_APP_KEY"))
+    parser.add_argument("--dropbox-app-secret", default=os.getenv("EDEC_DROPBOX_APP_SECRET"))
     parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/EDEC-BOT"))
     return parser.parse_args()
 
@@ -926,6 +1100,9 @@ def main() -> int:
         label=args.label,
         recent_limit=args.recent_limit,
         dropbox_token=args.dropbox_token,
+        dropbox_refresh_token=args.dropbox_refresh_token,
+        dropbox_app_key=args.dropbox_app_key,
+        dropbox_app_secret=args.dropbox_app_secret,
         dropbox_root=args.dropbox_root,
     )
     print(json.dumps(result, indent=2))

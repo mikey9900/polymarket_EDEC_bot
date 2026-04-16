@@ -15,6 +15,9 @@ def _parse_args() -> argparse.Namespace:
         description="Sync stable latest archive files from Dropbox to local repo folder."
     )
     parser.add_argument("--dropbox-token", default=os.getenv("EDEC_DROPBOX_TOKEN"))
+    parser.add_argument("--dropbox-refresh-token", default=os.getenv("EDEC_DROPBOX_REFRESH_TOKEN"))
+    parser.add_argument("--dropbox-app-key", default=os.getenv("EDEC_DROPBOX_APP_KEY"))
+    parser.add_argument("--dropbox-app-secret", default=os.getenv("EDEC_DROPBOX_APP_SECRET"))
     parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/EDEC-BOT"))
     default_output_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     parser.add_argument("--output-dir", default=os.getenv("EDEC_REPO_SYNC_DIR", default_output_dir))
@@ -29,11 +32,17 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
-    if not args.dropbox_token:
-        raise SystemExit("Missing Dropbox token. Set --dropbox-token or EDEC_DROPBOX_TOKEN.")
+    if not args.dropbox_token and not args.dropbox_refresh_token:
+        raise SystemExit(
+            "Missing Dropbox auth. Set --dropbox-token / EDEC_DROPBOX_TOKEN or "
+            "--dropbox-refresh-token / EDEC_DROPBOX_REFRESH_TOKEN."
+        )
 
     result = sync_dropbox_latest_to_local(
         dropbox_token=args.dropbox_token,
+        dropbox_refresh_token=args.dropbox_refresh_token,
+        dropbox_app_key=args.dropbox_app_key,
+        dropbox_app_secret=args.dropbox_app_secret,
         dropbox_root=args.dropbox_root,
         output_dir=args.output_dir,
         label=args.label,

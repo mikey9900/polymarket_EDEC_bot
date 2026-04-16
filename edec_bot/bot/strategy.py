@@ -310,7 +310,6 @@ class StrategyEngine:
     def _repricing_score(
         self,
         *,
-        strategy_type: str,
         velocity_30s: float,
         entry_price: float,
         min_entry: float,
@@ -332,7 +331,6 @@ class StrategyEngine:
         score_balance = 10.0 * self._score_balance_component(depth_ratio)
         total = score_velocity + score_entry + score_depth + score_spread + score_time + score_balance
         return {
-            "strategy_type": strategy_type,
             "signal_score": round(total, 2),
             "score_velocity": round(score_velocity, 2),
             "score_entry": round(score_entry, 2),
@@ -633,7 +631,6 @@ class StrategyEngine:
         expected_profit = (notional_target - entry_price) - fee_buy - fee_sell
         depth_ratio = self._safe_ratio(entry_depth, opposite_depth)
         score_payload = self._repricing_score(
-            strategy_type="single_leg",
             velocity_30s=agg.velocity_30s if agg else 0.0,
             entry_price=entry_price,
             min_entry=cfg.entry_min,
@@ -813,7 +810,6 @@ class StrategyEngine:
         fee_sell = self._per_share_fee(target_sell, fee_rate)
         expected_profit = (target_sell - entry_price) - fee_buy - fee_sell
         score_payload = self._repricing_score(
-            strategy_type="lead_lag",
             velocity_30s=vel,
             entry_price=entry_price,
             min_entry=params["min_entry"],
@@ -1149,6 +1145,7 @@ class StrategyEngine:
     def _log_decision(self, coin, market, up_book, down_book, agg, remaining,
                       filters, action, reason, strategy_type, **extra_fields) -> int:
         """Log decision to the tracker."""
+        extra_fields.pop("strategy_type", None)
         paper_total, _ = self.tracker.get_paper_capital()
         if strategy_type == "lead_lag":
             order_size_usd = self.config.lead_lag.order_size_usd

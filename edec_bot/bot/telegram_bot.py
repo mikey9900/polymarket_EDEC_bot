@@ -1,9 +1,11 @@
 """Telegram interface — commands, alerts, status updates, and data export."""
 
 import asyncio
+import io
 import json
 import logging
 import os
+import zipfile
 from datetime import datetime
 from typing import Any
 
@@ -542,7 +544,8 @@ class TelegramBot:
         if not os.path.exists(path):
             return False, "File does not exist"
         filename = os.path.basename(path)
-        use_in_memory_upload = path.lower().endswith(".xlsx") or os.path.getsize(path) <= 1024 * 1024
+        is_excel = path.lower().endswith(".xlsx")
+        use_in_memory_upload = is_excel or os.path.getsize(path) <= 1024 * 1024
         attempts = max(1, self._SEND_FILE_ATTEMPTS)
         for attempt in range(1, attempts + 1):
             try:
@@ -557,6 +560,7 @@ class TelegramBot:
                         document=document,
                         filename=filename,
                         caption=caption,
+                        disable_content_type_detection=True if is_excel else None,
                         connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
                         read_timeout=self._SEND_FILE_READ_TIMEOUT,
                         write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
@@ -613,11 +617,48 @@ class TelegramBot:
                     await asyncio.sleep(delay)
                     continue
                 logger.error("Telegram send_document network error for %s: %s", path, err_text)
+                if is_excel and attempt >= attempts:
+                    return await self._send_excel_zip_fallback(path, caption, err_text)
                 return False, err_text
             except Exception as e:
                 logger.error("Telegram send_document error for %s: %s", path, e)
+                if is_excel and attempt >= attempts:
+                    return await self._send_excel_zip_fallback(path, caption, str(e))
                 return False, str(e)
+        if is_excel:
+            return await self._send_excel_zip_fallback(path, caption, "Unknown Telegram send failure")
         return False, "Unknown Telegram send failure"
+
+    async def _send_excel_zip_fallback(
+        self, path: str, caption: str, prior_error: str | None = None
+    ) -> tuple[bool, str | None]:
+        if not self._app or not self.chat_id:
+            return False, prior_error or "Telegram app/chat is not configured"
+        try:
+            filename = os.path.basename(path)
+            zip_name = f"{os.path.splitext(filename)[0]}.zip"
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+                zf.write(path, arcname=filename)
+            zip_bytes = zip_buffer.getvalue()
+            sent = await self._app.bot.send_document(
+                chat_id=self.chat_id,
+                document=InputFile(zip_bytes, filename=zip_name),
+                filename=zip_name,
+                caption=f"{caption} (zipped fallback)",
+                disable_content_type_detection=True,
+                connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
+                read_timeout=self._SEND_FILE_READ_TIMEOUT,
+                write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
+                pool_timeout=self._SEND_FILE_POOL_TIMEOUT,
+            )
+            self._track(sent)
+            return True, None
+        except Exception as e:
+            logger.error("Telegram zipped Excel fallback failed for %s: %s", path, e)
+            if prior_error:
+                return False, f"{prior_error}; zip fallback failed: {e}"
+            return False, str(e)
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         downloads = (sync_result or {}).get("downloads", {})

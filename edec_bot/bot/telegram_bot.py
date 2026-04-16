@@ -4,14 +4,19 @@ import asyncio
 import io
 import json
 import logging
+import mimetypes
 import os
 import zipfile
 from datetime import datetime
 from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
+from uuid import uuid4
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.request import HTTPXRequest
 
 from bot.config import Config
 from bot.tracker import DecisionTracker
@@ -41,6 +46,15 @@ class TelegramBot:
     _SEND_FILE_READ_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_READ_TIMEOUT", "120"))
     _SEND_FILE_WRITE_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_WRITE_TIMEOUT", "120"))
     _SEND_FILE_POOL_TIMEOUT = float(os.getenv("EDEC_TG_SEND_FILE_POOL_TIMEOUT", "30"))
+    _GET_UPDATES_READ_TIMEOUT = float(os.getenv("EDEC_TG_GET_UPDATES_READ_TIMEOUT", "35"))
+    _TELEGRAM_HTTP_POOL_SIZE = max(8, int(os.getenv("EDEC_TG_HTTP_POOL_SIZE", "32")))
+    _TELEGRAM_HTTP_TRUST_ENV = os.getenv("EDEC_TG_HTTP_TRUST_ENV", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    _TELEGRAM_PROXY_URL = (os.getenv("EDEC_TG_PROXY_URL") or "").strip() or None
 
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
@@ -91,15 +105,35 @@ class TelegramBot:
             "`/mode off` - pause all trading",
         ]
 
+    def _build_request(self, *, for_updates: bool) -> HTTPXRequest:
+        read_timeout = self._GET_UPDATES_READ_TIMEOUT if for_updates else self._SEND_FILE_READ_TIMEOUT
+        return HTTPXRequest(
+            connection_pool_size=self._TELEGRAM_HTTP_POOL_SIZE,
+            read_timeout=read_timeout,
+            write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
+            connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
+            pool_timeout=self._SEND_FILE_POOL_TIMEOUT,
+            media_write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
+            proxy=self._TELEGRAM_PROXY_URL,
+            httpx_kwargs={"trust_env": self._TELEGRAM_HTTP_TRUST_ENV},
+        )
+
     async def start(self):
         """Initialize and start the Telegram bot."""
         if not self.config.telegram_bot_token:
             logger.warning("No Telegram bot token configured — Telegram disabled")
             return
 
+        logger.info(
+            "Telegram HTTP client configured (trust_env=%s, proxy=%s)",
+            self._TELEGRAM_HTTP_TRUST_ENV,
+            "set" if self._TELEGRAM_PROXY_URL else "disabled",
+        )
         self._app = (
             Application.builder()
             .token(self.config.telegram_bot_token)
+            .request(self._build_request(for_updates=False))
+            .get_updates_request(self._build_request(for_updates=True))
             .build()
         )
 
@@ -538,6 +572,114 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
+    async def _send_document_via_raw_bot_api(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        caption: str,
+    ) -> tuple[bool, str | None]:
+        if not self.config.telegram_bot_token or not self.chat_id:
+            return False, "Telegram bot token/chat is not configured"
+        loop = asyncio.get_running_loop()
+        ok, error, message_id = await loop.run_in_executor(
+            None,
+            self._send_document_via_raw_bot_api_sync,
+            file_bytes,
+            filename,
+            caption,
+        )
+        if ok and message_id:
+            self._track_message_id(message_id)
+        return ok, error
+
+    def _send_document_via_raw_bot_api_sync(
+        self,
+        file_bytes: bytes,
+        filename: str,
+        caption: str,
+    ) -> tuple[bool, str | None, int | None]:
+        boundary = f"----EDECBotBoundary{uuid4().hex}"
+        mime_type = mimetypes.guess_type(filename, strict=False)[0] or "application/octet-stream"
+        body_parts: list[bytes] = []
+
+        def _add_text(name: str, value: str) -> None:
+            body_parts.extend(
+                [
+                    f"--{boundary}\r\n".encode("utf-8"),
+                    f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+                    value.encode("utf-8"),
+                    b"\r\n",
+                ]
+            )
+
+        _add_text("chat_id", str(self.chat_id))
+        if caption:
+            _add_text("caption", caption)
+
+        body_parts.extend(
+            [
+                f"--{boundary}\r\n".encode("utf-8"),
+                (
+                    f'Content-Disposition: form-data; name="document"; filename="{filename}"\r\n'
+                ).encode("utf-8"),
+                f"Content-Type: {mime_type}\r\n\r\n".encode("utf-8"),
+                file_bytes,
+                b"\r\n",
+                f"--{boundary}--\r\n".encode("utf-8"),
+            ]
+        )
+        payload = b"".join(body_parts)
+        request = urlrequest.Request(
+            url=f"https://api.telegram.org/bot{self.config.telegram_bot_token}/sendDocument",
+            data=payload,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        opener = urlrequest.build_opener(urlrequest.ProxyHandler({}))
+        timeout = max(self._SEND_FILE_CONNECT_TIMEOUT, self._SEND_FILE_READ_TIMEOUT)
+
+        try:
+            with opener.open(request, timeout=timeout) as response:
+                raw = response.read().decode("utf-8")
+        except urlerror.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            compact = " ".join(raw.split()) or str(exc)
+            return False, f"raw bot api http {exc.code}: {compact}", None
+        except Exception as exc:
+            return False, f"raw bot api {type(exc).__name__}: {exc}", None
+
+        try:
+            result = json.loads(raw)
+        except Exception:
+            compact = " ".join(raw.split())
+            return False, f"raw bot api invalid response: {compact}", None
+
+        if not result.get("ok"):
+            compact = " ".join(str(result.get("description") or result).split())
+            return False, f"raw bot api: {compact}", None
+
+        message = result.get("result") or {}
+        message_id = message.get("message_id")
+        return True, None, message_id if isinstance(message_id, int) else None
+
+    async def _send_excel_with_fallbacks(
+        self,
+        path: str,
+        caption: str,
+        prior_error: str | None = None,
+    ) -> tuple[bool, str | None]:
+        filename = os.path.basename(path)
+        with open(path, "rb") as f:
+            file_bytes = f.read()
+        ok, error = await self._send_document_via_raw_bot_api(file_bytes, filename, caption)
+        if ok:
+            logger.info("Telegram raw Bot API fallback sent %s", path)
+            return True, None
+        combined = prior_error
+        if error:
+            combined = f"{prior_error}; raw bot api fallback failed: {error}" if prior_error else error
+        return await self._send_excel_zip_fallback(path, caption, combined)
+
     async def _send_file_path(self, path: str, caption: str) -> tuple[bool, str | None]:
         if not self._app or not self.chat_id or not path:
             return False, "Telegram app/chat is not configured"
@@ -618,15 +760,15 @@ class TelegramBot:
                     continue
                 logger.error("Telegram send_document network error for %s: %s", path, err_text)
                 if is_excel and attempt >= attempts:
-                    return await self._send_excel_zip_fallback(path, caption, err_text)
+                    return await self._send_excel_with_fallbacks(path, caption, err_text)
                 return False, err_text
             except Exception as e:
                 logger.error("Telegram send_document error for %s: %s", path, e)
                 if is_excel and attempt >= attempts:
-                    return await self._send_excel_zip_fallback(path, caption, str(e))
+                    return await self._send_excel_with_fallbacks(path, caption, str(e))
                 return False, str(e)
         if is_excel:
-            return await self._send_excel_zip_fallback(path, caption, "Unknown Telegram send failure")
+            return await self._send_excel_with_fallbacks(path, caption, "Unknown Telegram send failure")
         return False, "Unknown Telegram send failure"
 
     async def _send_excel_zip_fallback(
@@ -641,6 +783,7 @@ class TelegramBot:
             zf.write(path, arcname=filename)
         zip_bytes = zip_buffer.getvalue()
         attempts = max(1, self._SEND_FILE_ATTEMPTS)
+        fallback_error = prior_error
 
         for attempt in range(1, attempts + 1):
             try:
@@ -667,7 +810,8 @@ class TelegramBot:
                 )
                 if attempt >= attempts:
                     suffix = f"zip fallback failed: RetryAfter {delay:.1f}s"
-                    return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                    fallback_error = f"{prior_error}; {suffix}" if prior_error else suffix
+                    break
                 await asyncio.sleep(delay)
             except (TimedOut, TimeoutError) as e:
                 delay = min(5.0 * attempt, 15.0)
@@ -681,7 +825,8 @@ class TelegramBot:
                 )
                 if attempt >= attempts:
                     suffix = f"zip fallback failed: {e}"
-                    return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                    fallback_error = f"{prior_error}; {suffix}" if prior_error else suffix
+                    break
                 await asyncio.sleep(delay)
             except NetworkError as e:
                 err_text = str(e)
@@ -708,14 +853,26 @@ class TelegramBot:
                     continue
                 logger.error("Telegram zipped Excel fallback network error for %s: %s", path, err_text)
                 suffix = f"zip fallback failed: {err_text}"
-                return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                fallback_error = f"{prior_error}; {suffix}" if prior_error else suffix
+                break
             except Exception as e:
                 logger.error("Telegram zipped Excel fallback failed for %s: %s", path, e)
                 suffix = f"zip fallback failed: {e}"
-                return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                fallback_error = f"{prior_error}; {suffix}" if prior_error else suffix
+                break
 
-        suffix = "zip fallback failed: Unknown Telegram send failure"
-        return False, f"{prior_error}; {suffix}" if prior_error else suffix
+        ok, error = await self._send_document_via_raw_bot_api(
+            zip_bytes,
+            zip_name,
+            f"{caption} (zipped fallback)",
+        )
+        if ok:
+            logger.info("Telegram raw Bot API zipped fallback sent %s", path)
+            return True, None
+
+        suffix_detail = error or "Unknown Telegram send failure"
+        suffix = f"raw zip fallback failed: {suffix_detail}"
+        return False, f"{fallback_error}; {suffix}" if fallback_error else suffix
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         downloads = (sync_result or {}).get("downloads", {})
@@ -901,8 +1058,12 @@ class TelegramBot:
     def _track(self, msg) -> None:
         """Track a sent message for cleanup."""
         if msg:
-            self._ephemeral_msgs.append(msg.message_id)
-            self._persist_ephemeral(msg.message_id)
+            self._track_message_id(getattr(msg, "message_id", None))
+
+    def _track_message_id(self, message_id: int | None) -> None:
+        if message_id:
+            self._ephemeral_msgs.append(message_id)
+            self._persist_ephemeral(message_id)
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         """Main control keyboard."""

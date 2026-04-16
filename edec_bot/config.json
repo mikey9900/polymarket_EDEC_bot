@@ -1,7 +1,7 @@
 {
   "name": "EDEC Polymarket Bot",
 
-  "version": "3.4.27",
+  "version": "3.4.28",
 
 
 
@@ -32,7 +32,7 @@
     "dropbox_refresh_token": "",
     "dropbox_app_key": "",
     "dropbox_app_secret": "",
-    "dropbox_root": "/EDEC-BOT"
+    "dropbox_root": "/"
   },
   "schema": {
     "private_key": "str",

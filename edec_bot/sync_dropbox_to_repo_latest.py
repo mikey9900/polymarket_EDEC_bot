@@ -18,7 +18,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dropbox-refresh-token", default=os.getenv("EDEC_DROPBOX_REFRESH_TOKEN"))
     parser.add_argument("--dropbox-app-key", default=os.getenv("EDEC_DROPBOX_APP_KEY"))
     parser.add_argument("--dropbox-app-secret", default=os.getenv("EDEC_DROPBOX_APP_SECRET"))
-    parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/EDEC-BOT"))
+    parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/"))
     default_output_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     parser.add_argument("--output-dir", default=os.getenv("EDEC_REPO_SYNC_DIR", default_output_dir))
     parser.add_argument("--label", default=os.getenv("EDEC_ARCHIVE_LABEL", "EDEC-BOT"))

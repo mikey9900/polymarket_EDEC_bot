@@ -330,7 +330,7 @@ async def main():
     dropbox_refresh_token = os.getenv("EDEC_DROPBOX_REFRESH_TOKEN") or ha_options.get("dropbox_refresh_token")
     dropbox_app_key = os.getenv("EDEC_DROPBOX_APP_KEY") or ha_options.get("dropbox_app_key")
     dropbox_app_secret = os.getenv("EDEC_DROPBOX_APP_SECRET") or ha_options.get("dropbox_app_secret")
-    dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/EDEC-BOT"
+    dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/"
     default_repo_sync_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", default_repo_sync_dir)
 

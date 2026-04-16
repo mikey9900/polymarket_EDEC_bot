@@ -23,9 +23,11 @@ Local output folder: `edec_bot/data/exports/`
 
 If Dropbox auth is set (`EDEC_DROPBOX_TOKEN` or refresh-token credentials):
 
-1. `/EDEC-BOT/daily-reports/` -> daily Excel
-2. `/EDEC-BOT/daily-archives/` -> daily compressed trades files
-3. `/EDEC-BOT/latest/` -> latest copies + `EDEC-BOT_latest_index.json`
+1. `/daily-reports/` -> daily Excel
+2. `/daily-archives/` -> daily compressed trades files
+3. `/latest/` -> latest copies + `EDEC-BOT_latest_index.json`
+
+For app-folder Dropbox apps, `/` maps to `Apps/<your-app-name>/`.
 
 ## Manual Run
 
@@ -41,7 +43,7 @@ Optional args:
 2. `--output-dir data/exports`
 3. `--dropbox-token <token>` (or env var)
 4. `--dropbox-refresh-token <token>` + `--dropbox-app-key` + `--dropbox-app-secret`
-5. `--dropbox-root /EDEC-BOT` (or env var)
+5. `--dropbox-root /` (or env var)
 
 ## Home Assistant Add-on Settings (recommended for HA OS)
 
@@ -58,7 +60,7 @@ Set these in the add-on UI (`Configuration` tab):
 8. `dropbox_refresh_token: "<refresh-token>"` for automatic renewal
 9. `dropbox_app_key: "<app-key>"`
 10. `dropbox_app_secret: "<app-secret>"`
-11. `dropbox_root: "/EDEC-BOT"`
+11. `dropbox_root: "/"`
 
 No separate HA `shell_command` is required when using add-on options.
 The bot will prefer refresh-token auth when those fields are present, and fall back to `dropbox_token` otherwise.
@@ -82,7 +84,7 @@ From `edec_bot/`:
 python sync_dropbox_to_repo_latest.py
 ```
 
-This pulls from Dropbox `/EDEC-BOT/latest/` into:
+This pulls from Dropbox `/latest/` into:
 
 1. `dropbox_sync/EDEC-BOT_latest_last24h.xlsx`
 2. `dropbox_sync/EDEC-BOT_latest_trades.csv.gz`

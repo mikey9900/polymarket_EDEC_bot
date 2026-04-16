@@ -760,7 +760,7 @@ def sync_dropbox_latest_to_local(
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
     dropbox_app_secret: str | None = None,
-    dropbox_root: str = "/EDEC-BOT",
+    dropbox_root: str = "/",
     output_dir: str = "data/dropbox_sync",
     label: str = "EDEC-BOT",
     expand_trades_csv: bool = True,
@@ -850,22 +850,27 @@ def _safe_label(label: str) -> str:
 
 def _normalize_dropbox_root(dropbox_root: str | None) -> str:
     """Normalize Dropbox root so generated file paths are always valid."""
-    root = (dropbox_root or "/EDEC-BOT").strip()
+    root = (dropbox_root or "/").strip()
     if len(root) >= 2 and root[0] == root[-1] and root[0] in ("'", '"'):
         root = root[1:-1].strip()
     root = root.replace("\\", "/")
     if not root:
-        root = "/EDEC-BOT"
+        root = "/"
     if "/home/" in root and "dropbox.com" in root:
-        marker = "/home/"
-        root = root[root.index(marker) + len(marker):]
+        root = root.split("/home/", 1)[1].split("?", 1)[0].split("#", 1)[0].strip("/")
+        if root.startswith("Apps/"):
+            parts = root.split("/", 2)
+            root = "/" if len(parts) <= 2 else f"/{parts[2]}"
+        else:
+            root = f"/{root}" if root else "/"
     if root.startswith("https://") or root.startswith("http://"):
-        root = "/EDEC-BOT"
+        root = "/"
     if not root.startswith("/"):
         root = f"/{root}"
     while "//" in root:
         root = root.replace("//", "/")
-    return root.rstrip("/")
+    normalized = root.rstrip("/")
+    return normalized or "/"
 
 
 def _dropbox_latest_remote_candidates(
@@ -902,7 +907,7 @@ def run_daily_archive(
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
     dropbox_app_secret: str | None = None,
-    dropbox_root: str = "/EDEC-BOT",
+    dropbox_root: str = "/",
 ) -> dict[str, Any]:
     now_utc = _utc_now()
     dropbox_auth = _build_dropbox_auth(
@@ -1032,7 +1037,7 @@ def archive_health_snapshot(
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
     dropbox_app_secret: str | None = None,
-    dropbox_root: str = "/EDEC-BOT",
+    dropbox_root: str = "/",
 ) -> dict[str, Any]:
     label = _safe_label(label)
     dropbox_auth = _build_dropbox_auth(
@@ -1088,7 +1093,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dropbox-refresh-token", default=os.getenv("EDEC_DROPBOX_REFRESH_TOKEN"))
     parser.add_argument("--dropbox-app-key", default=os.getenv("EDEC_DROPBOX_APP_KEY"))
     parser.add_argument("--dropbox-app-secret", default=os.getenv("EDEC_DROPBOX_APP_SECRET"))
-    parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/EDEC-BOT"))
+    parser.add_argument("--dropbox-root", default=os.getenv("EDEC_DROPBOX_ROOT", "/"))
     return parser.parse_args()
 
 

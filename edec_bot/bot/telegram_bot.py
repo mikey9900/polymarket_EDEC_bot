@@ -634,31 +634,88 @@ class TelegramBot:
     ) -> tuple[bool, str | None]:
         if not self._app or not self.chat_id:
             return False, prior_error or "Telegram app/chat is not configured"
-        try:
-            filename = os.path.basename(path)
-            zip_name = f"{os.path.splitext(filename)[0]}.zip"
-            zip_buffer = io.BytesIO()
-            with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-                zf.write(path, arcname=filename)
-            zip_bytes = zip_buffer.getvalue()
-            sent = await self._app.bot.send_document(
-                chat_id=self.chat_id,
-                document=InputFile(zip_bytes, filename=zip_name),
-                filename=zip_name,
-                caption=f"{caption} (zipped fallback)",
-                disable_content_type_detection=True,
-                connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
-                read_timeout=self._SEND_FILE_READ_TIMEOUT,
-                write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
-                pool_timeout=self._SEND_FILE_POOL_TIMEOUT,
-            )
-            self._track(sent)
-            return True, None
-        except Exception as e:
-            logger.error("Telegram zipped Excel fallback failed for %s: %s", path, e)
-            if prior_error:
-                return False, f"{prior_error}; zip fallback failed: {e}"
-            return False, str(e)
+        filename = os.path.basename(path)
+        zip_name = f"{os.path.splitext(filename)[0]}.zip"
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.write(path, arcname=filename)
+        zip_bytes = zip_buffer.getvalue()
+        attempts = max(1, self._SEND_FILE_ATTEMPTS)
+
+        for attempt in range(1, attempts + 1):
+            try:
+                sent = await self._app.bot.send_document(
+                    chat_id=self.chat_id,
+                    document=InputFile(zip_bytes, filename=zip_name),
+                    filename=zip_name,
+                    caption=f"{caption} (zipped fallback)",
+                    connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
+                    read_timeout=self._SEND_FILE_READ_TIMEOUT,
+                    write_timeout=self._SEND_FILE_WRITE_TIMEOUT,
+                    pool_timeout=self._SEND_FILE_POOL_TIMEOUT,
+                )
+                self._track(sent)
+                return True, None
+            except RetryAfter as e:
+                delay = float(e.retry_after)
+                logger.warning(
+                    "Telegram zipped Excel fallback rate-limited for %s on attempt %s/%s; retry in %.1fs",
+                    path,
+                    attempt,
+                    attempts,
+                    delay,
+                )
+                if attempt >= attempts:
+                    suffix = f"zip fallback failed: RetryAfter {delay:.1f}s"
+                    return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                await asyncio.sleep(delay)
+            except (TimedOut, TimeoutError) as e:
+                delay = min(5.0 * attempt, 15.0)
+                logger.warning(
+                    "Telegram zipped Excel fallback timed out for %s on attempt %s/%s; retry in %.1fs: %s",
+                    path,
+                    attempt,
+                    attempts,
+                    delay,
+                    e,
+                )
+                if attempt >= attempts:
+                    suffix = f"zip fallback failed: {e}"
+                    return False, f"{prior_error}; {suffix}" if prior_error else suffix
+                await asyncio.sleep(delay)
+            except NetworkError as e:
+                err_text = str(e)
+                delay = min(5.0 * attempt, 15.0)
+                retryable_markers = (
+                    "timed out",
+                    "readerror",
+                    "writeerror",
+                    "connection reset",
+                    "server disconnected",
+                    "connection aborted",
+                    "connection refused",
+                )
+                if any(marker in err_text.lower() for marker in retryable_markers) and attempt < attempts:
+                    logger.warning(
+                        "Telegram zipped Excel fallback network error for %s on attempt %s/%s; retry in %.1fs: %s",
+                        path,
+                        attempt,
+                        attempts,
+                        delay,
+                        err_text,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("Telegram zipped Excel fallback network error for %s: %s", path, err_text)
+                suffix = f"zip fallback failed: {err_text}"
+                return False, f"{prior_error}; {suffix}" if prior_error else suffix
+            except Exception as e:
+                logger.error("Telegram zipped Excel fallback failed for %s: %s", path, e)
+                suffix = f"zip fallback failed: {e}"
+                return False, f"{prior_error}; {suffix}" if prior_error else suffix
+
+        suffix = "zip fallback failed: Unknown Telegram send failure"
+        return False, f"{prior_error}; {suffix}" if prior_error else suffix
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         downloads = (sync_result or {}).get("downloads", {})

@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 from typing import Any
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -541,14 +541,21 @@ class TelegramBot:
             return False, "Telegram app/chat is not configured"
         if not os.path.exists(path):
             return False, "File does not exist"
+        filename = os.path.basename(path)
+        use_in_memory_upload = path.lower().endswith(".xlsx") or os.path.getsize(path) <= 1024 * 1024
         attempts = max(1, self._SEND_FILE_ATTEMPTS)
         for attempt in range(1, attempts + 1):
             try:
                 with open(path, "rb") as f:
+                    document = (
+                        InputFile(f.read(), filename=filename)
+                        if use_in_memory_upload
+                        else f
+                    )
                     sent = await self._app.bot.send_document(
                         chat_id=self.chat_id,
-                        document=f,
-                        filename=os.path.basename(path),
+                        document=document,
+                        filename=filename,
                         caption=caption,
                         connect_timeout=self._SEND_FILE_CONNECT_TIMEOUT,
                         read_timeout=self._SEND_FILE_READ_TIMEOUT,

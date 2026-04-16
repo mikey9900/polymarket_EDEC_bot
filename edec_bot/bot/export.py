@@ -435,6 +435,14 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
 
     num_cols = len(headers)
     for ri, r in enumerate(rows, start=2):
+        def _as_float(value):
+            if value is None or value == "":
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
         ts_str = str(r[1] or "")
         date_part = ts_str[:10] if len(ts_str) >= 10 else ts_str
         time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
@@ -453,7 +461,10 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             pnl_pct = round(r[42] / r[25] * 100, 2)
 
         side = str(r[4] or "").lower()
-        vel30 = r[55]
+        vel30 = _as_float(r[55])
+        vel60 = _as_float(r[56])
+        up_depth = _as_float(r[57])
+        down_depth = _as_float(r[58])
         if vel30 is None or side not in ("up", "down"):
             momentum_align = None
         else:
@@ -466,10 +477,10 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             r[11], r[12], r[13], r[14], r[15],
             r[16], r[17], r[18], r[19], r[20], r[21], r[22], r[23], r[24], r[25], r[26],
             r[59], r[27],
-            round(r[55], 4) if r[55] is not None else None,
-            round(r[56], 4) if r[56] is not None else None,
-            round(r[57], 2) if r[57] is not None else None,
-            round(r[58], 2) if r[58] is not None else None,
+            round(vel30, 4) if vel30 is not None else None,
+            round(vel60, 4) if vel60 is not None else None,
+            round(up_depth, 2) if up_depth is not None else None,
+            round(down_depth, 2) if down_depth is not None else None,
             r[44], r[45], r[46], momentum_align,
             r[47], r[48], r[49], r[50], r[51], r[52], r[53], r[54],
             r[60], r[61], r[62],

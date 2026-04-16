@@ -1117,7 +1117,7 @@ def run_daily_archive(
     db_path: str = "data/decisions.db",
     output_dir: str = "data/exports",
     label: str = "EDEC-BOT",
-    recent_limit: int = 500,
+    recent_limit: int = 100,
     dropbox_token: str | None = None,
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
@@ -1135,12 +1135,23 @@ def run_daily_archive(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    excel_path, counts = export_last_24h_excel(
-        db_path=db_path,
-        output_dir=output_dir,
-        label=label,
-        now_utc=now_utc,
-    )
+    export_errors: list[str] = []
+    counts: dict[str, int] = {
+        "paper_trades_24h": 0,
+        "live_trades_24h": 0,
+        "decisions_24h": 0,
+    }
+    excel_path: str | None = None
+    try:
+        excel_path, counts = export_last_24h_excel(
+            db_path=db_path,
+            output_dir=output_dir,
+            label=label,
+            now_utc=now_utc,
+        )
+    except Exception as exc:
+        logger.exception("24h Excel export failed; continuing with CSV exports")
+        export_errors.append(f"excel_export_failed: {exc}")
     recent_path, recent_count, oldest_id, newest_id = export_recent_trades_csv_gz(
         db_path=db_path,
         output_dir=output_dir,
@@ -1159,7 +1170,8 @@ def run_daily_archive(
     latest_excel = str(output_path / f"{label}_latest_last24h.xlsx")
     latest_trades = str(output_path / f"{label}_latest_trades.csv.gz")
     latest_signals = str(output_path / f"{label}_latest_signals.csv.gz")
-    shutil.copy2(excel_path, latest_excel)
+    if excel_path and Path(excel_path).exists():
+        shutil.copy2(excel_path, latest_excel)
     shutil.copy2(recent_path, latest_trades)
     shutil.copy2(recent_signals_path, latest_signals)
     run_meta = _latest_run_metadata(db_path)
@@ -1185,15 +1197,16 @@ def run_daily_archive(
             "newest": newest_signal_id,
         },
         "local_files": {
-            "daily_last24h_xlsx": Path(excel_path).name,
+            "daily_last24h_xlsx": Path(excel_path).name if excel_path else None,
             "daily_recent_trades_csv_gz": Path(recent_path).name,
             "daily_recent_signals_csv_gz": Path(recent_signals_path).name,
-            "latest_last24h_xlsx": Path(latest_excel).name,
+            "latest_last24h_xlsx": Path(latest_excel).name if Path(latest_excel).exists() else None,
             "latest_trades_csv_gz": Path(latest_trades).name,
             "latest_signals_csv_gz": Path(latest_signals).name,
             "latest_index_json": index_path.name,
         },
         "latest_run": run_meta,
+        "export_errors": export_errors,
         "dropbox_files": None,
         "dropbox_uploads": None,
     }
@@ -1202,16 +1215,16 @@ def run_daily_archive(
     if dropbox_auth:
         root = _normalize_dropbox_root(dropbox_root)
         dbx_paths = {
-            "daily_last24h_xlsx": f"{root}/daily-reports/{Path(excel_path).name}",
             "daily_recent_trades_csv_gz": f"{root}/daily-archives/{Path(recent_path).name}",
             "daily_recent_signals_csv_gz": f"{root}/daily-archives/{Path(recent_signals_path).name}",
-            "latest_last24h_xlsx": f"{root}/latest/{Path(latest_excel).name}",
             "latest_trades_csv_gz": f"{root}/latest/{Path(latest_trades).name}",
             "latest_signals_csv_gz": f"{root}/latest/{Path(latest_signals).name}",
             "latest_index_json": f"{root}/latest/{index_path.name}",
         }
+        if excel_path and Path(excel_path).exists():
+            dbx_paths["daily_last24h_xlsx"] = f"{root}/daily-reports/{Path(excel_path).name}"
+            dbx_paths["latest_last24h_xlsx"] = f"{root}/latest/{Path(latest_excel).name}"
         upload_results = {
-            "daily_last24h_xlsx": _dropbox_upload_file(excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_auth),
             "daily_recent_trades_csv_gz": _dropbox_upload_file(
                 recent_path, dbx_paths["daily_recent_trades_csv_gz"], dropbox_auth
             ),
@@ -1231,6 +1244,24 @@ def run_daily_archive(
                 str(index_path), dbx_paths["latest_index_json"], dropbox_auth
             ),
         }
+        if excel_path and Path(excel_path).exists():
+            upload_results["daily_last24h_xlsx"] = _dropbox_upload_file(
+                excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_auth
+            )
+            upload_results["latest_last24h_xlsx"] = _dropbox_upload_file(
+                latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_auth
+            )
+        else:
+            upload_results["daily_last24h_xlsx"] = {
+                "ok": False,
+                "status": "skipped",
+                "error": "Excel export unavailable in this run",
+            }
+            upload_results["latest_last24h_xlsx"] = {
+                "ok": False,
+                "status": "skipped",
+                "error": "Excel export unavailable in this run",
+            }
         index["dropbox_files"] = dbx_paths
         index["dropbox_uploads"] = upload_results
         index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
@@ -1337,7 +1368,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--db-path", default="data/decisions.db")
     parser.add_argument("--output-dir", default="data/exports")
     parser.add_argument("--label", default="EDEC-BOT")
-    parser.add_argument("--recent-limit", type=int, default=500)
+    parser.add_argument("--recent-limit", type=int, default=100)
     parser.add_argument("--dropbox-token", default=os.getenv("EDEC_DROPBOX_TOKEN"))
     parser.add_argument("--dropbox-refresh-token", default=os.getenv("EDEC_DROPBOX_REFRESH_TOKEN"))
     parser.add_argument("--dropbox-app-key", default=os.getenv("EDEC_DROPBOX_APP_KEY"))
@@ -1365,4 +1396,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

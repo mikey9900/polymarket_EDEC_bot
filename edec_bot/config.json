@@ -1,7 +1,7 @@
 {
   "name": "EDEC Polymarket Bot",
 
-  "version": "4.0.2",
+  "version": "4.0.4",
 
 
 
@@ -29,7 +29,7 @@
     "telegram_chat_id": "",
     "archive_enabled": true,
     "archive_time": "00:05",
-    "archive_recent_limit": 500,
+    "archive_recent_limit": 100,
     "archive_label": "EDEC-BOT",
     "archive_output_dir": "data/exports",
     "archive_telegram_files": true,

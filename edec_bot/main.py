@@ -311,7 +311,7 @@ async def main():
         return export_to_excel("data/decisions.db", "data", today_only)
 
     def do_export_recent() -> str:
-        return export_recent_to_excel("data/decisions.db", "data", limit=500)
+        return export_recent_to_excel("data/decisions.db", "data", limit=100)
 
     archive_enabled = _as_bool(
         os.getenv("EDEC_ARCHIVE_ENABLED", ha_options.get("archive_enabled")),
@@ -327,7 +327,7 @@ async def main():
     )
     archive_recent_limit = _as_int(
         os.getenv("EDEC_ARCHIVE_RECENT_LIMIT", ha_options.get("archive_recent_limit")),
-        500,
+        100,
     )
     archive_hhmm = os.getenv(
         "EDEC_ARCHIVE_TIME",

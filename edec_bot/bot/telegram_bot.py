@@ -979,12 +979,12 @@ class TelegramBot:
         else:
             files["latest_excel"] = {"sent": False, "error": "Latest Excel file not found", "path": excel}
         if trades and os.path.exists(trades):
-            ok, error = await self._send_file_path(trades, "EDEC latest compressed trades export (500)")
+            ok, error = await self._send_file_path(trades, "EDEC latest compressed trades export (100)")
             files["latest_trades"] = {"sent": ok, "error": error, "path": trades}
         else:
             files["latest_trades"] = {"sent": False, "error": "Latest trades file not found", "path": trades}
         if signals and os.path.exists(signals):
-            ok, error = await self._send_file_path(signals, "EDEC latest compressed signals export (500)")
+            ok, error = await self._send_file_path(signals, "EDEC latest compressed signals export (100)")
             files["latest_signals"] = {"sent": ok, "error": error, "path": signals}
         else:
             files["latest_signals"] = {
@@ -1137,7 +1137,7 @@ class TelegramBot:
                 InlineKeyboardButton("\U0001F9ED Archive Health", callback_data="archive_health"),
             ],
             [
-                InlineKeyboardButton("\U0001F4CA Last 500 Trades", callback_data="export_recent"),
+                InlineKeyboardButton("\U0001F4CA Last 100 Trades", callback_data="export_recent"),
                 InlineKeyboardButton("\U0001F5C4 Latest Archive", callback_data="export_latest"),
                 InlineKeyboardButton("\U0001F4E5 Sync Dropbox", callback_data="sync_repo_latest"),
             ],
@@ -1379,28 +1379,50 @@ class TelegramBot:
                 self._track(await query.message.reply_text("Recent export not available."))
                 await self._repost_dashboard()
                 return
-            wait_msg = await query.message.reply_text("⏳ Building Last 500 Trades CSV (Dropbox sync first)...")
+            wait_msg = await query.message.reply_text("⏳ Building Last 100 trades/signals CSVs (Dropbox sync first)...")
             self._track(wait_msg)
             try:
                 loop = asyncio.get_event_loop()
-                path = None
+                trades_path = None
+                signals_path = None
                 if self.repo_sync_fn:
                     try:
                         sync_result = await loop.run_in_executor(None, self.repo_sync_fn)
-                        synced_csv = sync_result.get("expanded_trades_csv")
-                        if synced_csv and os.path.exists(synced_csv):
-                            path = synced_csv
+                        synced_trades_csv = sync_result.get("expanded_trades_csv")
+                        synced_signals_csv = sync_result.get("expanded_signals_csv")
+                        if synced_trades_csv and os.path.exists(synced_trades_csv):
+                            trades_path = synced_trades_csv
+                        if synced_signals_csv and os.path.exists(synced_signals_csv):
+                            signals_path = synced_signals_csv
                     except Exception:
                         # Fall back to local DB export if Dropbox sync fails.
-                        path = None
-                if not path:
-                    path = await loop.run_in_executor(None, self.export_recent_fn)
-                with open(path, "rb") as f:
+                        trades_path = None
+                        signals_path = None
+                if not trades_path:
+                    trades_path = await loop.run_in_executor(None, self.export_recent_fn)
+                with open(trades_path, "rb") as f:
                     self._track(await query.message.reply_document(
                         document=f,
-                        filename=os.path.basename(path),
-                        caption="📊 Last 500 Trades CSV — compact export for AI analysis",
+                        filename=os.path.basename(trades_path),
+                        caption="📊 Last 100 Trades CSV — compact export for AI analysis",
                     ))
+                if signals_path and os.path.exists(signals_path):
+                    with open(signals_path, "rb") as f:
+                        self._track(await query.message.reply_document(
+                            document=f,
+                            filename=os.path.basename(signals_path),
+                            caption="🧠 Last 100 Signals CSV — companion dataset for filter/skip analysis",
+                        ))
+                elif self.archive_latest_fn:
+                    latest_paths = self.archive_latest_fn() or {}
+                    latest_signals = latest_paths.get("latest_signals")
+                    if latest_signals and os.path.exists(latest_signals):
+                        with open(latest_signals, "rb") as f:
+                            self._track(await query.message.reply_document(
+                                document=f,
+                                filename=os.path.basename(latest_signals),
+                                caption="🧠 Latest Signals CSV.GZ — companion dataset for filter/skip analysis",
+                            ))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Export error: {e}"))
             await self._repost_dashboard()

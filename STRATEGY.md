@@ -2,6 +2,7 @@
 > Paste this file + a compressed trade CSV into any AI for analysis.
 > Current version: 4.0.4
 
+
 ---
 
 ## What the bot does

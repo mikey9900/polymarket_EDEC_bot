@@ -585,9 +585,18 @@ class TelegramBot:
             except NetworkError as e:
                 err_text = str(e)
                 delay = min(5.0 * attempt, 15.0)
-                if "timed out" in err_text.lower() and attempt < attempts:
+                retryable_markers = (
+                    "timed out",
+                    "readerror",
+                    "writeerror",
+                    "connection reset",
+                    "server disconnected",
+                    "connection aborted",
+                    "connection refused",
+                )
+                if any(marker in err_text.lower() for marker in retryable_markers) and attempt < attempts:
                     logger.warning(
-                        "Telegram send_document network timeout for %s on attempt %s/%s; retry in %.1fs: %s",
+                        "Telegram send_document network error for %s on attempt %s/%s; retry in %.1fs: %s",
                         path,
                         attempt,
                         attempts,

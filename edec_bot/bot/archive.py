@@ -698,7 +698,8 @@ def _dropbox_latest_remote_candidates(
     base = root.rstrip("/")
     candidate_dirs: list[str] = []
     if base.endswith("/latest"):
-        candidate_dirs.extend([base, base[: -len("/latest")] or "/"])
+        parent = base[: -len("/latest")] or "/"
+        candidate_dirs.extend([f"{base}/latest", base, parent])
     else:
         candidate_dirs.extend([f"{base}/latest", base])
 

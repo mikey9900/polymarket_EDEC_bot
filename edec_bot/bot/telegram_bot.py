@@ -529,11 +529,11 @@ class TelegramBot:
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
-    async def _send_file_path(self, path: str, caption: str) -> bool:
+    async def _send_file_path(self, path: str, caption: str) -> tuple[bool, str | None]:
         if not self._app or not self.chat_id or not path:
-            return False
+            return False, "Telegram app/chat is not configured"
         if not os.path.exists(path):
-            return False
+            return False, "File does not exist"
         try:
             with open(path, "rb") as f:
                 sent = await self._app.bot.send_document(
@@ -543,14 +543,14 @@ class TelegramBot:
                     caption=caption,
                 )
             self._track(sent)
-            return True
+            return True, None
         except Exception as e:
             logger.error("Telegram send_document error for %s: %s", path, e)
-            return False
+            return False, str(e)
 
-    async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> bool:
+    async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         downloads = (sync_result or {}).get("downloads", {})
-        sent_any = False
+        results: dict[str, Any] = {}
         file_specs = [
             ("latest_last24h_xlsx", "Dropbox latest 24h Excel export"),
             ("latest_trades_csv_gz", "Dropbox latest compressed trades export"),
@@ -562,8 +562,11 @@ class TelegramBot:
             item = downloads.get(key, {})
             path = item.get("path")
             if item.get("ok") and path and os.path.exists(path):
-                sent_any = await self._send_file_path(path, caption) or sent_any
-        return sent_any
+                ok, error = await self._send_file_path(path, caption)
+                results[key] = {"sent": ok, "error": error, "path": path}
+            else:
+                results[key] = {"sent": False, "error": "File not available after Dropbox sync", "path": path}
+        return results
 
     def _repo_sync_message_lines(self, result: dict, heading_ok: str, heading_fail: str) -> list[str]:
         ok = bool((result or {}).get("ok"))
@@ -590,11 +593,24 @@ class TelegramBot:
             lines.append(status_txt)
         return lines
 
-    async def send_latest_archive_files(self, include_index: bool = True) -> bool:
+    @staticmethod
+    def _file_send_summary(send_result: dict[str, Any], label_map: dict[str, str]) -> list[str]:
+        lines: list[str] = []
+        for key, label in label_map.items():
+            info = send_result.get(key, {}) if send_result else {}
+            if info.get("sent"):
+                continue
+            error = " ".join(str(info.get("error") or "unknown error").split())
+            if len(error) > 180:
+                error = f"{error[:177]}..."
+            lines.append(f"{label}: `{error}`")
+        return lines
+
+    async def send_latest_archive_files(self, include_index: bool = True) -> dict[str, Any]:
         if not self.archive_latest_fn:
-            return False
+            return {"available": False, "files": {}, "sent_any": False}
         paths = self.archive_latest_fn() or {}
-        sent_any = False
+        files: dict[str, Any] = {}
 
         def _path_set():
             return (
@@ -615,16 +631,23 @@ class TelegramBot:
                 excel, trades, index = _path_set()
 
         if excel and os.path.exists(excel):
-            sent_any = await self._send_file_path(excel, "EDEC latest 24h Excel export") or sent_any
+            ok, error = await self._send_file_path(excel, "EDEC latest 24h Excel export")
+            files["latest_excel"] = {"sent": ok, "error": error, "path": excel}
+        else:
+            files["latest_excel"] = {"sent": False, "error": "Latest Excel file not found", "path": excel}
         if trades and os.path.exists(trades):
-            sent_any = (
-                await self._send_file_path(trades, "EDEC latest compressed trades export (500)") or sent_any
-            )
+            ok, error = await self._send_file_path(trades, "EDEC latest compressed trades export (500)")
+            files["latest_trades"] = {"sent": ok, "error": error, "path": trades}
+        else:
+            files["latest_trades"] = {"sent": False, "error": "Latest trades file not found", "path": trades}
         if include_index and index and os.path.exists(index):
-            sent_any = (
-                await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)") or sent_any
-            )
-        return sent_any
+            ok, error = await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
+            files["latest_index"] = {"sent": ok, "error": error, "path": index}
+        elif include_index:
+            files["latest_index"] = {"sent": False, "error": "Latest index file not found", "path": index}
+        sent_any = any(bool(info.get("sent")) for info in files.values())
+        available = any((info.get("path") and os.path.exists(info["path"])) for info in files.values() if info.get("path"))
+        return {"available": available, "files": files, "sent_any": sent_any}
 
     async def alert_archive_complete(self, archive_result: dict):
         row_counts = archive_result.get("row_counts", {})
@@ -1029,9 +1052,19 @@ class TelegramBot:
             wait_msg = await query.message.reply_text("⏳ Sending latest archive files...")
             self._track(wait_msg)
             try:
-                sent = await self.send_latest_archive_files(include_index=True)
-                if not sent:
+                send_result = await self.send_latest_archive_files(include_index=True)
+                if not send_result.get("available"):
                     self._track(await query.message.reply_text("Latest archive files not found yet."))
+                failed_lines = self._file_send_summary(
+                    send_result.get("files", {}),
+                    {
+                        "latest_excel": "Latest Excel send failed",
+                        "latest_trades": "Latest trades send failed",
+                        "latest_index": "Latest index send failed",
+                    },
+                )
+                if failed_lines:
+                    self._track(await query.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Latest archive error: {e}"))
             await self._repost_dashboard()
@@ -1057,7 +1090,17 @@ class TelegramBot:
                     "⚠️ *Repo Sync Partial/Failed*",
                 )
                 self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-                await self.send_repo_sync_files(result, include_index=True)
+                send_result = await self.send_repo_sync_files(result, include_index=True)
+                failed_lines = self._file_send_summary(
+                    send_result,
+                    {
+                        "latest_last24h_xlsx": "Synced Excel send failed",
+                        "latest_trades_csv_gz": "Synced trades send failed",
+                        "latest_index_json": "Synced index send failed",
+                    },
+                )
+                if failed_lines:
+                    self._track(await query.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
             except Exception as e:
                 self._track(await query.message.reply_text(f"Repo sync error: {e}"))
             await self._repost_dashboard()
@@ -1343,9 +1386,19 @@ class TelegramBot:
         wait_msg = await update.message.reply_text("Sending latest archive files...")
         self._track(wait_msg)
         try:
-            sent = await self.send_latest_archive_files(include_index=True)
-            if not sent:
+            send_result = await self.send_latest_archive_files(include_index=True)
+            if not send_result.get("available"):
                 self._track(await update.message.reply_text("Latest archive files not found yet."))
+            failed_lines = self._file_send_summary(
+                send_result.get("files", {}),
+                {
+                    "latest_excel": "Latest Excel send failed",
+                    "latest_trades": "Latest trades send failed",
+                    "latest_index": "Latest index send failed",
+                },
+            )
+            if failed_lines:
+                self._track(await update.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
         except Exception as e:
             self._track(await update.message.reply_text(f"Latest archive error: {e}"))
 
@@ -1367,7 +1420,17 @@ class TelegramBot:
                 "*Repo Sync Failed*",
             )
             self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-            await self.send_repo_sync_files(result, include_index=True)
+            send_result = await self.send_repo_sync_files(result, include_index=True)
+            failed_lines = self._file_send_summary(
+                send_result,
+                {
+                    "latest_last24h_xlsx": "Synced Excel send failed",
+                    "latest_trades_csv_gz": "Synced trades send failed",
+                    "latest_index_json": "Synced index send failed",
+                },
+            )
+            if failed_lines:
+                self._track(await update.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
         except Exception as e:
             self._track(await update.message.reply_text(f"Repo sync error: {e}"))
 

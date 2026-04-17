@@ -45,6 +45,12 @@ class MarketScanner:
         self._running = False
         self._ws_feed.stop()
 
+    async def aclose(self):
+        """Close owned network clients."""
+        self.stop()
+        await self._ws_feed.aclose()
+        await self._http.aclose()
+
     # --- Public accessors ---
 
     def get_market(self, coin: str) -> MarketInfo | None:
@@ -62,6 +68,12 @@ class MarketScanner:
         expired = self._expired_markets.copy()
         self._expired_markets.clear()
         return expired
+
+    def queue_expired_market(self, market: MarketInfo):
+        """Queue an ended market for outcome resolution, deduplicated by slug."""
+        if any(existing.slug == market.slug for existing in self._expired_markets):
+            return
+        self._expired_markets.append(market)
 
     def get_all_active(self) -> dict[str, MarketInfo]:
         """Return all coins that currently have an active market."""
@@ -187,7 +199,7 @@ class MarketScanner:
             now = datetime.now(timezone.utc)
             if now >= market.end_time:
                 logger.info(f"[{coin.upper()}] Market {market.slug} ended — queued for outcome check")
-                self._expired_markets.append(market)
+                self.queue_expired_market(market)
                 self._markets[coin] = None
                 self._up_books[coin] = None
                 self._down_books[coin] = None

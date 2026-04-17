@@ -42,6 +42,7 @@ class SingleLegConfig:
     scalp_min_profit_usd: float = 0.05
     resignal_cooldown_s: float = 8.0
     min_price_improvement: float = 0.01
+    disabled_coins: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -91,6 +92,27 @@ class LeadLagConfig:
     hard_stop_loss_pct: float = 0.10
     disabled_coins: tuple = ()
     coin_overrides: dict[str, LeadLagCoinOverride] = field(default_factory=dict)
+
+
+def resolve_lead_lag_params(cfg, coin: str) -> dict[str, float]:
+    coin_key = (coin or "").lower()
+    overrides = getattr(cfg, "coin_overrides", {}) or {}
+    override = overrides.get(coin_key)
+    return {
+        "min_velocity_30s": override.min_velocity_30s if override and override.min_velocity_30s is not None else cfg.min_velocity_30s,
+        "min_entry": override.min_entry if override and override.min_entry is not None else cfg.min_entry,
+        "max_entry": override.max_entry if override and override.max_entry is not None else cfg.max_entry,
+        "min_book_depth_usd": override.min_book_depth_usd if override and override.min_book_depth_usd is not None else cfg.min_book_depth_usd,
+        "min_time_remaining_s": getattr(cfg, "min_time_remaining_s", 0.0),
+        "order_size_usd": cfg.order_size_usd,
+        "profit_take_delta": cfg.profit_take_delta,
+        "profit_take_cap": cfg.profit_take_cap,
+        "stall_window_s": cfg.stall_window_s,
+        "min_progress_delta": cfg.min_progress_delta,
+        "hard_stop_loss_pct": cfg.hard_stop_loss_pct,
+        "resignal_cooldown_s": getattr(cfg, "resignal_cooldown_s", 0.0),
+        "min_price_improvement": getattr(cfg, "min_price_improvement", 0.0),
+    }
 
 
 @dataclass(frozen=True)
@@ -180,7 +202,10 @@ def load_config(config_path: str = "config.yaml") -> Config:
     return Config(
         coins=tuple(raw.get("coins", ["btc"])),
         dual_leg=DualLegConfig(**raw["dual_leg"]),
-        single_leg=SingleLegConfig(**raw["single_leg"]),
+        single_leg=SingleLegConfig(**{
+            **raw["single_leg"],
+            "disabled_coins": tuple(raw["single_leg"].get("disabled_coins", [])),
+        }),
         lead_lag=LeadLagConfig(**{
             **raw_lead_lag,
             "disabled_coins": tuple(raw_lead_lag.get("disabled_coins", [])),

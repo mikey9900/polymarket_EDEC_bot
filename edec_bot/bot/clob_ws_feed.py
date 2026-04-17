@@ -85,6 +85,18 @@ class ClobWebSocketFeed:
     def stop(self):
         self._running = False
 
+    async def aclose(self):
+        """Gracefully stop the feed and close any active websocket."""
+        self.stop()
+        ws = self._ws
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as e:
+                logger.debug(f"CLOB WS close failed: {e}")
+        self._ws = None
+        self._any_update_event.set()
+
     async def subscribe(self, token_ids: list[str]):
         """Subscribe to real-time book updates for the given token IDs."""
         new_ids = [t for t in token_ids if t not in self._subscribed]

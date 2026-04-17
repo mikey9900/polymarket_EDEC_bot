@@ -1,0 +1,432 @@
+"""SQLite schema and migration helpers for DecisionTracker."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
+    signal_context TEXT,
+    signal_overlap_count INTEGER DEFAULT 0,
+    suppressed_reason TEXT,
+    market_slug TEXT NOT NULL,
+    window_id TEXT,
+    coin TEXT NOT NULL DEFAULT 'btc',
+    strategy_type TEXT NOT NULL DEFAULT 'dual_leg',
+    market_end_time TEXT NOT NULL,
+    market_start_time TEXT,
+    up_best_ask REAL,
+    down_best_ask REAL,
+    combined_cost REAL,
+    btc_price REAL,
+    coin_velocity_30s REAL,
+    coin_velocity_60s REAL,
+    up_depth_usd REAL,
+    down_depth_usd REAL,
+    time_remaining_s REAL,
+    feed_count INTEGER,
+    filter_passed TEXT,
+    filter_failed TEXT,
+    action TEXT NOT NULL,
+    reason TEXT,
+    entry_price REAL,
+    target_price REAL,
+    expected_profit_per_share REAL,
+    entry_bid REAL,
+    entry_ask REAL,
+    entry_spread REAL,
+    entry_depth_side_usd REAL,
+    opposite_depth_usd REAL,
+    depth_ratio REAL,
+    signal_score REAL,
+    score_velocity REAL,
+    score_entry REAL,
+    score_depth REAL,
+    score_spread REAL,
+    score_time REAL,
+    score_balance REAL,
+    resignal_cooldown_s REAL,
+    min_price_improvement REAL,
+    last_signal_age_s REAL
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER REFERENCES decisions(id),
+    timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
+    market_slug TEXT NOT NULL,
+    window_id TEXT,
+    coin TEXT NOT NULL DEFAULT 'btc',
+    strategy_type TEXT NOT NULL DEFAULT 'dual_leg',
+    side TEXT,
+    up_price REAL,
+    down_price REAL,
+    entry_price REAL,
+    target_price REAL,
+    combined_cost REAL,
+    fee_total REAL,
+    shares REAL,
+    shares_requested REAL,
+    shares_filled REAL,
+    blocked_min_5_shares INTEGER DEFAULT 0,
+    up_order_id TEXT,
+    down_order_id TEXT,
+    buy_order_id TEXT,
+    sell_order_id TEXT,
+    status TEXT NOT NULL,
+    abort_cost REAL DEFAULT 0,
+    error TEXT
+);
+
+CREATE TABLE IF NOT EXISTS outcomes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    market_slug TEXT NOT NULL UNIQUE,
+    resolved_at TEXT NOT NULL,
+    winner TEXT NOT NULL,
+    btc_open_price REAL,
+    btc_close_price REAL
+);
+
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+    decision_id INTEGER REFERENCES decisions(id),
+    outcome_id INTEGER REFERENCES outcomes(id),
+    would_have_profited INTEGER,
+    hypothetical_profit REAL,
+    actual_profit REAL,
+    PRIMARY KEY (decision_id, outcome_id)
+);
+
+CREATE TABLE IF NOT EXISTS paper_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    decision_id INTEGER REFERENCES decisions(id),
+    timestamp TEXT NOT NULL,
+    run_id TEXT,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    mode TEXT,
+    dry_run INTEGER DEFAULT 1,
+    order_size_usd REAL,
+    paper_capital_total REAL,
+    market_slug TEXT NOT NULL,
+    window_id TEXT,
+    coin TEXT NOT NULL,
+    strategy_type TEXT NOT NULL,
+    signal_context TEXT,
+    signal_overlap_count INTEGER DEFAULT 0,
+    side TEXT,
+    entry_price REAL NOT NULL,
+    target_price REAL,
+    shares REAL NOT NULL,
+    shares_requested REAL,
+    shares_filled REAL,
+    blocked_min_5_shares INTEGER DEFAULT 0,
+    cost REAL NOT NULL,
+    fee_total REAL DEFAULT 0,
+    status TEXT DEFAULT 'open',
+    exit_price REAL,
+    pnl REAL,
+    exit_reason TEXT,
+    exit_timestamp TEXT,
+    time_remaining_s REAL,
+    bid_at_exit REAL,
+    ask_at_exit REAL,
+    exit_spread REAL,
+    market_end_time TEXT,
+    market_start_time TEXT,
+    entry_bid REAL,
+    entry_ask REAL,
+    entry_spread REAL,
+    entry_depth_side_usd REAL,
+    opposite_depth_usd REAL,
+    depth_ratio REAL,
+    max_bid_seen REAL,
+    min_bid_seen REAL,
+    time_to_max_bid_s REAL,
+    time_to_min_bid_s REAL,
+    first_profit_time_s REAL,
+    scalp_hit INTEGER DEFAULT 0,
+    high_confidence_hit INTEGER DEFAULT 0,
+    signal_score REAL,
+    score_velocity REAL,
+    score_entry REAL,
+    score_depth REAL,
+    score_spread REAL,
+    score_time REAL,
+    score_balance REAL,
+    target_delta REAL,
+    hard_stop_delta REAL,
+    mfe REAL,
+    mae REAL,
+    peak_net_pnl REAL,
+    trough_net_pnl REAL,
+    stall_exit_triggered INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS paper_capital (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    total_capital REAL NOT NULL,
+    current_balance REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    app_version TEXT,
+    strategy_version TEXT,
+    config_path TEXT,
+    config_hash TEXT,
+    dry_run INTEGER DEFAULT 1,
+    initial_mode TEXT,
+    default_order_size_usd REAL,
+    initial_paper_capital REAL
+);
+"""
+
+
+INDEX_SCHEMA = """
+CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
+CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
+CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
+CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
+CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
+CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
+CREATE INDEX IF NOT EXISTS idx_paper_decision ON paper_trades(decision_id);
+"""
+
+
+def migrate(conn) -> None:
+    """Add any columns/tables that didn't exist in older DB versions."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS paper_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id INTEGER REFERENCES decisions(id),
+            timestamp TEXT NOT NULL,
+            run_id TEXT,
+            app_version TEXT,
+            strategy_version TEXT,
+            config_path TEXT,
+            config_hash TEXT,
+            mode TEXT,
+            dry_run INTEGER DEFAULT 1,
+            order_size_usd REAL,
+            paper_capital_total REAL,
+            market_slug TEXT NOT NULL,
+            window_id TEXT,
+            coin TEXT NOT NULL,
+            strategy_type TEXT NOT NULL,
+            signal_context TEXT,
+            signal_overlap_count INTEGER DEFAULT 0,
+            side TEXT,
+            entry_price REAL NOT NULL,
+            target_price REAL,
+            shares REAL NOT NULL,
+            shares_requested REAL,
+            shares_filled REAL,
+            blocked_min_5_shares INTEGER DEFAULT 0,
+            cost REAL NOT NULL,
+            fee_total REAL DEFAULT 0,
+            status TEXT DEFAULT 'open',
+            exit_price REAL,
+            pnl REAL,
+            exit_reason TEXT,
+            exit_timestamp TEXT,
+            time_remaining_s REAL,
+            bid_at_exit REAL,
+            ask_at_exit REAL,
+            exit_spread REAL,
+            market_end_time TEXT,
+            market_start_time TEXT,
+            entry_bid REAL,
+            entry_ask REAL,
+            entry_spread REAL,
+            entry_depth_side_usd REAL,
+            opposite_depth_usd REAL,
+            depth_ratio REAL,
+            max_bid_seen REAL,
+            min_bid_seen REAL,
+            time_to_max_bid_s REAL,
+            time_to_min_bid_s REAL,
+            first_profit_time_s REAL,
+            scalp_hit INTEGER DEFAULT 0,
+            high_confidence_hit INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS paper_capital (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            total_capital REAL NOT NULL,
+            current_balance REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS runs (
+            run_id TEXT PRIMARY KEY,
+            started_at TEXT NOT NULL,
+            app_version TEXT,
+            strategy_version TEXT,
+            config_path TEXT,
+            config_hash TEXT,
+            dry_run INTEGER DEFAULT 1,
+            initial_mode TEXT,
+            default_order_size_usd REAL,
+            initial_paper_capital REAL
+        );
+        """
+    )
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(decisions)")}
+    if "coin" not in existing:
+        conn.execute("ALTER TABLE decisions ADD COLUMN coin TEXT NOT NULL DEFAULT 'btc'")
+    if "strategy_type" not in existing:
+        conn.execute("ALTER TABLE decisions ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'dual_leg'")
+    if "coin_velocity_30s" not in existing:
+        conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_30s REAL")
+    if "coin_velocity_60s" not in existing:
+        conn.execute("ALTER TABLE decisions ADD COLUMN coin_velocity_60s REAL")
+    decision_new_cols = {
+        "run_id": "TEXT",
+        "app_version": "TEXT",
+        "strategy_version": "TEXT",
+        "config_path": "TEXT",
+        "config_hash": "TEXT",
+        "mode": "TEXT",
+        "dry_run": "INTEGER DEFAULT 1",
+        "order_size_usd": "REAL",
+        "paper_capital_total": "REAL",
+        "signal_context": "TEXT",
+        "signal_overlap_count": "INTEGER DEFAULT 0",
+        "suppressed_reason": "TEXT",
+        "window_id": "TEXT",
+        "market_start_time": "TEXT",
+        "entry_price": "REAL",
+        "target_price": "REAL",
+        "expected_profit_per_share": "REAL",
+        "entry_bid": "REAL",
+        "entry_ask": "REAL",
+        "entry_spread": "REAL",
+        "entry_depth_side_usd": "REAL",
+        "opposite_depth_usd": "REAL",
+        "depth_ratio": "REAL",
+        "signal_score": "REAL",
+        "score_velocity": "REAL",
+        "score_entry": "REAL",
+        "score_depth": "REAL",
+        "score_spread": "REAL",
+        "score_time": "REAL",
+        "score_balance": "REAL",
+        "resignal_cooldown_s": "REAL",
+        "min_price_improvement": "REAL",
+        "last_signal_age_s": "REAL",
+    }
+    for col, col_type in decision_new_cols.items():
+        if col not in existing:
+            conn.execute(f"ALTER TABLE decisions ADD COLUMN {col} {col_type}")
+    trade_cols = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
+    trade_new_cols = {
+        "run_id": "TEXT",
+        "app_version": "TEXT",
+        "strategy_version": "TEXT",
+        "config_path": "TEXT",
+        "config_hash": "TEXT",
+        "mode": "TEXT",
+        "dry_run": "INTEGER DEFAULT 1",
+        "order_size_usd": "REAL",
+        "paper_capital_total": "REAL",
+        "window_id": "TEXT",
+        "shares_requested": "REAL",
+        "shares_filled": "REAL",
+        "blocked_min_5_shares": "INTEGER DEFAULT 0",
+    }
+    for col, col_type in trade_new_cols.items():
+        if col not in trade_cols:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {col_type}")
+    cap_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_capital)")}
+    if "reset_at" not in cap_cols:
+        conn.execute("ALTER TABLE paper_capital ADD COLUMN reset_at TEXT")
+    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
+    new_pt_cols = {
+        "decision_id": "INTEGER REFERENCES decisions(id)",
+        "run_id": "TEXT",
+        "app_version": "TEXT",
+        "strategy_version": "TEXT",
+        "config_path": "TEXT",
+        "config_hash": "TEXT",
+        "mode": "TEXT",
+        "dry_run": "INTEGER DEFAULT 1",
+        "order_size_usd": "REAL",
+        "paper_capital_total": "REAL",
+        "window_id": "TEXT",
+        "signal_context": "TEXT",
+        "signal_overlap_count": "INTEGER DEFAULT 0",
+        "exit_reason": "TEXT",
+        "exit_timestamp": "TEXT",
+        "time_remaining_s": "REAL",
+        "bid_at_exit": "REAL",
+        "market_end_time": "TEXT",
+        "market_start_time": "TEXT",
+        "entry_bid": "REAL",
+        "entry_ask": "REAL",
+        "entry_spread": "REAL",
+        "ask_at_exit": "REAL",
+        "exit_spread": "REAL",
+        "entry_depth_side_usd": "REAL",
+        "opposite_depth_usd": "REAL",
+        "depth_ratio": "REAL",
+        "shares_requested": "REAL",
+        "shares_filled": "REAL",
+        "blocked_min_5_shares": "INTEGER DEFAULT 0",
+        "max_bid_seen": "REAL",
+        "min_bid_seen": "REAL",
+        "time_to_max_bid_s": "REAL",
+        "time_to_min_bid_s": "REAL",
+        "first_profit_time_s": "REAL",
+        "scalp_hit": "INTEGER DEFAULT 0",
+        "high_confidence_hit": "INTEGER DEFAULT 0",
+        "signal_score": "REAL",
+        "score_velocity": "REAL",
+        "score_entry": "REAL",
+        "score_depth": "REAL",
+        "score_spread": "REAL",
+        "score_time": "REAL",
+        "score_balance": "REAL",
+        "target_delta": "REAL",
+        "hard_stop_delta": "REAL",
+        "mfe": "REAL",
+        "mae": "REAL",
+        "peak_net_pnl": "REAL",
+        "trough_net_pnl": "REAL",
+        "stall_exit_triggered": "INTEGER DEFAULT 0",
+    }
+    for col, col_type in new_pt_cols.items():
+        if col not in pt_cols:
+            conn.execute(f"ALTER TABLE paper_trades ADD COLUMN {col} {col_type}")
+    conn.commit()
+
+
+def ensure_indexes(conn) -> None:
+    """Create indexes after migrations have added any newly indexed columns."""
+    conn.executescript(INDEX_SCHEMA)

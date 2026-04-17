@@ -1,7 +1,7 @@
 """Shared data structures for the EDEC bot."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
@@ -113,9 +113,14 @@ class SwingPosition:
     first_token_id: str
     first_entry_price: float
     first_shares: float
+    requested_shares: float = 0.0
     first_paper_trade_id: Optional[int] = None
     first_buy_order_id: str = ""
-    opened_at: datetime = field(default_factory=datetime.utcnow)
+    sell_order_id: Optional[str] = None
+    hold_to_resolution: bool = False
+    pending_exit_reason: str = ""
+    pending_exit_price: float = 0.0
+    opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
@@ -130,7 +135,11 @@ class SingleLegPosition:
     sell_order_id: Optional[str] = None
     strategy_type: str = "single_leg"
     decision_id: int = 0
-    opened_at: datetime = field(default_factory=datetime.utcnow)
+    requested_shares: float = 0.0
+    hold_to_resolution: bool = False
+    pending_exit_reason: str = ""
+    pending_exit_price: float = 0.0
+    opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class DualOrderState(Enum):

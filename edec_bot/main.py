@@ -126,12 +126,13 @@ async def execution_loop(executor: ExecutionEngine, signal_queue: asyncio.Queue,
                 elif result.status in ("aborted", "partial_abort"):
                     await telegram.alert_abort(slug, result.error, result.abort_cost)
 
-            elif signal_data.strategy_type == "single_leg":
+            elif signal_data.strategy_type in ("single_leg", "lead_lag", "swing_leg"):
                 if result.status == "open":
                     await telegram.alert_single_leg(
                         slug, coin, signal_data.side,
                         signal_data.entry_price, signal_data.target_sell_price,
                         result.shares, signal_data.expected_profit,
+                        strategy_type=signal_data.strategy_type,
                     )
 
         except asyncio.CancelledError:
@@ -142,7 +143,7 @@ async def execution_loop(executor: ExecutionEngine, signal_queue: asyncio.Queue,
 
 async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
                                 aggregator: PriceAggregator, risk_manager: RiskManager,
-                                telegram: TelegramBot):
+                                executor: ExecutionEngine, telegram: TelegramBot):
     """Drain the expired-market queue and resolve outcomes."""
     resolved_markets: set[str] = set()
 
@@ -172,11 +173,12 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
                         btc_close=coin_close,
                     )
                     tracker.close_paper_trades(market.slug, outcome)
-                    await telegram.alert_resolution(market.slug, outcome, 0)
+                    live_pnl = executor.resolve_market_positions(market.slug, outcome)
+                    await telegram.alert_resolution(market.slug, outcome, live_pnl)
                     logger.info(f"Resolved {market.slug} → {outcome}")
                 else:
                     # Outcome not ready yet — put it back and retry next cycle
-                    scanner._expired_markets.append(market)
+                    scanner.queue_expired_market(market)
                     logger.debug(f"Outcome not ready for {market.slug}, will retry")
 
             if len(resolved_markets) > 1000:
@@ -234,12 +236,12 @@ async def archive_scheduler_loop(
 async def main():
     config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
     config = load_config(config_path)
-    started_at = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
+    setup_logging(config)
+    started_at = datetime.now(timezone.utc).isoformat()
     strategy_version = _strategy_version(Path(__file__).resolve().parent.parent / "STRATEGY.md")
     config_hash = _config_hash(config_path)
-    run_id = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ") + f"-{config_hash}"
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{config_hash}"
     logger.info(f"Using config: {config_path}")
-    setup_logging(config)
 
     logger.info("=" * 60)
     logger.info("EDEC Bot starting")
@@ -449,7 +451,7 @@ async def main():
             execution_loop(executor, signal_queue, tracker, telegram, config)
         ))
         tasks.append(asyncio.create_task(
-            outcome_tracker_loop(scanner, tracker, aggregator, risk_manager, telegram)
+            outcome_tracker_loop(scanner, tracker, aggregator, risk_manager, executor, telegram)
         ))
         tasks.append(asyncio.create_task(
             archive_scheduler_loop(
@@ -494,6 +496,14 @@ async def main():
             task.cancel()
 
         await asyncio.gather(*tasks, return_exceptions=True)
+        cleanup_results = await asyncio.gather(
+            executor.aclose(),
+            scanner.aclose(),
+            return_exceptions=True,
+        )
+        for result in cleanup_results:
+            if isinstance(result, Exception):
+                logger.warning(f"Network cleanup failed: {result}")
 
         await telegram.send_alert("🔴 EDEC Bot stopped")
         await telegram.stop()

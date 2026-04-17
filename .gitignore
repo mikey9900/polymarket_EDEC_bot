@@ -10,6 +10,8 @@ edec_bot/dropbox_sync/*
 !edec_bot/dropbox_sync/*.csv.gz
 !edec_bot/dropbox_sync/*.json
 __pycache__/
+.pytest_cache/
+pytest-cache-files-*/
 *.pyc
 *.pyo
 *.egg-info/

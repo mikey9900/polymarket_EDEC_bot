@@ -7,39 +7,28 @@ import logging
 import mimetypes
 import os
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from uuid import uuid4
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardMarkup, InputFile
 from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram.request import HTTPXRequest
 
 from bot.config import Config
+from bot import telegram_buttons
+from bot import telegram_dashboard as dashboard_ui
+from bot import telegram_exports as export_workflows
 from bot.tracker import DecisionTracker
 from bot.risk_manager import RiskManager
 from version import __version__
 
 logger = logging.getLogger(__name__)
 
-_OPTIONAL_FILE_KEYS = {"latest_signals", "latest_signals_csv_gz"}
-
-# Mode labels for display
-MODE_LABELS = {
-    "both": "🟢 ALL enabled strategies",
-    "dual": "🔵 DUAL-LEG only",
-    "single": "🟡 SINGLE-LEG only",
-    "lead": "🟠 LEAD-LAG only",
-    "swing": "🟣 SWING LEG only",
-    "off": "🔴 OFF",
-}
-
-
-BUDGET_OPTIONS = [1, 2, 5, 10, 15, 20]
-CAPITAL_OPTIONS = [5, 10, 20, 50, 100, 5000, 25000, 50000]
+MODE_LABELS = dashboard_ui.MODE_LABELS
 
 
 class TelegramBot:
@@ -120,6 +109,13 @@ class TelegramBot:
             httpx_kwargs={"trust_env": self._TELEGRAM_HTTP_TRUST_ENV},
         )
 
+    async def _run_blocking(self, func):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, func)
+
+    async def _reply_tracked(self, message, text: str, parse_mode: str | None = None):
+        self._track(await message.reply_text(text, parse_mode=parse_mode))
+
     async def start(self):
         """Initialize and start the Telegram bot."""
         if not self.config.telegram_bot_token:
@@ -186,112 +182,17 @@ class TelegramBot:
 
     @staticmethod
     def _format_usd(price: float) -> str:
-        """Format a USD price appropriately for its magnitude."""
-        if price >= 10000:
-            return f"${price:,.0f}"
-        elif price >= 1000:
-            return f"${price:,.0f}"
-        elif price >= 100:
-            return f"${price:.1f}"
-        elif price >= 10:
-            return f"${price:.2f}"
-        elif price >= 1:
-            return f"${price:.3f}"
-        else:
-            return f"${price:.4f}"
+        return dashboard_ui.format_usd(price)
 
     def _build_dashboard_text(self) -> str:
-        """Build the live dashboard message text with live prices and resolution history."""
-        now_str = datetime.utcnow().strftime("%H:%M:%S UTC")
-        is_active = self.strategy_engine.is_active if self.strategy_engine else False
-        paper = self.tracker.get_paper_stats() if self.tracker else {}
-
-        state_icon = "🟢" if is_active else "⏹"
-        state_label = "SCANNING" if is_active else "STOPPED"
-
-        pnl = paper.get("total_pnl", 0)
-        pnl_emoji = "📈" if pnl >= 0 else "📉"
-        wins = paper.get("wins", 0)
-        losses = paper.get("losses", 0)
-        open_pos = paper.get("open_positions", 0)
-        balance = paper.get("current_balance", 0)
-        total_cap = paper.get("total_capital", 0)
-        win_rate = f"{paper.get('win_rate', 0):.0f}%" if (wins + losses) > 0 else "—"
-
-        lines = [
-            f"📡 *EDEC Bot v{__version__}*  {state_icon} {state_label}  🧪 Dry  _{now_str}_",
-            "─────────────────────────────",
-        ]
-
-        # Per-coin row: COIN  $PRICE  ⬆️⬇️⬆️⬆️  UP/DN
-        if self.scanner or self.aggregator:
-            snapshot = self.scanner.get_status_snapshot() if self.scanner else {}
-            for coin in self.config.coins:
-                # Live USD price from aggregator
-                usd_str = "—"
-                if self.aggregator:
-                    agg = self.aggregator.get_aggregated_price(coin)
-                    if agg:
-                        usd_str = self._format_usd(agg.price)
-
-                # Last 4 resolution outcomes
-                history_icons = ""
-                if self.tracker:
-                    outcomes = self.tracker.get_coin_recent_outcomes(coin, limit=4)
-                    icons = []
-                    for o in outcomes:
-                        icons.append("✅" if o == "UP" else "❌")
-                    # Pad to 4 with dots if fewer than 4
-                    while len(icons) < 4:
-                        icons.insert(0, "·")
-                    history_icons = "".join(icons)
-
-                # Order book prices
-                data = snapshot.get(coin)
-                signal_icon = ""
-                if data:
-                    up_ask = data.get("up_ask", 0)
-                    dn_ask = data.get("down_ask", 0)
-                    book_str = f"↑{up_ask:.2f} ↓{dn_ask:.2f}"
-                    # Signal indicator (kept outside the box)
-                    cfg_dl = self.config.dual_leg
-                    cfg_sl = self.config.single_leg
-                    cfg_ll = self.config.lead_lag
-                    cfg_sw = self.config.swing_leg
-                    combined = up_ask + dn_ask
-                    if combined <= cfg_dl.max_combined_cost:
-                        signal_icon = " 🔵"
-                    elif up_ask <= cfg_sl.entry_max and dn_ask >= cfg_sl.opposite_min:
-                        signal_icon = " 🟡"
-                    elif dn_ask <= cfg_sl.entry_max and up_ask >= cfg_sl.opposite_min:
-                        signal_icon = " 🟡"
-                    elif cfg_ll.min_entry <= up_ask <= cfg_ll.max_entry:
-                        signal_icon = " 🟠"
-                    elif cfg_ll.min_entry <= dn_ask <= cfg_ll.max_entry:
-                        signal_icon = " 🟠"
-                    elif up_ask <= cfg_sw.first_leg_max or dn_ask <= cfg_sw.first_leg_max:
-                        signal_icon = " 🟣"
-                else:
-                    book_str = "no market"
-
-                coin_label = f"`{coin.upper():<4}`"
-                price_col = f"`{usd_str:>10}`"
-                history_col = history_icons if history_icons else "····"
-                lines.append(f"{coin_label} {price_col}  {history_col}  `{book_str}`{signal_icon}")
-
-        buys = paper.get("buys", 0)
-        sells = paper.get("sells", 0)
-        avg_buy = paper.get("avg_buy_price", 0)
-        avg_sell = paper.get("avg_sell_price", 0)
-
-        lines += [
-            "─────────────────────────────",
-            f"💰 `${balance:.2f}` / `${total_cap:.0f}`  {pnl_emoji} P&L: `${pnl:+.2f}`",
-            f"✅ {wins}  ❌ {losses}  📦 {open_pos}  🎯 {win_rate}",
-            f"🛒 Buys: {buys} avg `${avg_buy:.3f}`  💸 Sells: {sells} avg `${avg_sell:.3f}`",
-        ]
-
-        return "\n".join(lines)
+        return dashboard_ui.build_dashboard_text(
+            version=__version__,
+            config=self.config,
+            tracker=self.tracker,
+            scanner=self.scanner,
+            aggregator=self.aggregator,
+            strategy_engine=self.strategy_engine,
+        )
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
@@ -877,131 +778,27 @@ class TelegramBot:
         return False, f"{fallback_error}; {suffix}" if fallback_error else suffix
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
-        downloads = (sync_result or {}).get("downloads", {})
-        results: dict[str, Any] = {}
-        file_specs = [
-            ("latest_last24h_xlsx", "Dropbox latest 24h Excel export"),
-            ("latest_trades_csv_gz", "Dropbox latest compressed trades export"),
-            ("latest_signals_csv_gz", "Dropbox latest compressed signals export"),
-        ]
-        if include_index:
-            file_specs.append(("latest_index_json", "Dropbox latest index pointer"))
-
-        for key, caption in file_specs:
-            item = downloads.get(key, {})
-            path = item.get("path")
-            if item.get("ok") and path and os.path.exists(path):
-                ok, error = await self._send_file_path(path, caption)
-                results[key] = {"sent": ok, "error": error, "path": path}
-            elif key in _OPTIONAL_FILE_KEYS and item.get("optional_missing"):
-                results[key] = {
-                    "sent": False,
-                    "skipped": True,
-                    "optional_missing": True,
-                    "error": None,
-                    "path": path,
-                }
-            else:
-                results[key] = {"sent": False, "error": "File not available after Dropbox sync", "path": path}
-        return results
+        return await export_workflows.send_repo_sync_files(
+            sync_result,
+            self._send_file_path,
+            include_index=include_index,
+        )
 
     def _repo_sync_message_lines(self, result: dict, heading_ok: str, heading_fail: str) -> list[str]:
-        ok = bool((result or {}).get("ok"))
-        downloads = (result or {}).get("downloads", {})
-        lines = [
-            heading_ok if ok else heading_fail,
-            f"Output dir: `{result.get('output_dir', 'unknown')}`",
-            f"Expanded CSV: `{result.get('expanded_trades_csv') or 'none'}`",
-            f"Expanded Signals CSV: `{result.get('expanded_signals_csv') or 'none'}`",
-        ]
-        for key in ("latest_last24h_xlsx", "latest_trades_csv_gz", "latest_signals_csv_gz", "latest_index_json"):
-            d = downloads.get(key, {})
-            if key in _OPTIONAL_FILE_KEYS and d.get("optional_missing"):
-                status_txt = f"`{key}`: optional-missing"
-                lines.append(status_txt)
-                continue
-            status_txt = f"`{key}`: {'ok' if d.get('ok') else 'error'} (status={d.get('status')})"
-            if not d.get("ok") and d.get("remote_path"):
-                status_txt += f"\n  path: `{d.get('remote_path')}`"
-            friendly = ((d.get("error_details") or {}).get("friendly") or "").strip()
-            if not d.get("ok") and friendly:
-                status_txt += f"\n  fix: `{friendly}`"
-            err = d.get("error")
-            if not d.get("ok") and err:
-                err_compact = " ".join(str(err).split())
-                if len(err_compact) > 180:
-                    err_compact = f"{err_compact[:177]}..."
-                status_txt += f"\n  error: `{err_compact}`"
-            lines.append(status_txt)
-        return lines
+        return export_workflows.repo_sync_message_lines(result, heading_ok, heading_fail)
 
     @staticmethod
     def _file_send_summary(send_result: dict[str, Any], label_map: dict[str, str]) -> list[str]:
-        lines: list[str] = []
-        for key, label in label_map.items():
-            info = send_result.get(key, {}) if send_result else {}
-            if info.get("sent") or info.get("optional_missing"):
-                continue
-            error = " ".join(str(info.get("error") or "unknown error").split())
-            if len(error) > 180:
-                error = f"{error[:177]}..."
-            lines.append(f"{label}: `{error}`")
-        return lines
+        return export_workflows.file_send_summary(send_result, label_map)
 
     async def send_latest_archive_files(self, include_index: bool = True) -> dict[str, Any]:
-        if not self.archive_latest_fn:
-            return {"available": False, "files": {}, "sent_any": False}
-        paths = self.archive_latest_fn() or {}
-        files: dict[str, Any] = {}
-
-        def _path_set():
-            return (
-                paths.get("latest_excel"),
-                paths.get("latest_trades"),
-                paths.get("latest_signals"),
-                paths.get("latest_index"),
-            )
-
-        excel, trades, signals, index = _path_set()
-        if not ((excel and os.path.exists(excel)) or (trades and os.path.exists(trades)) or (signals and os.path.exists(signals))):
-            if self.archive_fn:
-                loop = asyncio.get_event_loop()
-                try:
-                    await loop.run_in_executor(None, self.archive_fn)
-                except Exception:
-                    pass
-                paths = self.archive_latest_fn() or {}
-                excel, trades, signals, index = _path_set()
-
-        if excel and os.path.exists(excel):
-            ok, error = await self._send_file_path(excel, "EDEC latest 24h Excel export")
-            files["latest_excel"] = {"sent": ok, "error": error, "path": excel}
-        else:
-            files["latest_excel"] = {"sent": False, "error": "Latest Excel file not found", "path": excel}
-        if trades and os.path.exists(trades):
-            ok, error = await self._send_file_path(trades, "EDEC latest compressed trades export (100)")
-            files["latest_trades"] = {"sent": ok, "error": error, "path": trades}
-        else:
-            files["latest_trades"] = {"sent": False, "error": "Latest trades file not found", "path": trades}
-        if signals and os.path.exists(signals):
-            ok, error = await self._send_file_path(signals, "EDEC latest compressed signals export (100)")
-            files["latest_signals"] = {"sent": ok, "error": error, "path": signals}
-        else:
-            files["latest_signals"] = {
-                "sent": False,
-                "skipped": True,
-                "optional_missing": True,
-                "error": None,
-                "path": signals,
-            }
-        if include_index and index and os.path.exists(index):
-            ok, error = await self._send_file_path(index, "EDEC latest index pointer (most-recent metadata)")
-            files["latest_index"] = {"sent": ok, "error": error, "path": index}
-        elif include_index:
-            files["latest_index"] = {"sent": False, "error": "Latest index file not found", "path": index}
-        sent_any = any(bool(info.get("sent")) for info in files.values())
-        available = any((info.get("path") and os.path.exists(info["path"])) for info in files.values() if info.get("path"))
-        return {"available": available, "files": files, "sent_any": sent_any}
+        return await export_workflows.send_latest_archive_files(
+            self.archive_latest_fn,
+            self.archive_fn,
+            send_file_path=self._send_file_path,
+            run_blocking=self._run_blocking,
+            include_index=include_index,
+        )
 
     async def alert_archive_complete(self, archive_result: dict):
         row_counts = archive_result.get("row_counts", {})
@@ -1015,74 +812,132 @@ class TelegramBot:
         await self.send_alert(msg)
 
     async def _build_archive_health_text(self) -> str:
-        if self.archive_health_fn:
-            loop = asyncio.get_event_loop()
-            try:
-                health = await loop.run_in_executor(None, self.archive_health_fn)
-            except Exception as e:
-                return f"Archive health check failed: {e}"
-        else:
-            if not self.archive_latest_fn:
-                return "Archive health unavailable (archive not configured)."
-            paths = self.archive_latest_fn() or {}
-            index_path = paths.get("latest_index")
-            if not index_path or not os.path.exists(index_path):
-                return "No archive index found yet. Run /latest_export or wait for the daily archive run."
-            try:
-                with open(index_path, "r", encoding="utf-8") as f:
-                    idx = json.load(f)
-            except Exception as e:
-                return f"Archive index unreadable: {e}"
-            health = {
-                "label": idx.get("label", "EDEC-BOT"),
-                "checked_at_utc": "unknown",
-                "index": idx,
-                "dropbox_live": None,
-            }
-
-        idx = health.get("index") or {}
-        rows = idx.get("row_counts", {})
-        label = health.get("label", idx.get("label", "EDEC-BOT"))
-        exported = idx.get("exported_at_utc", "unknown")
-        checked_at = health.get("checked_at_utc", "unknown")
-        upload_results = idx.get("dropbox_uploads") or {}
-
-        live = health.get("dropbox_live")
-        if live is None:
-            dropbox_line = "Dropbox live check: disabled"
-        else:
-            ok = bool(live.get("ok"))
-            files = live.get("files", {})
-            missing = [k for k, v in files.items() if not v.get("exists")]
-            auth_failed = [
-                k for k, v in files.items()
-                if ((v.get("error_details") or {}).get("reason") in ("expired_access_token", "invalid_access_token"))
-            ]
-            if ok:
-                dropbox_line = "Dropbox live check: ok"
-            elif auth_failed:
-                dropbox_line = "Dropbox live check: token expired/invalid"
-            else:
-                miss = ", ".join(missing) if missing else "unknown"
-                dropbox_line = f"Dropbox live check: missing ({miss})"
-
-        upload_failures = [k for k, v in upload_results.items() if not v.get("ok")]
-        upload_line = (
-            f"Last upload result: failed ({', '.join(upload_failures)})"
-            if upload_failures
-            else "Last upload result: ok/unknown"
+        return await export_workflows.build_archive_health_text(
+            self.archive_latest_fn,
+            self.archive_health_fn,
+            run_blocking=self._run_blocking,
         )
 
-        return (
-            f"Archive Health ({label})\n"
-            f"Last export (UTC): {exported}\n"
-            f"Live check (UTC): {checked_at}\n"
-            f"{dropbox_line}\n"
-            f"{upload_line}\n"
-            f"Rows 24h P/L/D: {rows.get('paper_trades_24h', 0)}/"
-            f"{rows.get('live_trades_24h', 0)}/{rows.get('decisions_24h', 0)}\n"
-            f"Recent trades rows: {rows.get('recent_trades_rows', 0)}"
+    async def _handle_export_request(
+        self,
+        reply_message,
+        *,
+        today_only: bool,
+        wait_text: str,
+        unavailable_text: str,
+        caption: str,
+    ) -> None:
+        if not self.export_fn:
+            await self._reply_tracked(reply_message, unavailable_text)
+            return
+        await self._reply_tracked(reply_message, wait_text)
+        try:
+            result = await export_workflows.send_spreadsheet_export(
+                self.export_fn,
+                today_only=today_only,
+                caption=caption,
+                send_file_path=self._send_file_path,
+                run_blocking=self._run_blocking,
+            )
+            if not result.get("sent"):
+                await self._reply_tracked(
+                    reply_message,
+                    f"Export error: {result.get('error') or 'unknown error'}",
+                )
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"Export error: {e}")
+
+    async def _handle_recent_export_request(self, reply_message) -> None:
+        if not self.export_recent_fn:
+            await self._reply_tracked(reply_message, "Recent export not available.")
+            return
+        await self._reply_tracked(
+            reply_message,
+            "⏳ Building Last 100 trades/signals CSVs (archive + Dropbox sync)...",
         )
+        try:
+            result = await export_workflows.send_recent_export_files(
+                self.export_recent_fn,
+                archive_fn=self.archive_fn,
+                archive_latest_fn=self.archive_latest_fn,
+                repo_sync_fn=self.repo_sync_fn,
+                send_file_path=self._send_file_path,
+                run_blocking=self._run_blocking,
+            )
+            failed_lines = self._file_send_summary(
+                result.get("files", {}),
+                {
+                    "trades": "Last 100 trades send failed",
+                    "signals": "Signals export send failed",
+                },
+            )
+            if failed_lines:
+                await self._reply_tracked(reply_message, "\n".join(failed_lines), parse_mode="Markdown")
+            if result.get("archive_error"):
+                await self._reply_tracked(
+                    reply_message,
+                    f"⚠️ Dropbox archive refresh failed; used fallback.\n`{result['archive_error']}`",
+                    parse_mode="Markdown",
+                )
+            if result.get("repo_sync_error"):
+                await self._reply_tracked(
+                    reply_message,
+                    f"⚠️ Dropbox repo sync failed; used local fallback.\n`{result['repo_sync_error']}`",
+                    parse_mode="Markdown",
+                )
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"Export error: {e}")
+
+    async def _handle_latest_export_request(self, reply_message, *, wait_text: str) -> None:
+        await self._reply_tracked(reply_message, wait_text)
+        try:
+            send_result = await self.send_latest_archive_files(include_index=True)
+            if not send_result.get("available"):
+                await self._reply_tracked(reply_message, "Latest archive files not found yet.")
+            failed_lines = self._file_send_summary(
+                send_result.get("files", {}),
+                {
+                    "latest_excel": "Latest Excel send failed",
+                    "latest_trades": "Latest trades send failed",
+                    "latest_signals": "Latest signals send failed",
+                    "latest_index": "Latest index send failed",
+                },
+            )
+            if failed_lines:
+                await self._reply_tracked(reply_message, "\n".join(failed_lines), parse_mode="Markdown")
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"Latest archive error: {e}")
+
+    async def _handle_repo_sync_request(
+        self,
+        reply_message,
+        *,
+        wait_text: str,
+        heading_ok: str,
+        heading_fail: str,
+    ) -> None:
+        if not self.repo_sync_fn:
+            await self._reply_tracked(reply_message, "Repo sync is not configured.")
+            return
+        await self._reply_tracked(reply_message, wait_text)
+        try:
+            result = await self._run_blocking(self.repo_sync_fn)
+            lines = self._repo_sync_message_lines(result, heading_ok, heading_fail)
+            await self._reply_tracked(reply_message, "\n".join(lines), parse_mode="Markdown")
+            send_result = await self.send_repo_sync_files(result, include_index=True)
+            failed_lines = self._file_send_summary(
+                send_result,
+                {
+                    "latest_last24h_xlsx": "Synced Excel send failed",
+                    "latest_trades_csv_gz": "Synced trades send failed",
+                    "latest_signals_csv_gz": "Synced signals send failed",
+                    "latest_index_json": "Synced index send failed",
+                },
+            )
+            if failed_lines:
+                await self._reply_tracked(reply_message, "\n".join(failed_lines), parse_mode="Markdown")
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"Repo sync error: {e}")
 
     def _track(self, msg) -> None:
         """Track a sent message for cleanup."""
@@ -1095,431 +950,30 @@ class TelegramBot:
             self._persist_ephemeral(message_id)
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
-        """Main control keyboard."""
         is_running = self.strategy_engine.is_active if self.strategy_engine else False
         order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
         is_dry = self.config.execution.dry_run
         _, capital_balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
-
-        return InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "\u23F8 Pause" if is_running else "\u25B6 Resume",
-                    callback_data="stop" if is_running else "start",
-                ),
-                InlineKeyboardButton("\U0001F6D1 Kill Switch", callback_data="kill"),
-            ],
-            [
-                InlineKeyboardButton(
-                    "\U0001F4CB Dry Run \u2705" if is_dry else "\U0001F4CB Dry Run",
-                    callback_data="noop",
-                ),
-                InlineKeyboardButton("\U0001F30A Wet Run \U0001F512", callback_data="wet_disabled"),
-            ],
-            [
-                InlineKeyboardButton("\U0001F4CA Stats", callback_data="stats"),
-                InlineKeyboardButton("\U0001F4C8 Status", callback_data="status"),
-            ],
-            [
-                InlineKeyboardButton("\U0001F50D Filters", callback_data="filters"),
-                InlineKeyboardButton("\u2139\uFE0F Commands", callback_data="help_panel"),
-            ],
-            [
-                InlineKeyboardButton(f"\U0001F3E6 Capital: ${capital_balance:,.2f}", callback_data="capital"),
-                InlineKeyboardButton(f"\U0001F4B0 Budget: ${order_size:.0f}", callback_data="budget"),
-            ],
-            [
-                InlineKeyboardButton("\U0001F504 Refresh", callback_data="refresh"),
-                InlineKeyboardButton("\U0001F5D1 Reset Stats", callback_data="reset_stats"),
-            ],
-            [
-                InlineKeyboardButton("\U0001F9F9 Clear Chat", callback_data="clear_chat"),
-                InlineKeyboardButton("\U0001F9ED Archive Health", callback_data="archive_health"),
-            ],
-            [
-                InlineKeyboardButton("\U0001F4CA Last 100 Trades", callback_data="export_recent"),
-                InlineKeyboardButton("\U0001F5C4 Latest Archive", callback_data="export_latest"),
-                InlineKeyboardButton("\U0001F4E5 Sync Dropbox", callback_data="sync_repo_latest"),
-            ],
-        ])
+        return dashboard_ui.build_main_keyboard(
+            is_running=is_running,
+            is_dry=is_dry,
+            order_size=order_size,
+            capital_balance=capital_balance,
+        )
 
     def _budget_keyboard(self) -> InlineKeyboardMarkup:
-        """Budget per-trade selection."""
         order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-        buttons = [
-            InlineKeyboardButton(
-                f"✅ ${amt}" if amt == order_size else f"${amt}",
-                callback_data=f"budget_{amt}",
-            )
-            for amt in BUDGET_OPTIONS
-        ]
-        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
-        rows.append([InlineKeyboardButton("« Back", callback_data="back")])
-        return InlineKeyboardMarkup(rows)
+        return dashboard_ui.build_budget_keyboard(order_size)
 
     def _capital_keyboard(self) -> InlineKeyboardMarkup:
-        """Paper capital selection."""
-        _, balance = self.tracker.get_paper_capital()
-        buttons = [
-            InlineKeyboardButton(f"${amt:,}", callback_data=f"capital_{amt}")
-            for amt in CAPITAL_OPTIONS
-        ]
-        rows = [buttons[i:i+3] for i in range(0, len(buttons), 3)]
-        rows.append([InlineKeyboardButton("« Back", callback_data="back")])
-        return InlineKeyboardMarkup(rows)
+        return dashboard_ui.build_capital_keyboard()
 
     def _set_dashboard_view(self, view: str) -> None:
         self._dashboard_view = view
 
     async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard button presses."""
-        query = update.callback_query
-
-        if not self._auth(update):
-            return
-
-        data = query.data
-
-        # --- No-op / disabled buttons ---
-        if data in ("noop", "wet_disabled"):
-            await query.answer(
-                "🌊 Wet Run coming soon — currently disabled for safety." if data == "wet_disabled"
-                else "Already in Dry Run mode.",
-                show_alert=True,
-            )
-            return
-
-        # --- Budget selection ---
-        if data.startswith("budget_"):
-            self._set_dashboard_view("main")
-            amt = float(data.split("_")[1])
-            await query.answer(f"✅ Budget set to ${amt:.0f}", show_alert=False)
-            if self.executor:
-                self.executor.set_order_size(amt)
-            await self._do_cleanup()
-            return
-
-        if data == "budget":
-            self._set_dashboard_view("budget")
-            await query.answer()
-            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-            await query.edit_message_text(
-                f"💰 *Budget Per Trade*\n"
-                f"Current: *${order_size:.0f}*\n"
-                f"_Amount spent per order leg._",
-                parse_mode="Markdown",
-                reply_markup=self._budget_keyboard(),
-            )
-            return
-
-        # --- Capital selection ---
-        if data.startswith("capital_"):
-            self._set_dashboard_view("main")
-            amt = float(data.split("_")[1])
-            await query.answer(f"✅ Capital set to ${amt:,.0f}", show_alert=False)
-            if self.tracker:
-                self.tracker.set_paper_capital(amt)
-            await self._do_cleanup()
-            return
-
-        if data == "capital":
-            self._set_dashboard_view("capital")
-            await query.answer()
-            _, balance = self.tracker.get_paper_capital() if self.tracker else (0, 0)
-            await query.edit_message_text(
-                f"🏦 *Paper Capital*\n"
-                f"Current balance: *${balance:,.2f}*\n\n"
-                f"_Select a new bankroll to start fresh:_",
-                parse_mode="Markdown",
-                reply_markup=self._capital_keyboard(),
-            )
-            return
-
-        if data == "back":
-            self._set_dashboard_view("main")
-            await query.answer()
-            await self._refresh_dashboard(force=True)
-            return
-
-        # --- Start / Stop / Kill ---
-        if data == "start":
-            self._set_dashboard_view("main")
-            await query.answer("▶️ Scanning started", show_alert=False)
-            if self.strategy_engine:
-                self.strategy_engine.start_scanning()
-            self.risk_manager.resume()
-            self.risk_manager.deactivate_kill_switch()
-            await self._do_cleanup()
-            return
-
-        if data == "stop":
-            self._set_dashboard_view("main")
-            await query.answer("⏸ Bot stopped", show_alert=False)
-            if self.strategy_engine:
-                self.strategy_engine.stop_scanning()
-            self.risk_manager.pause()
-            await self._do_cleanup()
-            return
-
-        if data == "kill":
-            self._set_dashboard_view("main")
-            await query.answer("🛑 Kill switch activated!", show_alert=True)
-            if self.strategy_engine:
-                self.strategy_engine.stop_scanning()
-            self.risk_manager.activate_kill_switch("Manual kill via Telegram")
-            await self._do_cleanup()
-            return
-
-        if data == "refresh":
-            self._set_dashboard_view("main")
-            await query.answer("Refreshing dashboard...", show_alert=False)
-            await self._refresh_dashboard(force=True)
-            return
-
-        if data == "clear_chat":
-            self._set_dashboard_view("main")
-            await query.answer("Clearing chat history...", show_alert=True)
-            stats = await self._clear_chat_history()
-            note = (
-                f"Chat clear done. Deleted {stats.get('deleted', 0)}/"
-                f"{stats.get('attempted', 0)} messages."
-            )
-            if stats.get("undeletable", 0):
-                note += " Some old messages may be undeletable due to Telegram limits."
-            self._track(await self._app.bot.send_message(chat_id=self.chat_id, text=note))
-            await self._repost_dashboard()
-            return
-
-        if data == "reset_stats":
-            self._set_dashboard_view("main")
-            await query.answer("🗑 Stats reset!", show_alert=False)
-            if self.tracker:
-                self.tracker.reset_paper_stats()
-            self.risk_manager.reset_daily_stats()
-            await self._do_cleanup()
-            return
-
-        # --- Info buttons (edit dashboard in-place — no new messages, no chat clutter) ---
-        _back_kb = InlineKeyboardMarkup([[InlineKeyboardButton("« Back", callback_data="back")]])
-        await query.answer()
-
-        if data == "stats":
-            self._set_dashboard_view("stats")
-            stats = self.tracker.get_daily_stats()
-            paper = self.tracker.get_paper_stats()
-            pnl_emoji = "📈" if paper["total_pnl"] >= 0 else "📉"
-            win_rate = f"{paper['win_rate']:.0f}%" if paper["total_trades"] > 0 else "—"
-            text = (
-                f"📊 *Today's Stats ({stats['date']})*\n"
-                f"Evaluations: {stats['total_evaluations']}\n"
-                f"Signals: {stats['signals']} | Skips: {stats['skips']}\n\n"
-                f"{pnl_emoji} *Paper Trading*\n"
-                f"Capital: ${paper['current_balance']:.2f} / ${paper['total_capital']:.2f}\n"
-                f"P&L: ${paper['total_pnl']:+.2f} | Win rate: {win_rate}\n"
-                f"Trades: {paper['total_trades']} ✅{paper['wins']} ❌{paper['losses']} 🔄{paper['open_positions']}"
-            )
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
-
-        elif data == "status":
-            self._set_dashboard_view("status")
-            status = self.risk_manager.get_status()
-            mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
-            order_size = self.executor.order_size_usd if self.executor else self.config.execution.order_size_usd
-            text = (
-                f"📈 *Status*\n"
-                f"State: {'🔴 KILLED' if status['kill_switch'] else '⏸ PAUSED' if status['paused'] else '🟢 RUNNING'}\n"
-                f"Mode: {MODE_LABELS.get(mode, mode)}\n"
-                f"Budget: ${order_size:.0f}/trade\n"
-                f"Daily P&L: ${status['daily_pnl']:+.2f} | Open: {status['open_positions']}"
-            )
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
-
-        elif data == "trades":
-            self._set_dashboard_view("trades")
-            trades = self.tracker.get_recent_trades(limit=5)
-            if not trades:
-                text = "No trades yet."
-            else:
-                lines = ["📋 *Recent Trades*\n"]
-                for t in trades:
-                    pnl = t.get("actual_profit")
-                    pnl_str = f"${pnl:+.4f}" if pnl is not None else "pending"
-                    emoji = "✅" if t["status"] == "success" else "❌"
-                    lines.append(f"{emoji} `{t['timestamp'][:16]}` {t['coin'].upper()} → {pnl_str}")
-                text = "\n".join(lines)
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
-
-        elif data in ("export_today", "export_all"):
-            self._set_dashboard_view("main")
-            # Export sends a document — run in thread pool so it never blocks the event loop
-            if not self.export_fn:
-                self._track(await query.message.reply_text("Export not available."))
-                await self._repost_dashboard()
-                return
-            wait_msg = await query.message.reply_text("⏳ Generating spreadsheet...")
-            self._track(wait_msg)
-            try:
-                loop = asyncio.get_event_loop()
-                today_only = (data == "export_today")
-                path = await loop.run_in_executor(None, lambda: self.export_fn(today_only=today_only))
-                with open(path, "rb") as f:
-                    self._track(await query.message.reply_document(
-                        document=f,
-                        filename=os.path.basename(path),
-                        caption="📊 EDEC Bot Export — Paper Trades, Decisions, Filter Performance",
-                    ))
-            except Exception as e:
-                self._track(await query.message.reply_text(f"Export error: {e}"))
-            await self._repost_dashboard()
-
-        elif data == "export_recent":
-            self._set_dashboard_view("main")
-            if not self.export_recent_fn:
-                self._track(await query.message.reply_text("Recent export not available."))
-                await self._repost_dashboard()
-                return
-            wait_msg = await query.message.reply_text("⏳ Building Last 100 trades/signals CSVs (archive + Dropbox sync)...")
-            self._track(wait_msg)
-            try:
-                loop = asyncio.get_event_loop()
-                trades_path = None
-                signals_path = None
-                archive_error = None
-                if self.archive_fn:
-                    try:
-                        archive_result = await loop.run_in_executor(None, self.archive_fn)
-                        latest_trades = archive_result.get("latest_trades")
-                        latest_signals = archive_result.get("latest_signals")
-                        if latest_trades and os.path.exists(latest_trades):
-                            trades_path = latest_trades
-                        if latest_signals and os.path.exists(latest_signals):
-                            signals_path = latest_signals
-                    except Exception as e:
-                        archive_error = str(e)
-                if self.repo_sync_fn:
-                    try:
-                        sync_result = await loop.run_in_executor(None, self.repo_sync_fn)
-                        synced_trades_csv = sync_result.get("expanded_trades_csv")
-                        synced_signals_csv = sync_result.get("expanded_signals_csv")
-                        if synced_trades_csv and os.path.exists(synced_trades_csv):
-                            trades_path = synced_trades_csv
-                        if synced_signals_csv and os.path.exists(synced_signals_csv):
-                            signals_path = synced_signals_csv
-                    except Exception:
-                        # Fall back to local DB export if Dropbox sync fails.
-                        pass
-                if not trades_path:
-                    trades_path = await loop.run_in_executor(None, self.export_recent_fn)
-                with open(trades_path, "rb") as f:
-                    self._track(await query.message.reply_document(
-                        document=f,
-                        filename=os.path.basename(trades_path),
-                        caption="📊 Last 100 Trades CSV — compact export for AI analysis",
-                    ))
-                if signals_path and os.path.exists(signals_path):
-                    with open(signals_path, "rb") as f:
-                        self._track(await query.message.reply_document(
-                            document=f,
-                            filename=os.path.basename(signals_path),
-                            caption="🧠 Last 100 Signals CSV — companion dataset for filter/skip analysis",
-                        ))
-                elif self.archive_latest_fn:
-                    latest_paths = self.archive_latest_fn() or {}
-                    latest_signals = latest_paths.get("latest_signals")
-                    if latest_signals and os.path.exists(latest_signals):
-                        with open(latest_signals, "rb") as f:
-                            self._track(await query.message.reply_document(
-                                document=f,
-                                filename=os.path.basename(latest_signals),
-                                caption="🧠 Latest Signals CSV.GZ — companion dataset for filter/skip analysis",
-                            ))
-                if archive_error:
-                    self._track(await query.message.reply_text(
-                        f"⚠️ Dropbox archive upload failed; used local fallback.\n`{archive_error}`",
-                        parse_mode="Markdown",
-                    ))
-            except Exception as e:
-                self._track(await query.message.reply_text(f"Export error: {e}"))
-            await self._repost_dashboard()
-
-
-        elif data == "export_latest":
-            self._set_dashboard_view("main")
-            wait_msg = await query.message.reply_text("⏳ Sending latest archive files...")
-            self._track(wait_msg)
-            try:
-                send_result = await self.send_latest_archive_files(include_index=True)
-                if not send_result.get("available"):
-                    self._track(await query.message.reply_text("Latest archive files not found yet."))
-                failed_lines = self._file_send_summary(
-                    send_result.get("files", {}),
-                    {
-                        "latest_excel": "Latest Excel send failed",
-                        "latest_trades": "Latest trades send failed",
-                        "latest_signals": "Latest signals send failed",
-                        "latest_index": "Latest index send failed",
-                    },
-                )
-                if failed_lines:
-                    self._track(await query.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
-            except Exception as e:
-                self._track(await query.message.reply_text(f"Latest archive error: {e}"))
-            await self._repost_dashboard()
-
-        elif data == "archive_health":
-            self._set_dashboard_view("archive_health")
-            text = await self._build_archive_health_text()
-            await query.edit_message_text(text, reply_markup=_back_kb)
-        elif data == "sync_repo_latest":
-            self._set_dashboard_view("main")
-            if not self.repo_sync_fn:
-                self._track(await query.message.reply_text("Repo sync is not configured."))
-                await self._repost_dashboard()
-                return
-            wait_msg = await query.message.reply_text("⏳ Syncing latest Dropbox files to local repo folder...")
-            self._track(wait_msg)
-            try:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(None, self.repo_sync_fn)
-                lines = self._repo_sync_message_lines(
-                    result,
-                    "✅ *Repo Sync Complete*",
-                    "⚠️ *Repo Sync Partial/Failed*",
-                )
-                self._track(await query.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-                send_result = await self.send_repo_sync_files(result, include_index=True)
-                failed_lines = self._file_send_summary(
-                    send_result,
-                    {
-                        "latest_last24h_xlsx": "Synced Excel send failed",
-                        "latest_trades_csv_gz": "Synced trades send failed",
-                        "latest_signals_csv_gz": "Synced signals send failed",
-                        "latest_index_json": "Synced index send failed",
-                    },
-                )
-                if failed_lines:
-                    self._track(await query.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
-            except Exception as e:
-                self._track(await query.message.reply_text(f"Repo sync error: {e}"))
-            await self._repost_dashboard()
-        elif data == "help_panel":
-            self._set_dashboard_view("help_panel")
-            text = self._commands_text()
-            await query.edit_message_text(text, reply_markup=_back_kb)
-        elif data == "filters":
-            self._set_dashboard_view("filters")
-            stats = self.tracker.get_filter_stats()
-            if not stats:
-                text = "No filter data yet."
-            else:
-                lines = ["🔍 *Filter Performance*\n"]
-                for s in stats:
-                    total = s["passed"] + s["failed"]
-                    fail_pct = (s["failed"] / total * 100) if total > 0 else 0
-                    bar = "🟩" * int((100 - fail_pct) / 20) + "🟥" * int(fail_pct / 20)
-                    lines.append(f"`{s['filter']:18s}` {bar} {fail_pct:.0f}% fail")
-                text = "\n".join(lines)
-            await query.edit_message_text(text, parse_mode="Markdown", reply_markup=_back_kb)
+        await telegram_buttons.handle_button(self, update, context)
 
     async def alert_dual_leg(self, market_slug: str, coin: str, up_price: float,
                              down_price: float, combined: float, profit: float,
@@ -1535,12 +989,20 @@ class TelegramBot:
 
     async def alert_single_leg(self, market_slug: str, coin: str, side: str,
                                entry_price: float, target_price: float,
-                               shares: float, profit: float, dry_run: bool = False):
-        prefix = "👀 DRY RUN" if dry_run else "✅ TRADE"
+                               shares: float, profit: float, dry_run: bool = False,
+                               strategy_type: str = "single_leg"):
+        prefix = "[DRY RUN]" if dry_run else "TRADE"
+        strategy_key = (strategy_type or "single_leg").lower()
+        strategy_label = {
+            "single_leg": "SINGLE-LEG",
+            "lead_lag": "LEAD-LAG",
+            "swing_leg": "SWING LEG",
+        }.get(strategy_key, strategy_key.replace("_", " ").upper())
+        exit_label = "EXIT" if strategy_key == "swing_leg" else "SELL"
         msg = (
-            f"{prefix} SINGLE-LEG `{coin.upper()}` → {side.upper()}\n"
+            f"{prefix} {strategy_label} `{coin.upper()}` -> {side.upper()}\n"
             f"`{market_slug}`\n"
-            f"BUY@{entry_price:.3f} → SELL@{target_price:.3f}\n"
+            f"BUY@{entry_price:.3f} -> {exit_label}@{target_price:.3f}\n"
             f"Shares: {shares:.0f} | Est. profit: ${profit:.4f}"
         )
         await self.send_alert(msg)
@@ -1595,61 +1057,13 @@ class TelegramBot:
         if not self._auth(update):
             return
         self._track_cmd(update)
-
-        status = self.risk_manager.get_status()
-        dry_run = "ON" if self.config.execution.dry_run else "OFF"
-        mode = self.strategy_engine.mode if self.strategy_engine else "unknown"
-        mode_label = MODE_LABELS.get(mode, mode)
-
-        bot_state = (
-            "🔴 KILLED" if status["kill_switch"]
-            else "⏸ PAUSED" if status["paused"]
-            else "🟢 RUNNING"
+        status_text = dashboard_ui.build_status_command_text(
+            config=self.config,
+            risk_status=self.risk_manager.get_status(),
+            scanner=self.scanner,
+            strategy_engine=self.strategy_engine,
         )
-
-        lines = [
-            f"*EDEC Bot Status*",
-            f"State: {bot_state} | Dry Run: {dry_run}",
-            f"Mode: {mode_label}",
-            f"Daily P&L: ${status['daily_pnl']:+.2f} | Session: ${status['session_pnl']:+.2f}",
-            f"Open Positions: {status['open_positions']} | Trades/hr: {status['trades_this_hour']}",
-            "",
-            "*Per-Coin Order Books*",
-        ]
-
-        # Per-coin book snapshot
-        if self.scanner:
-            snapshot = self.scanner.get_status_snapshot()
-            cfg_dual = self.config.dual_leg
-            cfg_single = self.config.single_leg
-
-            for coin in self.config.coins:
-                coin_data = snapshot.get(coin)
-                if coin_data:
-                    up_ask = coin_data["up_ask"]
-                    down_ask = coin_data["down_ask"]
-                    combined = up_ask + down_ask
-
-                    # Signal indicators
-                    indicators = []
-                    if up_ask <= cfg_dual.price_threshold and down_ask <= cfg_dual.price_threshold and combined <= cfg_dual.max_combined_cost:
-                        indicators.append("🔵 DUAL?")
-                    if up_ask <= cfg_single.entry_max and down_ask >= cfg_single.opposite_min:
-                        indicators.append("🟡 SL↑")
-                    elif down_ask <= cfg_single.entry_max and up_ask >= cfg_single.opposite_min:
-                        indicators.append("🟡 SL↓")
-
-                    signal_str = " " + " ".join(indicators) if indicators else ""
-                    lines.append(
-                        f"`{coin.upper():>4}`: UP@{up_ask:.3f} DN@{down_ask:.3f}{signal_str}"
-                    )
-                else:
-                    lines.append(f"`{coin.upper():>4}`: — no market —")
-        else:
-            lines.append("_(scanner not attached)_")
-
-        self._track_cmd(update)
-        self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
+        self._track(await update.message.reply_text(status_text, parse_mode="Markdown"))
 
     async def _cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
@@ -1686,6 +1100,8 @@ class TelegramBot:
         if not self._auth(update):
             return
         self._track_cmd(update)
+        if self.strategy_engine:
+            self.strategy_engine.start_scanning()
         self.risk_manager.resume()
         self.risk_manager.deactivate_kill_switch()
         self._track(await update.message.reply_text("▶️ Trading resumed"))
@@ -1694,6 +1110,8 @@ class TelegramBot:
         if not self._auth(update):
             return
         self._track_cmd(update)
+        if self.strategy_engine:
+            self.strategy_engine.stop_scanning()
         self.risk_manager.pause()
         self._track(await update.message.reply_text("⏸ Trading paused (monitoring continues)"))
 
@@ -1731,10 +1149,9 @@ class TelegramBot:
         self._track_cmd(update)
         args = context.args
         if args and args[0] == "7d":
-            from datetime import timedelta
             lines = ["*Last 7 Days*\n"]
             for i in range(7):
-                date = (datetime.utcnow() - timedelta(days=i)).strftime("%Y-%m-%d")
+                date = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
                 stats = self.tracker.get_daily_stats(date)
                 lines.append(
                     f"`{date}` | Evals: {stats['total_evaluations']} | "
@@ -1759,80 +1176,33 @@ class TelegramBot:
         if not self._auth(update):
             return
         self._track_cmd(update)
-        if not self.export_fn:
-            self._track(await update.message.reply_text("Export not available"))
-            return
-
-        wait_msg = await update.message.reply_text("⏳ Generating Excel export...")
-        self._track(wait_msg)
-        try:
-            today_only = context.args and context.args[0] == "today"
-            path = self.export_fn(today_only=today_only)
-            with open(path, "rb") as f:
-                self._track(await update.message.reply_document(
-                    document=f,
-                    filename=os.path.basename(path),
-                    caption="📊 EDEC Bot Decision Export",
-                ))
-        except Exception as e:
-            self._track(await update.message.reply_text(f"Export error: {e}"))
+        await self._handle_export_request(
+            update.message,
+            today_only=bool(context and context.args and context.args[0] == "today"),
+            wait_text="? Generating Excel export...",
+            unavailable_text="Export not available",
+            caption="?? EDEC Bot Decision Export",
+        )
 
     async def _cmd_latest_export(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
         self._track_cmd(update)
-        wait_msg = await update.message.reply_text("Sending latest archive files...")
-        self._track(wait_msg)
-        try:
-            send_result = await self.send_latest_archive_files(include_index=True)
-            if not send_result.get("available"):
-                self._track(await update.message.reply_text("Latest archive files not found yet."))
-            failed_lines = self._file_send_summary(
-                send_result.get("files", {}),
-                {
-                    "latest_excel": "Latest Excel send failed",
-                    "latest_trades": "Latest trades send failed",
-                    "latest_signals": "Latest signals send failed",
-                    "latest_index": "Latest index send failed",
-                },
-            )
-            if failed_lines:
-                self._track(await update.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
-        except Exception as e:
-            self._track(await update.message.reply_text(f"Latest archive error: {e}"))
+        await self._handle_latest_export_request(
+            update.message,
+            wait_text="Sending latest archive files...",
+        )
 
     async def _cmd_sync_repo_latest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
         self._track_cmd(update)
-        if not self.repo_sync_fn:
-            self._track(await update.message.reply_text("Repo sync is not configured."))
-            return
-        wait_msg = await update.message.reply_text("Syncing latest Dropbox files to local repo folder...")
-        self._track(wait_msg)
-        try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, self.repo_sync_fn)
-            lines = self._repo_sync_message_lines(
-                result,
-                "*Repo Sync Complete*",
-                "*Repo Sync Failed*",
-            )
-            self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
-            send_result = await self.send_repo_sync_files(result, include_index=True)
-            failed_lines = self._file_send_summary(
-                send_result,
-                {
-                    "latest_last24h_xlsx": "Synced Excel send failed",
-                    "latest_trades_csv_gz": "Synced trades send failed",
-                    "latest_signals_csv_gz": "Synced signals send failed",
-                    "latest_index_json": "Synced index send failed",
-                },
-            )
-            if failed_lines:
-                self._track(await update.message.reply_text("\n".join(failed_lines), parse_mode="Markdown"))
-        except Exception as e:
-            self._track(await update.message.reply_text(f"Repo sync error: {e}"))
+        await self._handle_repo_sync_request(
+            update.message,
+            wait_text="Syncing latest Dropbox files to local repo folder...",
+            heading_ok="*Repo Sync Complete*",
+            heading_fail="*Repo Sync Failed*",
+        )
 
     async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):

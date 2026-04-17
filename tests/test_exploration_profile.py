@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "edec_bot"))
 from bot.archive import export_recent_signals_csv_gz, export_recent_trades_csv_gz
 from bot.config import load_config
 from bot.execution import ExecutionEngine
-from bot.models import Decision, FilterResult
+from bot.models import Decision, FilterResult, MarketInfo
 from bot.runtime_defaults import default_strategy_mode
 from bot.strategy import StrategyEngine
 from bot.export import export_to_excel
@@ -37,6 +37,15 @@ class _DummyTracker:
 
     def suppress_decision(self, *args, **kwargs):
         return None
+
+
+class _CapturingTracker(_DummyTracker):
+    def __init__(self):
+        self.decisions = []
+
+    def log_decision(self, decision):
+        self.decisions.append(decision)
+        return len(self.decisions)
 
 
 class ExplorationProfileTests(unittest.TestCase):
@@ -63,10 +72,12 @@ class ExplorationProfileTests(unittest.TestCase):
         cfg = self.config
         self.assertEqual(cfg.single_leg.resignal_cooldown_s, 2.0)
         self.assertEqual(cfg.single_leg.min_price_improvement, 0.0)
+        self.assertIn("hype", cfg.single_leg.disabled_coins)
         self.assertEqual(cfg.lead_lag.profit_take_delta, 0.06)
         self.assertEqual(cfg.lead_lag.profit_take_cap, 0.68)
         self.assertEqual(cfg.lead_lag.stall_window_s, 30)
         self.assertEqual(cfg.lead_lag.hard_stop_loss_pct, 0.10)
+        self.assertIn("hype", cfg.lead_lag.disabled_coins)
         self.assertIn("xrp", cfg.lead_lag.coin_overrides)
         self.assertEqual(cfg.lead_lag.coin_overrides["xrp"].min_velocity_30s, 0.18)
         self.assertEqual(cfg.lead_lag.coin_overrides["xrp"].max_entry, 0.60)
@@ -82,6 +93,13 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertEqual(btc["min_velocity_30s"], 0.08)
         self.assertEqual(btc["max_entry"], 0.66)
         self.assertEqual(btc["min_book_depth_usd"], 6.0)
+
+    def test_strategy_and_execution_share_lead_lag_params(self):
+        strategy_engine = StrategyEngine(self.config, aggregator=None, scanner=None, tracker=_DummyTracker())
+        execution_engine = ExecutionEngine(self.config, clob_client=None, risk_manager=None, tracker=_DummyTracker())
+        self.addCleanup(lambda: __import__("asyncio").run(execution_engine._http.aclose()))
+        self.assertEqual(strategy_engine._lead_lag_params("xrp"), execution_engine._lead_lag_params("xrp"))
+        self.assertEqual(strategy_engine._lead_lag_params("btc"), execution_engine._lead_lag_params("btc"))
 
     def test_lead_lag_target_price_uses_delta_and_cap(self):
         engine = StrategyEngine(self.config, aggregator=None, scanner=None, tracker=_DummyTracker())
@@ -121,6 +139,30 @@ class ExplorationProfileTests(unittest.TestCase):
             fee_rate=0.072,
         )
         self.assertEqual(exit_reason, "loss_cut")
+
+    def test_single_leg_hype_is_explicitly_disabled(self):
+        tracker = _CapturingTracker()
+        engine = StrategyEngine(self.config, aggregator=None, scanner=None, tracker=tracker)
+        now = datetime.now(timezone.utc)
+        market = MarketInfo(
+            event_id="evt-hype",
+            condition_id="cond-hype",
+            slug="hype-updown-5m-test",
+            coin="hype",
+            up_token_id="up-token",
+            down_token_id="down-token",
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(minutes=4),
+            fee_rate=0.02,
+            tick_size="0.01",
+            neg_risk=False,
+        )
+
+        signal = engine._evaluate_single_leg("hype", market, None, None, None)
+
+        self.assertIsNone(signal)
+        self.assertEqual(tracker.decisions[-1].action, "SKIP")
+        self.assertIn("Single-leg disabled for HYPE", tracker.decisions[-1].reason)
 
     def test_archive_exports_both_compact_csvs_with_new_fields(self):
         scratch_root = ROOT / ".tmp_testdata" / "archive_case"

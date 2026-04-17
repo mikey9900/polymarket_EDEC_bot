@@ -1,16 +1,21 @@
 """Export SQLite data to color-coded Excel workbook with full analysis sheets."""
 
-import csv
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from bot import export_recent
+
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 # ---------------------------------------------------------------------------
 # Color palette
@@ -70,7 +75,7 @@ def export_to_excel(db_path: str = "data/decisions.db",
     conn.row_factory = sqlite3.Row
 
     wb = Workbook()
-    date_str = datetime.utcnow().strftime("%Y-%m-%d") if today_only else None
+    date_str = _utc_now().strftime("%Y-%m-%d") if today_only else None
 
     _build_paper_trades_sheet(wb, conn, date_str)
     _build_run_metadata_sheet(wb, conn)
@@ -92,7 +97,7 @@ def export_to_excel(db_path: str = "data/decisions.db",
         del wb["Sheet"]
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    ts = _utc_now().strftime("%Y%m%d_%H%M%S")
     filepath = str(Path(output_dir) / f"edec_export_{ts}.xlsx")
     wb.save(filepath)
     conn.close()
@@ -104,35 +109,7 @@ def export_recent_to_excel(db_path: str = "data/decisions.db",
                            output_dir: str = "data",
                            limit: int = 50) -> str:
     """Generate a compact CSV export with the last N trades for AI analysis."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-
-    wb = Workbook()
-    _build_recent_trades_sheet(wb, conn, limit)
-
-    if "Sheet" in wb.sheetnames and len(wb.sheetnames) > 1:
-        del wb["Sheet"]
-
-    ws = wb[f"Last {limit} Trades"]
-    rows = [list(r) for r in ws.iter_rows(values_only=True)]
-
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filepath = str(Path(output_dir) / f"edec_recent{limit}_{ts}.csv")
-    latest = str(Path(output_dir) / f"edec_recent{limit}_latest.csv")
-
-    with open(filepath, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerows(rows)
-
-    # Stable latest snapshot path for automation pipelines
-    with open(latest, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerows(rows)
-
-    conn.close()
-    logger.info(f"Recent {limit} trades CSV export saved: {filepath} (latest={latest})")
-    return filepath
+    return export_recent.export_recent_to_csv(db_path=db_path, output_dir=output_dir, limit=limit)
 
 
 # ---------------------------------------------------------------------------
@@ -330,171 +307,19 @@ def _key_lesson(status: str, reason: str, side: str, vel_30s: float | None) -> s
 def _build_recent_trades_sheet(wb, conn, limit: int):
     """Single compact sheet: last N trades with all key fields for AI analysis."""
     ws = wb.create_sheet(f"Last {limit} Trades")
-    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
-    decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
-
-    headers = [
-        "id", "d", "t", "c", "st", "sd",
-        "rid", "av", "sv", "ch", "md", "dr", "os", "cap", "wid", "ctx", "ov",
-        "ep", "tp", "eb", "ea", "es", "sh", "srq", "sfl", "b5", "cs", "fee",
-        "te", "ts", "v30", "v60", "du", "dd", "eds", "ods", "drt", "ma",
-        "sg", "sgv", "sge", "sgd", "sgs", "sgt", "sgb", "td", "hsd",
-        "fp", "ff", "why",
-        "er", "xp", "xb", "xa", "xs", "tx", "hd",
-        "pnl", "pp", "maxb", "minb", "ttmax", "ttmin", "tfp", "sc", "hc",
-        "mfe", "mae", "pnp", "tnp", "sx",
-        "status",
-    ]
+    headers = export_recent.HEADERS
     ws.append(headers)
     _style_header(ws, len(headers))
     _freeze(ws)
 
-    rows = conn.execute(f"""
-        SELECT
-            pt.id,
-            pt.timestamp,
-            pt.coin,
-            pt.strategy_type,
-            pt.side,
-            pt.run_id,
-            pt.app_version,
-            pt.strategy_version,
-            pt.config_hash,
-            pt.mode,
-            pt.dry_run,
-            pt.order_size_usd,
-            pt.paper_capital_total,
-            pt.window_id,
-            pt.signal_context,
-            pt.signal_overlap_count,
-            pt.entry_price,
-            pt.target_price,
-            pt.entry_bid,
-            pt.entry_ask,
-            pt.entry_spread,
-            pt.shares,
-            pt.shares_requested,
-            pt.shares_filled,
-            pt.blocked_min_5_shares,
-            pt.cost,
-            pt.fee_total,
-            pt.market_start_time,
-            pt.exit_reason,
-            pt.exit_price,
-            pt.bid_at_exit,
-            pt.ask_at_exit,
-            pt.exit_spread,
-            pt.pnl,
-            pt.exit_timestamp,
-            pt.time_remaining_s,
-            pt.max_bid_seen,
-            pt.min_bid_seen,
-            pt.time_to_max_bid_s,
-            pt.time_to_min_bid_s,
-            pt.first_profit_time_s,
-            pt.scalp_hit,
-            pt.high_confidence_hit,
-            pt.status,
-            pt.entry_depth_side_usd,
-            pt.opposite_depth_usd,
-            pt.depth_ratio,
-            pt.signal_score,
-            pt.score_velocity,
-            pt.score_entry,
-            pt.score_depth,
-            pt.score_spread,
-            pt.score_time,
-            pt.score_balance,
-            pt.target_delta,
-            pt.hard_stop_delta,
-            d.filter_passed,
-            d.filter_failed,
-            d.coin_velocity_30s,
-            d.coin_velocity_60s,
-            d.up_depth_usd,
-            d.down_depth_usd,
-            d.time_remaining_s AS entry_remaining,
-            d.reason           AS decision_reason,
-            pt.mfe,
-            pt.mae,
-            pt.peak_net_pnl,
-            pt.trough_net_pnl,
-            pt.stall_exit_triggered
-        FROM paper_trades pt
-        LEFT JOIN (
-            SELECT market_slug, strategy_type, MAX(id) AS best_id
-            FROM decisions
-            WHERE action != 'SKIP'
-            GROUP BY market_slug, strategy_type
-        ) top_d ON top_d.market_slug   = pt.market_slug
-               AND top_d.strategy_type = pt.strategy_type
-        LEFT JOIN decisions d ON d.id = {decision_join_id}
-        ORDER BY pt.id DESC
-        LIMIT ?
-    """, (limit,)).fetchall()
+    rows = export_recent.fetch_recent_trade_rows(conn, limit)
 
     num_cols = len(headers)
     for ri, r in enumerate(rows, start=2):
-        def _as_float(value):
-            if value is None or value == "":
-                return None
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                return None
-
-        ts_str = str(r[1] or "")
-        date_part = ts_str[:10] if len(ts_str) >= 10 else ts_str
-        time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
-
-        hold_s = None
-        if r[43] and r[1]:
-            try:
-                t_in  = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                t_out = datetime.fromisoformat(str(r[43]).replace("Z", "+00:00"))
-                hold_s = round((t_out - t_in).total_seconds(), 1)
-            except Exception:
-                pass
-
-        pnl_pct = None
-        if r[25] and r[25] > 0 and r[42] is not None:
-            pnl_pct = round(r[42] / r[25] * 100, 2)
-
-        side = str(r[4] or "").lower()
-        vel30 = _as_float(r[55])
-        vel60 = _as_float(r[56])
-        up_depth = _as_float(r[57])
-        down_depth = _as_float(r[58])
-        if vel30 is None or side not in ("up", "down"):
-            momentum_align = None
-        else:
-            aligned = (side == "up" and vel30 > 0) or (side == "down" and vel30 < 0)
-            momentum_align = "aligned" if aligned else "counter"
-
-        out = [
-            r[0], date_part, time_part, r[2], r[3], r[4],
-            r[5], r[6], r[7], r[8], r[9], int(bool(r[10])) if r[10] is not None else None,
-            r[11], r[12], r[13], r[14], r[15],
-            r[16], r[17], r[18], r[19], r[20], r[21], r[22], r[23], r[24], r[25], r[26],
-            r[59], r[27],
-            round(vel30, 4) if vel30 is not None else None,
-            round(vel60, 4) if vel60 is not None else None,
-            round(up_depth, 2) if up_depth is not None else None,
-            round(down_depth, 2) if down_depth is not None else None,
-            r[44], r[45], r[46], momentum_align,
-            r[47], r[48], r[49], r[50], r[51], r[52], r[53], r[54],
-            r[60], r[61], r[62],
-            r[28], r[29], r[30], r[31], r[32], r[33], hold_s,
-            r[42], pnl_pct, r[34], r[35], r[36], r[37], r[38],
-            int(bool(r[39])) if r[39] is not None else None,
-            int(bool(r[40])) if r[40] is not None else None,
-            r[63], r[64], r[65], r[66], int(bool(r[67])) if r[67] is not None else None,
-            r[41],
-        ]
-        ws.append(out)
+        ws.append(export_recent.format_recent_trade_row(r))
 
         # Row color by status
-        status_str = str(r[41] or "").lower()
+        status_str = str(r[43] or "").lower()
         if status_str == "closed_win":
             row_fill = WIN_FILL
         elif status_str == "closed_loss":
@@ -517,10 +342,10 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
     # Summary block below data
     total_rows = len(rows)
     if total_rows:
-        wins   = sum(1 for r in rows if str(r[41] or "").lower() == "closed_win")
-        losses = sum(1 for r in rows if str(r[41] or "").lower() == "closed_loss")
-        open_p = sum(1 for r in rows if str(r[41] or "").lower() == "open")
-        total_pnl = sum(r[42] for r in rows if r[42] is not None)
+        wins = sum(1 for r in rows if str(r[43] or "").lower() == "closed_win")
+        losses = sum(1 for r in rows if str(r[43] or "").lower() == "closed_loss")
+        open_p = sum(1 for r in rows if str(r[43] or "").lower() == "open")
+        total_pnl = sum(r[33] for r in rows if r[33] is not None)
         _summary(ws, total_rows + 3, [
             ("Trades shown", total_rows),
             ("Wins", wins),

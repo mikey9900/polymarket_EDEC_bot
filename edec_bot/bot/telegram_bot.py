@@ -641,10 +641,11 @@ class TelegramBot:
                 url = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
                 if url:
                     is_link = url.startswith("https://")
+                    display = url if is_link else url.replace("//", "/")
                     text = (
-                        f"📊 Excel export on Dropbox:\n{url}"
+                        f"📊 Excel export on Dropbox:\n{display}"
                         if is_link
-                        else f"📊 Excel saved to Dropbox (enable `sharing.write` scope for a clickable link):\n`{url}`"
+                        else f"📊 Excel saved to Dropbox (enable `sharing.write` scope for a clickable link):\n`{display}`"
                     )
                     sent_msg = await self._app.bot.send_message(
                         chat_id=self.chat_id, text=text, parse_mode="Markdown",

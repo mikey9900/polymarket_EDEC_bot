@@ -1207,7 +1207,7 @@ def _normalize_dropbox_root(dropbox_root: str | None) -> str:
     while "//" in root:
         root = root.replace("//", "/")
     normalized = root.rstrip("/")
-    return normalized or "/"
+    return normalized  # "" means Dropbox app root; callers format as f"{root}/subpath/..."
 
 
 def _dropbox_latest_remote_candidates(

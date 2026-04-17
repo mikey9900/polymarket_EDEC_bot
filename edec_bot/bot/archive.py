@@ -1004,15 +1004,21 @@ def _dropbox_create_or_get_shared_link(dropbox_path: str, dropbox_auth: dict[str
         return None
 
 
-def get_excel_dropbox_link(
+def get_or_upload_excel_link(
+    local_path: str,
     output_dir: str,
     label: str,
+    dropbox_root: str = "/",
     dropbox_token: str | None = None,
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
     dropbox_app_secret: str | None = None,
 ) -> str | None:
-    """Return a Dropbox shared link for the latest Excel export, or None if unavailable."""
+    """Upload local_path to Dropbox if needed, then return a shared link URL.
+
+    Checks the archive index first — if the file is already on Dropbox (matched
+    by basename), skips the upload and goes straight to the shared link.
+    """
     try:
         dropbox_auth = _build_dropbox_auth(
             dropbox_token=dropbox_token,
@@ -1022,18 +1028,35 @@ def get_excel_dropbox_link(
         )
         if not dropbox_auth:
             return None
+
+        local_name = Path(local_path).name
+        dbx_path: str | None = None
+
+        # Check the archive index for a known Dropbox path for this file
         label_s = _safe_label(label)
         index_path = Path(output_dir) / f"{label_s}_latest_index.json"
-        if not index_path.exists():
-            return None
-        with open(index_path, "r", encoding="utf-8") as fh:
-            idx = json.load(fh)
-        dbx_files = idx.get("dropbox_files") or {}
-        dbx_path = dbx_files.get("latest_last24h_xlsx")
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as fh:
+                    idx = json.load(fh)
+                for path_val in (idx.get("dropbox_files") or {}).values():
+                    if path_val and Path(path_val).name == local_name:
+                        dbx_path = path_val
+                        break
+            except Exception:
+                pass
+
         if not dbx_path:
-            return None
+            root = _normalize_dropbox_root(dropbox_root)
+            dbx_path = f"{root}/latest/{local_name}"
+            result = _dropbox_upload_file(local_path, dbx_path, dropbox_auth)
+            if not result.get("ok"):
+                logger.warning("Dropbox upload failed for %s: %s", local_path, result.get("error"))
+                return None
+
         return _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
-    except Exception:
+    except Exception as exc:
+        logger.warning("get_or_upload_excel_link failed for %s: %s", local_path, exc)
         return None
 
 

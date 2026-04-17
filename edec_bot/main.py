@@ -14,7 +14,7 @@ from pathlib import Path
 from bot.config import load_config
 from bot.archive import (
     archive_health_snapshot,
-    get_excel_dropbox_link,
+    get_or_upload_excel_link,
     latest_archive_paths,
     run_daily_archive,
     sync_dropbox_latest_to_local,
@@ -396,10 +396,12 @@ async def main():
             expand_trades_csv=True,
         )
 
-    def do_excel_dropbox_link() -> str | None:
-        return get_excel_dropbox_link(
+    def do_excel_dropbox_link(local_path: str) -> str | None:
+        return get_or_upload_excel_link(
+            local_path=local_path,
             output_dir=archive_output_dir,
             label=archive_label,
+            dropbox_root=str(dropbox_root),
             dropbox_token=dropbox_token,
             dropbox_refresh_token=dropbox_refresh_token,
             dropbox_app_key=dropbox_app_key,

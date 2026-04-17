@@ -634,6 +634,22 @@ class TelegramBot:
             return False, "File does not exist"
         filename = os.path.basename(path)
         is_excel = path.lower().endswith(".xlsx")
+
+        if is_excel and self.excel_dropbox_link_fn:
+            try:
+                loop = asyncio.get_running_loop()
+                url = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
+                if url:
+                    sent_msg = await self._app.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=f"📊 Excel export on Dropbox:\n{url}",
+                    )
+                    self._track(sent_msg)
+                    logger.info("Sent Dropbox link for Excel %s: %s", path, url)
+                    return True, None
+            except Exception as exc:
+                logger.warning("Dropbox Excel link failed, falling through to Telegram upload: %s", exc)
+
         use_in_memory_upload = is_excel or os.path.getsize(path) <= 1024 * 1024
         attempts = max(1, self._SEND_FILE_ATTEMPTS)
         for attempt in range(1, attempts + 1):
@@ -819,24 +835,7 @@ class TelegramBot:
 
         suffix_detail = error or "Unknown Telegram send failure"
         suffix = f"raw zip fallback failed: {suffix_detail}"
-        fallback_error = f"{fallback_error}; {suffix}" if fallback_error else suffix
-
-        if self.excel_dropbox_link_fn and self._app and self.chat_id:
-            try:
-                loop = asyncio.get_running_loop()
-                url = await loop.run_in_executor(None, self.excel_dropbox_link_fn)
-                if url:
-                    sent_msg = await self._app.bot.send_message(
-                        chat_id=self.chat_id,
-                        text=f"⚠️ Excel upload failed — available on Dropbox:\n{url}",
-                    )
-                    self._track(sent_msg)
-                    logger.info("Sent Dropbox fallback link for Excel %s: %s", path, url)
-                    return True, None
-            except Exception as link_exc:
-                logger.warning("Dropbox Excel link fallback failed: %s", link_exc)
-
-        return False, fallback_error
+        return False, f"{fallback_error}; {suffix}" if fallback_error else suffix
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         return await export_workflows.send_repo_sync_files(

@@ -952,6 +952,91 @@ def _dropbox_download_file(dropbox_path: str, dropbox_auth: dict[str, Any], loca
         }
 
 
+def _dropbox_create_or_get_shared_link(dropbox_path: str, dropbox_auth: dict[str, Any]) -> str | None:
+    """Return a Dropbox shared link URL for dropbox_path, creating one if needed. Returns None on failure."""
+    try:
+        token = _resolve_dropbox_access_token(dropbox_auth)
+    except Exception:
+        return None
+
+    create_req = request.Request(
+        url="https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        data=json.dumps({"path": dropbox_path}).encode("utf-8"),
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with request.urlopen(create_req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("url")
+    except urlerror.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        if e.code != 409:
+            return None
+        # A link already exists — extract URL from the error metadata
+        try:
+            payload = json.loads(body)
+            err_obj = payload.get("error") or {}
+            err_meta = err_obj.get("metadata") if isinstance(err_obj, dict) else None
+            if isinstance(err_meta, dict) and err_meta.get("url"):
+                return err_meta["url"]
+        except Exception:
+            pass
+        # Fall back to listing existing shared links
+        list_req = request.Request(
+            url="https://api.dropboxapi.com/2/sharing/list_shared_links",
+            data=json.dumps({"path": dropbox_path, "direct_only": True}).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(list_req, timeout=20) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                links = result.get("links") or []
+                return links[0].get("url") if links else None
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def get_excel_dropbox_link(
+    output_dir: str,
+    label: str,
+    dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
+) -> str | None:
+    """Return a Dropbox shared link for the latest Excel export, or None if unavailable."""
+    try:
+        dropbox_auth = _build_dropbox_auth(
+            dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
+        )
+        if not dropbox_auth:
+            return None
+        label_s = _safe_label(label)
+        index_path = Path(output_dir) / f"{label_s}_latest_index.json"
+        if not index_path.exists():
+            return None
+        with open(index_path, "r", encoding="utf-8") as fh:
+            idx = json.load(fh)
+        dbx_files = idx.get("dropbox_files") or {}
+        dbx_path = dbx_files.get("latest_last24h_xlsx")
+        if not dbx_path:
+            return None
+        return _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
+    except Exception:
+        return None
+
+
 def sync_dropbox_latest_to_local(
     dropbox_token: str | None = None,
     dropbox_refresh_token: str | None = None,

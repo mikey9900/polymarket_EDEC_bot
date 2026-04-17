@@ -14,6 +14,7 @@ from pathlib import Path
 from bot.config import load_config
 from bot.archive import (
     archive_health_snapshot,
+    get_excel_dropbox_link,
     latest_archive_paths,
     run_daily_archive,
     sync_dropbox_latest_to_local,
@@ -395,6 +396,16 @@ async def main():
             expand_trades_csv=True,
         )
 
+    def do_excel_dropbox_link() -> str | None:
+        return get_excel_dropbox_link(
+            output_dir=archive_output_dir,
+            label=archive_label,
+            dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
+        )
+
     telegram = TelegramBot(
         config, tracker, risk_manager,
         export_fn=do_export,
@@ -407,6 +418,7 @@ async def main():
         archive_latest_fn=do_archive_latest,
         archive_health_fn=do_archive_health,
         repo_sync_fn=do_repo_sync_latest,
+        excel_dropbox_link_fn=do_excel_dropbox_link,
     )
     dashboard_state = None
     live_api = None

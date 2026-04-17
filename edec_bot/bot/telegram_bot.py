@@ -51,7 +51,7 @@ class TelegramBot:
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
                  archive_fn=None, archive_latest_fn=None, archive_health_fn=None,
-                 repo_sync_fn=None):
+                 repo_sync_fn=None, excel_dropbox_link_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -65,6 +65,7 @@ class TelegramBot:
         self.archive_latest_fn = archive_latest_fn
         self.archive_health_fn = archive_health_fn
         self.repo_sync_fn = repo_sync_fn
+        self.excel_dropbox_link_fn = excel_dropbox_link_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -818,7 +819,24 @@ class TelegramBot:
 
         suffix_detail = error or "Unknown Telegram send failure"
         suffix = f"raw zip fallback failed: {suffix_detail}"
-        return False, f"{fallback_error}; {suffix}" if fallback_error else suffix
+        fallback_error = f"{fallback_error}; {suffix}" if fallback_error else suffix
+
+        if self.excel_dropbox_link_fn and self._app and self.chat_id:
+            try:
+                loop = asyncio.get_running_loop()
+                url = await loop.run_in_executor(None, self.excel_dropbox_link_fn)
+                if url:
+                    sent_msg = await self._app.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=f"⚠️ Excel upload failed — available on Dropbox:\n{url}",
+                    )
+                    self._track(sent_msg)
+                    logger.info("Sent Dropbox fallback link for Excel %s: %s", path, url)
+                    return True, None
+            except Exception as link_exc:
+                logger.warning("Dropbox Excel link fallback failed: %s", link_exc)
+
+        return False, fallback_error
 
     async def send_repo_sync_files(self, sync_result: dict, include_index: bool = True) -> dict[str, Any]:
         return await export_workflows.send_repo_sync_files(

@@ -1032,16 +1032,20 @@ def get_or_upload_excel_link(
         local_name = Path(local_path).name
         dbx_path: str | None = None
 
-        # Check the archive index for a known Dropbox path for this file
+        # Check the archive index for a known Dropbox path for this file,
+        # but only trust it if the corresponding upload actually succeeded.
         label_s = _safe_label(label)
         index_path = Path(output_dir) / f"{label_s}_latest_index.json"
         if index_path.exists():
             try:
                 with open(index_path, "r", encoding="utf-8") as fh:
                     idx = json.load(fh)
-                for path_val in (idx.get("dropbox_files") or {}).values():
+                dbx_files = idx.get("dropbox_files") or {}
+                dbx_uploads = idx.get("dropbox_uploads") or {}
+                for key, path_val in dbx_files.items():
                     if path_val and Path(path_val).name == local_name:
-                        dbx_path = path_val
+                        if (dbx_uploads.get(key) or {}).get("ok"):
+                            dbx_path = path_val
                         break
             except Exception:
                 pass

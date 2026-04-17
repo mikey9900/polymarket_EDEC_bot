@@ -1,3 +1,4 @@
+import asyncio
 import sys
 import unittest
 from pathlib import Path
@@ -92,12 +93,22 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_start_button_uses_controller_and_runs_start_flow(self):
         bot = self._build_bot()
-        cleanup_calls = []
+        cleanup_calls: list[bool] = []
+        scheduled: list[str] = []
+        tasks: list[asyncio.Task] = []
 
-        async def _do_cleanup():
+        async def _refresh_then_cleanup():
             cleanup_calls.append(True)
 
-        bot._do_cleanup = _do_cleanup
+        def _spawn_background_task(coro, *, label: str):
+            scheduled.append(label)
+            task = asyncio.create_task(coro)
+            tasks.append(task)
+            return task
+
+        bot._refresh_then_cleanup = _refresh_then_cleanup
+        bot._spawn_background_task = _spawn_background_task
+
         query = _FakeCallbackQuery("start")
         update = SimpleNamespace(
             effective_chat=SimpleNamespace(id="1"),
@@ -105,10 +116,12 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
+        await asyncio.gather(*tasks)
 
         self.assertEqual(bot.strategy_engine.start_calls, 1)
         self.assertEqual(bot.risk_manager.resume_calls, 1)
         self.assertEqual(bot.risk_manager.deactivate_calls, 1)
+        self.assertEqual(scheduled, ["start-button"])
         self.assertEqual(cleanup_calls, [True])
         self.assertEqual(query.answers[0]["text"], "▶ Scanning started")
 
@@ -133,6 +146,8 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         bot = self._build_bot()
         export_messages = []
         repost_calls = []
+        scheduled: list[str] = []
+        tasks: list[asyncio.Task] = []
 
         async def _handle_recent_export_request(message):
             export_messages.append(message)
@@ -140,8 +155,15 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         async def _repost_dashboard():
             repost_calls.append(True)
 
+        def _spawn_background_task(coro, *, label: str):
+            scheduled.append(label)
+            task = asyncio.create_task(coro)
+            tasks.append(task)
+            return task
+
         bot._handle_recent_export_request = _handle_recent_export_request
         bot._repost_dashboard = _repost_dashboard
+        bot._spawn_background_task = _spawn_background_task
 
         query = _FakeCallbackQuery("export_recent")
         update = SimpleNamespace(
@@ -150,7 +172,9 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
+        await asyncio.gather(*tasks)
 
+        self.assertEqual(scheduled, ["button-export_recent"])
         self.assertEqual(export_messages, [query.message])
         self.assertEqual(repost_calls, [True])
 

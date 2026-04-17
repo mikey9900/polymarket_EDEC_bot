@@ -1,3 +1,4 @@
+import asyncio
 import shutil
 import sys
 import unittest
@@ -51,11 +52,18 @@ class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
         config = SimpleNamespace(telegram_chat_id="1")
         bot = TelegramBot(config, tracker=object(), risk_manager=object(), **kwargs)
         bot._track = lambda msg: msg
+        bot._test_tasks = []
 
         async def _noop():
             return None
 
+        def _spawn_background_task(coro, *, label: str):
+            task = asyncio.create_task(coro)
+            bot._test_tasks.append(task)
+            return task
+
         bot._repost_dashboard = _noop
+        bot._spawn_background_task = _spawn_background_task
         return bot
 
     async def test_export_recent_prefers_repo_sync_after_archive(self):
@@ -97,6 +105,7 @@ class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
+        await asyncio.gather(*bot._test_tasks)
 
         self.assertEqual(call_order, ["archive", "sync"])
         sent_names = [Path(item["path"]).name for item in sent_files]
@@ -133,6 +142,7 @@ class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
+        await asyncio.gather(*bot._test_tasks)
 
         sent_names = [Path(item["path"]).name for item in sent_files]
         self.assertIn(local_trades.name, sent_names)
@@ -165,6 +175,7 @@ class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
+        await asyncio.gather(*bot._test_tasks)
 
         sent_names = [Path(item["path"]).name for item in sent_files]
         self.assertIn(local_trades.name, sent_names)

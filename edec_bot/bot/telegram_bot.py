@@ -70,6 +70,7 @@ class TelegramBot:
         self._dashboard_message_id: int | None = None  # live dashboard message
         self._dashboard_task: asyncio.Task | None = None
         self._cleanup_task: asyncio.Task | None = None
+        self._background_tasks: set[asyncio.Task[Any]] = set()
         self._refresh_lock = asyncio.Lock()
         self._ephemeral_msgs: list[int] = []  # message IDs to delete on next cleanup
         self._dashboard_view: str = "main"
@@ -112,6 +113,37 @@ class TelegramBot:
     async def _run_blocking(self, func):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, func)
+
+    def _background_task_done(self, task: asyncio.Task[Any], label: str) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except Exception:
+            logger.exception("Failed inspecting Telegram background task %s", label)
+            return
+        if exc:
+            logger.error(
+                "Telegram background task failed (%s)",
+                label,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+    def _spawn_background_task(self, coro, *, label: str) -> asyncio.Task[Any]:
+        if self._app:
+            try:
+                task = self._app.create_task(coro, name=f"telegram:{label}")
+            except TypeError:
+                task = self._app.create_task(coro)
+        else:
+            try:
+                task = asyncio.create_task(coro, name=f"telegram:{label}")
+            except TypeError:
+                task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(lambda done: self._background_task_done(done, label))
+        return task
 
     async def _reply_tracked(self, message, text: str, parse_mode: str | None = None):
         self._track(await message.reply_text(text, parse_mode=parse_mode))
@@ -164,6 +196,8 @@ class TelegramBot:
         logger.info("Telegram bot started")
 
     async def stop(self):
+        for task in list(self._background_tasks):
+            task.cancel()
         if self._app:
             await self._app.updater.stop()
             await self._app.stop()
@@ -317,6 +351,11 @@ class TelegramBot:
 
     async def _do_cleanup(self):
         """Delete tracked ephemeral messages in parallel, then refresh the dashboard."""
+        await self._delete_ephemeral_messages()
+        await self._refresh_dashboard()
+
+    async def _delete_ephemeral_messages(self):
+        """Delete tracked ephemeral messages without touching dashboard state."""
         if not self._app or not self.chat_id:
             return
         msgs_to_delete = self._ephemeral_msgs[:]
@@ -328,7 +367,11 @@ class TelegramBot:
                   for mid in msgs_to_delete],
                 return_exceptions=True,
             )
-        await self._refresh_dashboard()
+
+    async def _refresh_then_cleanup(self):
+        """Refresh dashboard promptly, then clean up old ephemeral messages."""
+        await self._refresh_dashboard(force=True)
+        await self._delete_ephemeral_messages()
 
     async def _delete_ids_batched(self, to_delete: list[int]) -> dict:
         stats = {"attempted": len(to_delete), "deleted": 0, "undeletable": 0}

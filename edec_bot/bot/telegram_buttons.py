@@ -13,6 +13,14 @@ def _back_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([[InlineKeyboardButton("\u00ab Back", callback_data="back")]])
 
 
+def _run_in_background(bot: Any, coro, *, label: str) -> None:
+    bot._spawn_background_task(coro, label=label)
+
+
+def _schedule_dashboard_refresh(bot: Any, *, label: str) -> None:
+    _run_in_background(bot, bot._refresh_then_cleanup(), label=label)
+
+
 async def _handle_disabled_buttons(bot: Any, query: Any, data: str) -> bool:
     if data not in ("noop", "wet_disabled"):
         return False
@@ -32,7 +40,7 @@ async def _handle_budget_buttons(bot: Any, query: Any, data: str) -> bool:
         await query.answer(f"\u2705 Budget set to ${amount:.0f}", show_alert=False)
         if bot.executor:
             bot.executor.set_order_size(amount)
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="budget-update")
         return True
 
     if data != "budget":
@@ -56,7 +64,7 @@ async def _handle_capital_buttons(bot: Any, query: Any, data: str) -> bool:
         await query.answer(f"\u2705 Capital set to ${amount:,.0f}", show_alert=False)
         if bot.tracker:
             bot.tracker.set_paper_capital(amount)
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="capital-update")
         return True
 
     if data != "capital":
@@ -87,7 +95,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
             bot.strategy_engine.start_scanning()
         bot.risk_manager.resume()
         bot.risk_manager.deactivate_kill_switch()
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="start-button")
         return True
 
     if data == "stop":
@@ -96,7 +104,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
         if bot.strategy_engine:
             bot.strategy_engine.stop_scanning()
         bot.risk_manager.pause()
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="stop-button")
         return True
 
     if data == "kill":
@@ -105,7 +113,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
         if bot.strategy_engine:
             bot.strategy_engine.stop_scanning()
         bot.risk_manager.activate_kill_switch("Manual kill via Telegram")
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="kill-button")
         return True
 
     if data == "refresh":
@@ -117,15 +125,18 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
     if data == "clear_chat":
         bot._set_dashboard_view("main")
         await query.answer("Clearing chat history...", show_alert=True)
-        stats = await bot._clear_chat_history()
-        note = (
-            f"Chat clear done. Deleted {stats.get('deleted', 0)}/"
-            f"{stats.get('attempted', 0)} messages."
-        )
-        if stats.get("undeletable", 0):
-            note += " Some old messages may be undeletable due to Telegram limits."
-        bot._track(await bot._app.bot.send_message(chat_id=bot.chat_id, text=note))
-        await bot._repost_dashboard()
+
+        async def _clear_chat_job() -> None:
+            stats = await bot._clear_chat_history()
+            note = (
+                f"Chat clear done. Deleted {stats.get('deleted', 0)}/"
+                f"{stats.get('attempted', 0)} messages."
+            )
+            if stats.get("undeletable", 0):
+                note += " Some old messages may be undeletable due to Telegram limits."
+            bot._track(await bot._app.bot.send_message(chat_id=bot.chat_id, text=note))
+
+        _run_in_background(bot, _clear_chat_job(), label="clear-chat")
         return True
 
     if data == "reset_stats":
@@ -134,7 +145,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
         if bot.tracker:
             bot.tracker.reset_paper_stats()
         bot.risk_manager.reset_daily_stats()
-        await bot._do_cleanup()
+        _schedule_dashboard_refresh(bot, label="reset-stats")
         return True
 
     return False
@@ -169,29 +180,33 @@ async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
 
     if data in ("export_today", "export_all", "export_recent", "export_latest", "sync_repo_latest"):
         bot._set_dashboard_view("main")
-        if data in ("export_today", "export_all"):
-            await bot._handle_export_request(
-                query.message,
-                today_only=(data == "export_today"),
-                wait_text="\u23f3 Generating spreadsheet...",
-                unavailable_text="Export not available.",
-                caption="\U0001F4CA EDEC Bot Export - Paper Trades, Decisions, Filter Performance",
-            )
-        elif data == "export_recent":
-            await bot._handle_recent_export_request(query.message)
-        elif data == "export_latest":
-            await bot._handle_latest_export_request(
-                query.message,
-                wait_text="\u23f3 Sending latest archive files...",
-            )
-        else:
-            await bot._handle_repo_sync_request(
-                query.message,
-                wait_text="\u23f3 Syncing latest Dropbox files to local repo folder...",
-                heading_ok="\u2705 *Repo Sync Complete*",
-                heading_fail="\u26a0\ufe0f *Repo Sync Partial/Failed*",
-            )
-        await bot._repost_dashboard()
+
+        async def _export_job() -> None:
+            if data in ("export_today", "export_all"):
+                await bot._handle_export_request(
+                    query.message,
+                    today_only=(data == "export_today"),
+                    wait_text="\u23f3 Generating spreadsheet...",
+                    unavailable_text="Export not available.",
+                    caption="\U0001F4CA EDEC Bot Export - Paper Trades, Decisions, Filter Performance",
+                )
+            elif data == "export_recent":
+                await bot._handle_recent_export_request(query.message)
+            elif data == "export_latest":
+                await bot._handle_latest_export_request(
+                    query.message,
+                    wait_text="\u23f3 Sending latest archive files...",
+                )
+            else:
+                await bot._handle_repo_sync_request(
+                    query.message,
+                    wait_text="\u23f3 Syncing latest Dropbox files to local repo folder...",
+                    heading_ok="\u2705 *Repo Sync Complete*",
+                    heading_fail="\u26a0\ufe0f *Repo Sync Partial/Failed*",
+                )
+            await bot._repost_dashboard()
+
+        _run_in_background(bot, _export_job(), label=f"button-{data}")
         return True
 
     if data == "archive_health":

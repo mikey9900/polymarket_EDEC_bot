@@ -638,7 +638,7 @@ class TelegramBot:
         if is_excel and self.excel_dropbox_link_fn:
             try:
                 loop = asyncio.get_running_loop()
-                url = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
+                url, dbx_err = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
                 if url:
                     is_link = url.startswith("https://")
                     display = url if is_link else url.replace("//", "/")
@@ -653,8 +653,9 @@ class TelegramBot:
                     self._track(sent_msg)
                     logger.info("Sent Dropbox ref for Excel %s: %s", path, url)
                     return True, None
-                logger.warning("Dropbox Excel link returned None for %s", path)
-                return False, "Excel Dropbox link unavailable — check Dropbox config or auth"
+                reason = dbx_err or "unknown error"
+                logger.warning("Dropbox Excel link failed for %s: %s", path, reason)
+                return False, f"Excel Dropbox failed: {reason}"
             except Exception as exc:
                 logger.warning("Dropbox Excel link error for %s: %s", path, exc)
                 return False, f"Excel Dropbox error: {exc}"

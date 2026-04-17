@@ -1013,11 +1013,12 @@ def get_or_upload_excel_link(
     dropbox_refresh_token: str | None = None,
     dropbox_app_key: str | None = None,
     dropbox_app_secret: str | None = None,
-) -> str | None:
-    """Upload local_path to Dropbox if needed, then return a shared link URL.
+) -> tuple[str | None, str | None]:
+    """Upload local_path to Dropbox if needed, then return (url_or_path, error).
 
-    Checks the archive index first — if the file is already on Dropbox (matched
-    by basename), skips the upload and goes straight to the shared link.
+    Checks the archive index first — if the file was successfully uploaded
+    previously, skips the re-upload and goes straight to the shared link.
+    Returns (result, None) on success or (None, reason) on failure.
     """
     try:
         dropbox_auth = _build_dropbox_auth(
@@ -1027,7 +1028,7 @@ def get_or_upload_excel_link(
             dropbox_app_secret=dropbox_app_secret,
         )
         if not dropbox_auth:
-            return None
+            return None, "Dropbox not configured (no token or refresh-token set)"
 
         local_name = Path(local_path).name
         dbx_path: str | None = None
@@ -1055,19 +1056,22 @@ def get_or_upload_excel_link(
             dbx_path = f"{root}/latest/{local_name}"
             result = _dropbox_upload_file(local_path, dbx_path, dropbox_auth)
             if not result.get("ok"):
-                logger.warning("Dropbox upload failed for %s: %s", local_path, result.get("error"))
-                return None
+                err = str(result.get("error") or result.get("status") or "unknown error")
+                details = result.get("error_details") or {}
+                friendly = (details.get("friendly") or "").strip()
+                reason = friendly or err
+                logger.warning("Dropbox upload failed for %s: %s", local_path, err)
+                return None, f"Dropbox upload failed: {reason}"
 
         url = _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
         if url:
-            return url
+            return url, None
         # Shared link unavailable (scope may be missing) — return the raw Dropbox path
-        # so the caller can still tell the user where the file lives.
         logger.warning("Shared link unavailable for %s; returning raw Dropbox path", dbx_path)
-        return dbx_path
+        return dbx_path, None
     except Exception as exc:
         logger.warning("get_or_upload_excel_link failed for %s: %s", local_path, exc)
-        return None
+        return None, str(exc)
 
 
 def sync_dropbox_latest_to_local(

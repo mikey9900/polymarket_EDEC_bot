@@ -396,7 +396,7 @@ async def main():
             expand_trades_csv=True,
         )
 
-    def do_excel_dropbox_link(local_path: str) -> str | None:
+    def do_excel_dropbox_link(local_path: str) -> tuple[str | None, str | None]:
         return get_or_upload_excel_link(
             local_path=local_path,
             output_dir=archive_output_dir,

@@ -825,7 +825,7 @@ def _dropbox_upload_file(local_path: str, dropbox_path: str, dropbox_auth: dict[
                 ),
             },
         )
-        with request.urlopen(req, timeout=30) as resp:
+        with request.urlopen(req, timeout=300) as resp:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
             if resp.status < 200 or resp.status >= 300:
@@ -923,7 +923,7 @@ def _dropbox_download_file(dropbox_path: str, dropbox_auth: dict[str, Any], loca
                 "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
             },
         )
-        with request.urlopen(req, timeout=30) as resp:
+        with request.urlopen(req, timeout=300) as resp:
             body = resp.read()
             p = Path(local_path)
             p.parent.mkdir(parents=True, exist_ok=True)

@@ -1054,7 +1054,13 @@ def get_or_upload_excel_link(
                 logger.warning("Dropbox upload failed for %s: %s", local_path, result.get("error"))
                 return None
 
-        return _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
+        url = _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
+        if url:
+            return url
+        # Shared link unavailable (scope may be missing) — return the raw Dropbox path
+        # so the caller can still tell the user where the file lives.
+        logger.warning("Shared link unavailable for %s; returning raw Dropbox path", dbx_path)
+        return dbx_path
     except Exception as exc:
         logger.warning("get_or_upload_excel_link failed for %s: %s", local_path, exc)
         return None

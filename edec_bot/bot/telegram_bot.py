@@ -640,15 +640,23 @@ class TelegramBot:
                 loop = asyncio.get_running_loop()
                 url = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
                 if url:
+                    is_link = url.startswith("https://")
+                    text = (
+                        f"📊 Excel export on Dropbox:\n{url}"
+                        if is_link
+                        else f"📊 Excel saved to Dropbox (enable `sharing.write` scope for a clickable link):\n`{url}`"
+                    )
                     sent_msg = await self._app.bot.send_message(
-                        chat_id=self.chat_id,
-                        text=f"📊 Excel export on Dropbox:\n{url}",
+                        chat_id=self.chat_id, text=text, parse_mode="Markdown",
                     )
                     self._track(sent_msg)
-                    logger.info("Sent Dropbox link for Excel %s: %s", path, url)
+                    logger.info("Sent Dropbox ref for Excel %s: %s", path, url)
                     return True, None
+                logger.warning("Dropbox Excel link returned None for %s", path)
+                return False, "Excel Dropbox link unavailable — check Dropbox config or auth"
             except Exception as exc:
-                logger.warning("Dropbox Excel link failed, falling through to Telegram upload: %s", exc)
+                logger.warning("Dropbox Excel link error for %s: %s", path, exc)
+                return False, f"Excel Dropbox error: {exc}"
 
         use_in_memory_upload = is_excel or os.path.getsize(path) <= 1024 * 1024
         attempts = max(1, self._SEND_FILE_ATTEMPTS)

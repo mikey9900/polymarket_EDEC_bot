@@ -76,8 +76,14 @@ class TelegramBot:
         self._cleanup_task: asyncio.Task | None = None
         self._background_tasks: set[asyncio.Task[Any]] = set()
         self._refresh_lock = asyncio.Lock()
+        self._repost_lock = asyncio.Lock()  # serialize dashboard re-posts to avoid duplicates
         self._ephemeral_msgs: list[int] = []  # message IDs to delete on next cleanup
         self._dashboard_view: str = "main"
+        # Monotonic timestamp of last user-initiated refresh; used to debounce the 10s loop
+        self._last_manual_refresh: float = 0.0
+        # Marker used to detect whether any ephemeral/alert messages have been sent since
+        # the last dashboard post — lets us skip pointless reposts.
+        self._msgs_since_dashboard_post: int = 0
 
     def _enabled_mode_summary(self) -> str:
         enabled = []
@@ -151,6 +157,18 @@ class TelegramBot:
 
     async def _reply_tracked(self, message, text: str, parse_mode: str | None = None):
         self._track(await message.reply_text(text, parse_mode=parse_mode))
+
+    def _ack_query(self, query, text: str | None = None, show_alert: bool = False) -> None:
+        """Fire-and-forget callback-query answer.
+
+        Dismisses the Telegram loading spinner on the client immediately without
+        blocking the button handler on a network round-trip.
+        """
+        if text:
+            coro = query.answer(text, show_alert=show_alert)
+        else:
+            coro = query.answer()
+        self._spawn_background_task(coro, label="ack-query")
 
     async def start(self):
         """Initialize and start the Telegram bot."""
@@ -298,6 +316,7 @@ class TelegramBot:
             )
             self._dashboard_message_id = msg.message_id
             self._dashboard_view = "main"
+            self._msgs_since_dashboard_post = 0
             self._save_msg_id()
             self._dashboard_task = asyncio.create_task(self._dashboard_loop())
             if self._AUTO_EPHEMERAL_CLEAN:
@@ -317,9 +336,16 @@ class TelegramBot:
         self._cleanup_task = None
 
     async def _dashboard_loop(self):
-        """Refresh the dashboard message every 10 seconds."""
+        """Refresh the dashboard message every 10 seconds.
+
+        Skips the tick if the user manually refreshed within the last 3s so the
+        auto-loop doesn't contend with the refresh lock right after a button press.
+        """
         while True:
             await asyncio.sleep(10)
+            loop = asyncio.get_running_loop()
+            if (loop.time() - self._last_manual_refresh) < 3.0:
+                continue
             await self._refresh_dashboard()
 
     async def _cleanup_loop(self):
@@ -328,31 +354,42 @@ class TelegramBot:
             await asyncio.sleep(60)
             await self._do_cleanup()
 
-    async def _repost_dashboard(self):
-        """Delete old dashboard and re-post at the bottom (only used after sending new alerts)."""
+    async def _repost_dashboard(self, *, only_if_buried: bool = False):
+        """Delete old dashboard and re-post at the bottom.
+
+        Serialized via `_repost_lock` so concurrent callers can't produce duplicate
+        dashboard messages. If `only_if_buried` is True, the repost is skipped when
+        no ephemeral/alert messages have been sent since the last post (meaning the
+        existing dashboard is already at the bottom of the chat).
+        """
         if not self._app or not self.chat_id:
             return
-        if self._dashboard_message_id:
+        async with self._repost_lock:
+            if only_if_buried and self._msgs_since_dashboard_post == 0 and self._dashboard_message_id:
+                # Dashboard is already the most recent message — no need to repost.
+                return
+            if self._dashboard_message_id:
+                try:
+                    await self._app.bot.delete_message(
+                        chat_id=self.chat_id, message_id=self._dashboard_message_id
+                    )
+                except Exception:
+                    pass
+                self._dashboard_message_id = None
             try:
-                await self._app.bot.delete_message(
-                    chat_id=self.chat_id, message_id=self._dashboard_message_id
+                text = self._build_dashboard_text()
+                msg = await self._app.bot.send_message(
+                    chat_id=self.chat_id,
+                    text=text,
+                    parse_mode="Markdown",
+                    reply_markup=self._main_keyboard(),
                 )
-            except Exception:
-                pass
-            self._dashboard_message_id = None
-        try:
-            text = self._build_dashboard_text()
-            msg = await self._app.bot.send_message(
-                chat_id=self.chat_id,
-                text=text,
-                parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
-            )
-            self._dashboard_message_id = msg.message_id
-            self._dashboard_view = "main"
-            self._save_msg_id()
-        except Exception as e:
-            logger.error(f"Failed to re-post dashboard: {e}")
+                self._dashboard_message_id = msg.message_id
+                self._dashboard_view = "main"
+                self._msgs_since_dashboard_post = 0
+                self._save_msg_id()
+            except Exception as e:
+                logger.error(f"Failed to re-post dashboard: {e}")
 
     async def _do_cleanup(self):
         """Delete tracked ephemeral messages in parallel, then refresh the dashboard."""
@@ -464,6 +501,10 @@ class TelegramBot:
         if self._dashboard_view != "main" and not force:
             return
 
+        if force:
+            # Stamp the time so the 10s loop briefly backs off and doesn't fight us.
+            self._last_manual_refresh = asyncio.get_running_loop().time()
+
         # No known message — re-create from scratch (no loop: calls repost, not cleanup)
         if not self._dashboard_message_id:
             await self._repost_dashboard()
@@ -518,8 +559,7 @@ class TelegramBot:
                 parse_mode="Markdown",
                 reply_markup=reply_markup,
             )
-            self._ephemeral_msgs.append(sent.message_id)
-            self._persist_ephemeral(sent.message_id)
+            self._track_message_id(sent.message_id)
         except Exception as e:
             logger.error(f"Telegram send error: {e} | chat_id={self.chat_id}")
 
@@ -1055,6 +1095,7 @@ class TelegramBot:
         if message_id:
             self._ephemeral_msgs.append(message_id)
             self._persist_ephemeral(message_id)
+            self._msgs_since_dashboard_post += 1
 
     def _main_keyboard(self) -> InlineKeyboardMarkup:
         is_running = self.strategy_engine.is_active if self.strategy_engine else False
@@ -1159,6 +1200,7 @@ class TelegramBot:
         """Track the user's command message for cleanup."""
         if update.message:
             self._ephemeral_msgs.append(update.message.message_id)
+            self._msgs_since_dashboard_post += 1
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):

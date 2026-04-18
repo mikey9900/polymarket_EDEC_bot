@@ -24,7 +24,8 @@ def _schedule_dashboard_refresh(bot: Any, *, label: str) -> None:
 async def _handle_disabled_buttons(bot: Any, query: Any, data: str) -> bool:
     if data not in ("noop", "wet_disabled"):
         return False
-    await query.answer(
+    bot._ack_query(
+        query,
         "\U0001F30A Wet Run coming soon - currently disabled for safety."
         if data == "wet_disabled"
         else "Already in Dry Run mode.",
@@ -37,7 +38,7 @@ async def _handle_budget_buttons(bot: Any, query: Any, data: str) -> bool:
     if data.startswith("budget_"):
         bot._set_dashboard_view("main")
         amount = float(data.split("_")[1])
-        await query.answer(f"\u2705 Budget set to ${amount:.0f}", show_alert=False)
+        bot._ack_query(query, f"\u2705 Budget set to ${amount:.0f}")
         if bot.executor:
             bot.executor.set_order_size(amount)
         _schedule_dashboard_refresh(bot, label="budget-update")
@@ -47,7 +48,7 @@ async def _handle_budget_buttons(bot: Any, query: Any, data: str) -> bool:
         return False
 
     bot._set_dashboard_view("budget")
-    await query.answer()
+    bot._ack_query(query)
     order_size = bot.executor.order_size_usd if bot.executor else bot.config.execution.order_size_usd
     await query.edit_message_text(
         dashboard_ui.build_budget_panel_text(order_size),
@@ -61,7 +62,7 @@ async def _handle_capital_buttons(bot: Any, query: Any, data: str) -> bool:
     if data.startswith("capital_"):
         bot._set_dashboard_view("main")
         amount = float(data.split("_")[1])
-        await query.answer(f"\u2705 Capital set to ${amount:,.0f}", show_alert=False)
+        bot._ack_query(query, f"\u2705 Capital set to ${amount:,.0f}")
         if bot.tracker:
             bot.tracker.set_paper_capital(amount)
         _schedule_dashboard_refresh(bot, label="capital-update")
@@ -71,7 +72,7 @@ async def _handle_capital_buttons(bot: Any, query: Any, data: str) -> bool:
         return False
 
     bot._set_dashboard_view("capital")
-    await query.answer()
+    bot._ack_query(query)
     _, balance = bot.tracker.get_paper_capital() if bot.tracker else (0, 0)
     await query.edit_message_text(
         dashboard_ui.build_capital_panel_text(balance),
@@ -84,13 +85,13 @@ async def _handle_capital_buttons(bot: Any, query: Any, data: str) -> bool:
 async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
     if data == "back":
         bot._set_dashboard_view("main")
-        await query.answer()
-        await bot._refresh_dashboard(force=True)
+        bot._ack_query(query)
+        _schedule_dashboard_refresh(bot, label="back-button")
         return True
 
     if data == "start":
         bot._set_dashboard_view("main")
-        await query.answer("\u25b6 Scanning started", show_alert=False)
+        bot._ack_query(query, "\u25b6 Scanning started")
         if bot.strategy_engine:
             bot.strategy_engine.start_scanning()
         bot.risk_manager.resume()
@@ -100,7 +101,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
 
     if data == "stop":
         bot._set_dashboard_view("main")
-        await query.answer("\u23f8 Bot stopped", show_alert=False)
+        bot._ack_query(query, "\u23f8 Bot stopped")
         if bot.strategy_engine:
             bot.strategy_engine.stop_scanning()
         bot.risk_manager.pause()
@@ -109,7 +110,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
 
     if data == "kill":
         bot._set_dashboard_view("main")
-        await query.answer("\U0001F6D1 Kill switch activated!", show_alert=True)
+        bot._ack_query(query, "\U0001F6D1 Kill switch activated!", show_alert=True)
         if bot.strategy_engine:
             bot.strategy_engine.stop_scanning()
         bot.risk_manager.activate_kill_switch("Manual kill via Telegram")
@@ -118,13 +119,13 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
 
     if data == "refresh":
         bot._set_dashboard_view("main")
-        await query.answer("Refreshing dashboard...", show_alert=False)
-        await bot._refresh_dashboard(force=True)
+        bot._ack_query(query, "Refreshing dashboard...")
+        _schedule_dashboard_refresh(bot, label="refresh-button")
         return True
 
     if data == "clear_chat":
         bot._set_dashboard_view("main")
-        await query.answer("Clearing chat history...", show_alert=True)
+        bot._ack_query(query, "Clearing chat history...", show_alert=True)
 
         async def _clear_chat_job() -> None:
             stats = await bot._clear_chat_history()
@@ -141,7 +142,7 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
 
     if data == "reset_stats":
         bot._set_dashboard_view("main")
-        await query.answer("\U0001F5D1 Stats reset!", show_alert=False)
+        bot._ack_query(query, "\U0001F5D1 Stats reset!")
         if bot.tracker:
             bot.tracker.reset_paper_stats()
         bot.risk_manager.reset_daily_stats()
@@ -206,7 +207,9 @@ async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
                     heading_ok="\u2705 *Repo Sync Complete*",
                     heading_fail="\u26a0\ufe0f *Repo Sync Partial/Failed*",
                 )
-            await bot._repost_dashboard()
+            # Only repost if the export/sync pushed messages above the dashboard;
+            # otherwise the existing dashboard is already at the bottom.
+            await bot._repost_dashboard(only_if_buried=True)
 
         _run_in_background(bot, _export_job(), label=f"button-{data}")
         return True
@@ -243,7 +246,12 @@ async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
 
 
 async def handle_button(bot: Any, update: Any, context: Any) -> None:
-    """Route Telegram inline button interactions."""
+    """Route Telegram inline button interactions.
+
+    Sub-handlers each fire-and-forget their own `query.answer(...)` via
+    `bot._ack_query(...)` as early as possible so the Telegram button spinner
+    dismisses on the user's device without waiting for follow-up work.
+    """
     query = update.callback_query
     if not bot._auth(update):
         return
@@ -259,5 +267,6 @@ async def handle_button(bot: Any, update: Any, context: Any) -> None:
     if await _handle_control_buttons(bot, query, data):
         return
 
-    await query.answer()
+    # Panel buttons: ack up front so the spinner dismisses before we build the panel.
+    bot._ack_query(query)
     await _handle_panel_buttons(bot, query, data)

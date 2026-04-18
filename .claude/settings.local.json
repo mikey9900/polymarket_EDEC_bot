@@ -26,7 +26,8 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('edec_bot/bot/telegram_bot.py', encoding='utf-8'\\).read\\(\\)\\); print\\('Syntax OK'\\)\")",
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(python -m py_compile bot/telegram_bot.py bot/telegram_buttons.py)"
     ]
   }
 }

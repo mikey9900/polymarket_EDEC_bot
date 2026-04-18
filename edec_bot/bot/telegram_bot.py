@@ -252,16 +252,14 @@ class TelegramBot:
         )
 
     def _build_dashboard_payload_sync(self) -> tuple[str, InlineKeyboardMarkup]:
-        """Build both the dashboard text and its keyboard in one sync call.
-
-        Both helpers hit SQLite (`get_paper_stats`, `get_paper_capital`,
-        `get_coin_recent_outcomes`), so batching them into one executor call keeps
-        the event loop free while the trader is writing to the DB.
-        """
+        """Build both the dashboard text and its keyboard in one sync call."""
         return self._build_dashboard_text(), self._main_keyboard()
 
     async def _build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
-        return await self._run_blocking(self._build_dashboard_payload_sync)
+        # Keep dashboard reads on the main thread: the tracker owns a long-lived
+        # SQLite connection, and moving these reads to a worker thread trips
+        # `sqlite3.ProgrammingError` before the dashboard can render.
+        return self._build_dashboard_payload_sync()
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
@@ -338,7 +336,7 @@ class TelegramBot:
             if self._STARTUP_DEEP_CLEAN:
                 await self._deep_clean()
         except Exception as e:
-            logger.error(f"Failed to start dashboard: {e}")
+            logger.error(f"Failed to start dashboard: {e}", exc_info=True)
 
     async def stop_dashboard(self):
         """Stop the dashboard refresh and cleanup loops."""
@@ -402,7 +400,7 @@ class TelegramBot:
                 self._msgs_since_dashboard_post = 0
                 self._save_msg_id()
             except Exception as e:
-                logger.error(f"Failed to re-post dashboard: {e}")
+                logger.error(f"Failed to re-post dashboard: {e}", exc_info=True)
 
     async def _do_cleanup(self):
         """Delete tracked ephemeral messages in parallel, then refresh the dashboard."""
@@ -523,7 +521,8 @@ class TelegramBot:
             await self._repost_dashboard()
             return
 
-        # Build text + keyboard off the event loop (SQLite calls inside).
+        # Build text + keyboard on the main thread because tracker reads use a
+        # thread-bound SQLite connection.
         try:
             text, keyboard = await self._build_dashboard_payload()
         except Exception as e:

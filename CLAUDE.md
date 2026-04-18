@@ -2,8 +2,9 @@
 
 ## Tuning
 
-- To analyse bot performance and tune parameters, read `TUNING.md` and follow the steps there.
-- Data repo exports land in `data/github_exports/` after running `python edec_bot/fetch_github_data.py`.
+- To analyse bot performance and tune parameters, read `TUNING_CLAUDE.md` and follow the steps there.
+- For other AI agents (Codex, GPT, etc.) use `TUNING.md` instead.
+- Data repo exports land in `data/github_exports/` after fetching.
 
 ## Git
 

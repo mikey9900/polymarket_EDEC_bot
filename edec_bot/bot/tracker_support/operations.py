@@ -292,11 +292,12 @@ def log_trade(tracker: Any, decision_id: int, result: TradeResult) -> int:
 
 def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, btc_close: float) -> None:
     """Log a market resolution and backfill decision outcomes."""
+    normalized_winner = (winner or "").upper()
     cursor = tracker.conn.execute(
         """INSERT OR IGNORE INTO outcomes (
             market_slug, resolved_at, winner, btc_open_price, btc_close_price
         ) VALUES (?, ?, ?, ?, ?)""",
-        (market_slug, utc_now().isoformat(), winner, btc_open, btc_close),
+        (market_slug, utc_now().isoformat(), normalized_winner, btc_open, btc_close),
     )
     tracker.conn.commit()
     outcome_id = cursor.lastrowid
@@ -306,6 +307,31 @@ def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, bt
 
     if not outcome_id:
         return
+
+    tracker.conn.execute(
+        """UPDATE trades
+           SET resolution_winner = ?,
+               resolution_side_match = CASE
+                   WHEN lower(COALESCE(strategy_type, '')) = 'dual_leg' THEN NULL
+                   WHEN lower(COALESCE(side, '')) NOT IN ('up', 'down') THEN NULL
+                   WHEN upper(side) = ? THEN 1
+                   ELSE 0
+               END
+           WHERE market_slug = ?""",
+        (normalized_winner, normalized_winner, market_slug),
+    )
+    tracker.conn.execute(
+        """UPDATE paper_trades
+           SET resolution_winner = ?,
+               resolution_side_match = CASE
+                   WHEN lower(COALESCE(strategy_type, '')) = 'dual_leg' THEN NULL
+                   WHEN lower(COALESCE(side, '')) NOT IN ('up', 'down') THEN NULL
+                   WHEN upper(side) = ? THEN 1
+                   ELSE 0
+               END
+           WHERE market_slug = ?""",
+        (normalized_winner, normalized_winner, market_slug),
+    )
 
     decisions = tracker.conn.execute(
         "SELECT id, up_best_ask, down_best_ask, combined_cost, action FROM decisions WHERE market_slug = ?",
@@ -352,7 +378,7 @@ def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, bt
         )
 
     tracker.conn.commit()
-    logger.info(f"Outcome logged: {market_slug} -> {winner}, backfilled {len(decisions)} decisions")
+    logger.info(f"Outcome logged: {market_slug} -> {normalized_winner}, backfilled {len(decisions)} decisions")
 
 
 def update_live_trade(

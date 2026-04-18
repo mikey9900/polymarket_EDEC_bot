@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS trades (
     favorable_excursion REAL,
     ever_profitable INTEGER DEFAULT 0,
     cancel_repost_count INTEGER DEFAULT 0
+    ,
+    resolution_winner TEXT,
+    resolution_side_match INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -234,6 +237,9 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     loss_pct_at_exit REAL,
     favorable_excursion REAL,
     ever_profitable INTEGER DEFAULT 0
+    ,
+    resolution_winner TEXT,
+    resolution_side_match INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -455,6 +461,8 @@ def migrate(conn) -> None:
         "favorable_excursion": "REAL",
         "ever_profitable": "INTEGER DEFAULT 0",
         "cancel_repost_count": "INTEGER DEFAULT 0",
+        "resolution_winner": "TEXT",
+        "resolution_side_match": "INTEGER",
     }
     for col, col_type in trade_new_cols.items():
         if col not in trade_cols:
@@ -520,6 +528,8 @@ def migrate(conn) -> None:
         "loss_pct_at_exit": "REAL",
         "favorable_excursion": "REAL",
         "ever_profitable": "INTEGER DEFAULT 0",
+        "resolution_winner": "TEXT",
+        "resolution_side_match": "INTEGER",
     }
     for col, col_type in new_pt_cols.items():
         if col not in pt_cols:

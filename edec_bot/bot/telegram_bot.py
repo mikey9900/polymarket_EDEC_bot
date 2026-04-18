@@ -251,6 +251,18 @@ class TelegramBot:
             strategy_engine=self.strategy_engine,
         )
 
+    def _build_dashboard_payload_sync(self) -> tuple[str, InlineKeyboardMarkup]:
+        """Build both the dashboard text and its keyboard in one sync call.
+
+        Both helpers hit SQLite (`get_paper_stats`, `get_paper_capital`,
+        `get_coin_recent_outcomes`), so batching them into one executor call keeps
+        the event loop free while the trader is writing to the DB.
+        """
+        return self._build_dashboard_text(), self._main_keyboard()
+
+    async def _build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        return await self._run_blocking(self._build_dashboard_payload_sync)
+
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"
     _DEEP_CLEAN_WINDOW = int(os.getenv("EDEC_TG_DEEP_CLEAN_WINDOW", "15000"))
@@ -308,11 +320,12 @@ class TelegramBot:
                 pass
 
         try:
+            text, keyboard = await self._build_dashboard_payload()
             msg = await self._app.bot.send_message(
                 chat_id=self.chat_id,
-                text=self._build_dashboard_text(),
+                text=text,
                 parse_mode="Markdown",
-                reply_markup=self._main_keyboard(),
+                reply_markup=keyboard,
             )
             self._dashboard_message_id = msg.message_id
             self._dashboard_view = "main"
@@ -377,12 +390,12 @@ class TelegramBot:
                     pass
                 self._dashboard_message_id = None
             try:
-                text = self._build_dashboard_text()
+                text, keyboard = await self._build_dashboard_payload()
                 msg = await self._app.bot.send_message(
                     chat_id=self.chat_id,
                     text=text,
                     parse_mode="Markdown",
-                    reply_markup=self._main_keyboard(),
+                    reply_markup=keyboard,
                 )
                 self._dashboard_message_id = msg.message_id
                 self._dashboard_view = "main"
@@ -510,9 +523,9 @@ class TelegramBot:
             await self._repost_dashboard()
             return
 
-        # Build text first — surface content errors before touching Telegram
+        # Build text + keyboard off the event loop (SQLite calls inside).
         try:
-            text = self._build_dashboard_text()
+            text, keyboard = await self._build_dashboard_payload()
         except Exception as e:
             logger.error(f"Dashboard build error: {e}", exc_info=True)
             return
@@ -528,7 +541,7 @@ class TelegramBot:
                     message_id=msg_id,
                     text=text,
                     parse_mode="Markdown",
-                    reply_markup=self._main_keyboard(),
+                    reply_markup=keyboard,
                 )
             except RetryAfter as e:
                 retry_after = e.retry_after

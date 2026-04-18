@@ -51,7 +51,8 @@ class TelegramBot:
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
                  archive_fn=None, archive_latest_fn=None, archive_health_fn=None,
-                 repo_sync_fn=None, session_export_fn=None, excel_dropbox_link_fn=None):
+                 repo_sync_fn=None, session_export_fn=None, excel_dropbox_link_fn=None,
+                 fetch_github_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -67,6 +68,7 @@ class TelegramBot:
         self.repo_sync_fn = repo_sync_fn
         self.session_export_fn = session_export_fn
         self.excel_dropbox_link_fn = excel_dropbox_link_fn
+        self.fetch_github_fn = fetch_github_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -180,6 +182,7 @@ class TelegramBot:
             ("export", self._cmd_export),
             ("latest_export", self._cmd_latest_export),
             ("sync_repo_latest", self._cmd_sync_repo_latest),
+            ("fetch_github", self._cmd_fetch_github),
             ("config", self._cmd_config),
             ("set", self._cmd_set),
             ("filters", self._cmd_filters),
@@ -1308,6 +1311,60 @@ class TelegramBot:
             heading_fail="*Repo Sync Failed*",
         )
 
+    async def _handle_fetch_github_request(self, reply_message, limit: int = 3) -> None:
+        if not self.fetch_github_fn:
+            await self._reply_tracked(reply_message, "GitHub fetch not configured (missing EDEC_GITHUB_TOKEN / EDEC_GITHUB_REPO).")
+            return
+        await self._reply_tracked(
+            reply_message,
+            f"\u23f3 Fetching last {limit} session export folder(s) from GitHub...",
+        )
+        try:
+            result = await self._run_blocking(lambda: self.fetch_github_fn(limit=limit))
+            if not result.get("ok"):
+                await self._reply_tracked(
+                    reply_message,
+                    f"\u274c GitHub fetch failed: {result.get('error', 'unknown error')}",
+                )
+                return
+
+            fetched = result.get("folders", [])
+            count = result.get("fetched_count", 0)
+            note = result.get("note", "")
+            output_dir = result.get("output_dir", "")
+
+            if count == 0:
+                msg = f"\u2139\ufe0f No export folders found.\n{note}"
+            else:
+                lines = [f"\u2705 *GitHub Fetch Complete*", f"Folders: {count} | Saved to: `{output_dir}`", ""]
+                for f in fetched:
+                    folder = f.get("folder", "?")
+                    files = f.get("files", [])
+                    errs = f.get("errors", [])
+                    csv_files = [n for n in files if n.endswith(".csv") and not n.endswith(".csv.gz")]
+                    gz_files = [n for n in files if n.endswith(".csv.gz")]
+                    lines.append(f"\U0001f4c1 `{folder}`")
+                    lines.append(f"  CSV: {len(csv_files)} | GZ: {len(gz_files)} | Total files: {len(files)}")
+                    if errs:
+                        lines.append(f"  \u26a0\ufe0f Errors: {', '.join(errs[:3])}")
+                msg = "\n".join(lines)
+
+            await self._reply_tracked(reply_message, msg, parse_mode="Markdown")
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"GitHub fetch error: {e}")
+
+    async def _cmd_fetch_github(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        limit = 3
+        if context.args:
+            try:
+                limit = max(1, min(20, int(context.args[0])))
+            except ValueError:
+                pass
+        await self._handle_fetch_github_request(update.message, limit=limit)
+
     async def _cmd_config(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
@@ -1394,6 +1451,7 @@ class TelegramBot:
             "/export today - Today only\n"
             "/latest_export - Send latest archive files\n"
             "/sync_repo_latest - Sync Dropbox latest files into local repo folder\n"
+            "/fetch_github [N] - Download last N session exports from GitHub data repo\n"
             "/config - Show all settings\n"
             "/filters - Filter pass/fail rates\n"
             "/clean - Delete old chat messages\n"

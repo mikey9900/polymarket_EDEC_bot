@@ -14,6 +14,7 @@ from pathlib import Path
 from bot.config import load_config
 from bot.archive import (
     archive_health_snapshot,
+    fetch_github_session_exports,
     get_or_upload_excel_link,
     latest_archive_paths,
     run_daily_archive,
@@ -417,6 +418,21 @@ async def main():
             github_export_path=str(github_export_path),
         )
 
+    def do_fetch_github_exports(limit: int = 3) -> dict:
+        if not github_token:
+            raise RuntimeError("EDEC_GITHUB_TOKEN / github_token not configured")
+        if not github_repo:
+            raise RuntimeError("EDEC_GITHUB_REPO / github_repo not configured")
+        return fetch_github_session_exports(
+            github_token=github_token,
+            github_repo=github_repo,
+            github_branch=str(github_branch),
+            github_export_path=str(github_export_path),
+            output_dir="data/github_exports",
+            limit=limit,
+            expand_csv=True,
+        )
+
     def do_excel_dropbox_link(local_path: str) -> tuple[str | None, str | None]:
         return get_or_upload_excel_link(
             local_path=local_path,
@@ -443,6 +459,7 @@ async def main():
         repo_sync_fn=do_repo_sync_latest,
         session_export_fn=do_session_export,
         excel_dropbox_link_fn=do_excel_dropbox_link,
+        fetch_github_fn=do_fetch_github_exports,
     )
     dashboard_state = None
     live_api = None

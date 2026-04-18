@@ -1,5 +1,10 @@
 # Project Instructions
 
+## Tuning
+
+- To analyse bot performance and tune parameters, read `TUNING.md` and follow the steps there.
+- Data repo exports land in `data/github_exports/` after running `python edec_bot/fetch_github_data.py`.
+
 ## Git
 
 - Always push to the `main` branch.

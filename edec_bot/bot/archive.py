@@ -179,6 +179,150 @@ def _github_push_file(
         return {"ok": False, "path": repo_path, "error": str(exc)}
 
 
+def _github_list_dir(
+    github_token: str,
+    github_repo: str,
+    path: str,
+    github_branch: str = "main",
+) -> list[dict[str, Any]]:
+    """List contents of a path in a GitHub repo via the Contents API. Returns [] on 404."""
+    clean = path.strip("/")
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/{clean}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    req = request.Request(f"{api_url}?ref={github_branch}", headers=headers)
+    try:
+        with request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        if exc.code == 404:
+            return []
+        raise
+
+
+def _github_download_url(url: str, github_token: str) -> bytes | None:
+    """Download raw bytes from a GitHub download_url (handles private repos via auth)."""
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/octet-stream",
+    }
+    req = request.Request(url, headers=headers)
+    try:
+        with request.urlopen(req, timeout=60) as resp:
+            return resp.read()
+    except urlerror.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def fetch_github_session_exports(
+    github_token: str,
+    github_repo: str,
+    github_branch: str = "main",
+    github_export_path: str = "session_exports",
+    output_dir: str = "data/github_exports",
+    limit: int = 3,
+    expand_csv: bool = True,
+) -> dict[str, Any]:
+    """Download the latest N session export folders from the GitHub data repo.
+
+    Files land in output_dir/{folder_timestamp}/ as .csv.gz and (if expand_csv)
+    decompressed .csv so they can be read directly for analysis.
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    export_folder = github_export_path.strip("/")
+    try:
+        entries = _github_list_dir(github_token, github_repo, export_folder, github_branch)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "fetched_count": 0, "folders": []}
+
+    # Keep only directories, newest first (folder names are YYYY-MM-DD_HHMMSS)
+    dirs = sorted(
+        [e for e in entries if isinstance(e, dict) and e.get("type") == "dir"],
+        key=lambda e: e.get("name", ""),
+        reverse=True,
+    )[:limit]
+
+    if not dirs:
+        return {
+            "ok": True,
+            "fetched_count": 0,
+            "output_dir": output_dir,
+            "folders": [],
+            "note": f"No export folders found in {export_folder}",
+        }
+
+    fetched: list[dict[str, Any]] = []
+    for folder_entry in dirs:
+        folder_name = folder_entry["name"]
+        folder_api_path = f"{export_folder}/{folder_name}"
+        folder_out = output_path / folder_name
+        folder_out.mkdir(parents=True, exist_ok=True)
+
+        try:
+            file_entries = _github_list_dir(
+                github_token, github_repo, folder_api_path, github_branch
+            )
+        except Exception as exc:
+            fetched.append({"folder": folder_name, "error": str(exc)})
+            continue
+
+        downloaded: list[str] = []
+        errors: list[str] = []
+
+        for f in file_entries:
+            if not isinstance(f, dict) or f.get("type") != "file":
+                continue
+            fname = f["name"]
+            download_url = f.get("download_url")
+            if not download_url:
+                continue
+
+            local_file = folder_out / fname
+            try:
+                raw = _github_download_url(download_url, github_token)
+                if raw is None:
+                    errors.append(f"{fname}: not found")
+                    continue
+                local_file.write_bytes(raw)
+                downloaded.append(fname)
+
+                if expand_csv and fname.endswith(".csv.gz"):
+                    csv_path = folder_out / fname[:-3]  # strip .gz
+                    with gzip.open(str(local_file), "rb") as gz_in:
+                        csv_path.write_bytes(gz_in.read())
+                    downloaded.append(csv_path.name)
+            except Exception as exc:
+                errors.append(f"{fname}: {exc}")
+
+        folder_info: dict[str, Any] = {
+            "folder": folder_name,
+            "local_dir": str(folder_out),
+            "files": downloaded,
+        }
+        if errors:
+            folder_info["errors"] = errors
+        fetched.append(folder_info)
+
+    logger.info(
+        "Fetched %d GitHub session export folder(s) to %s",
+        len(fetched),
+        output_dir,
+    )
+    return {
+        "ok": True,
+        "fetched_count": len(fetched),
+        "output_dir": output_dir,
+        "folders": fetched,
+    }
+
+
 def _is_optional_latest_missing(item: dict[str, Any] | None, key: str) -> bool:
     if key not in _OPTIONAL_LATEST_KEYS:
         return False

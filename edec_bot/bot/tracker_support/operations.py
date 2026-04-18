@@ -11,6 +11,38 @@ from bot.tracker_support.schema import utc_now
 logger = logging.getLogger(__name__)
 
 
+def _require_linked_decision(decision_id: int | None, label: str) -> int:
+    resolved = int(decision_id or 0)
+    if resolved <= 0:
+        raise ValueError(f"{label} requires a valid decision_id for export-safe attribution")
+    return resolved
+
+
+def _trade_update(tracker: Any, trade_id: int, updates: dict[str, object]) -> None:
+    assignments: list[str] = []
+    values: list[object] = []
+    bool_columns = {
+        "scalp_hit",
+        "high_confidence_hit",
+        "hold_to_resolution",
+        "stall_exit_triggered",
+        "ever_profitable",
+    }
+    for column, value in updates.items():
+        if value is None:
+            continue
+        assignments.append(f"{column} = ?")
+        if column in bool_columns:
+            values.append(int(bool(value)))
+        else:
+            values.append(value)
+    if not assignments:
+        return
+    values.append(trade_id)
+    tracker.conn.execute(f"UPDATE trades SET {', '.join(assignments)} WHERE id = ?", tuple(values))
+    tracker.conn.commit()
+
+
 def set_runtime_context(tracker: Any, context: dict[str, object]) -> None:
     tracker._runtime_context = dict(context)
     run_id = str(context.get("run_id") or "")
@@ -80,8 +112,10 @@ def log_decision(tracker: Any, decision: Decision) -> int:
             entry_depth_side_usd, opposite_depth_usd, depth_ratio,
             signal_score, score_velocity, score_entry, score_depth,
             score_spread, score_time, score_balance,
-            resignal_cooldown_s, min_price_improvement, last_signal_age_s
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            resignal_cooldown_s, min_price_improvement, last_signal_age_s,
+            source_prices_json, source_ages_json, source_dispersion_pct,
+            source_staleness_max_s, source_staleness_avg_s
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             decision.timestamp.isoformat(),
             decision.run_id or tracker._runtime_value("run_id"),
@@ -135,6 +169,11 @@ def log_decision(tracker: Any, decision: Decision) -> int:
             decision.resignal_cooldown_s,
             decision.min_price_improvement,
             decision.last_signal_age_s,
+            decision.source_prices_json,
+            decision.source_ages_json,
+            decision.source_dispersion_pct,
+            decision.source_staleness_max_s,
+            decision.source_staleness_avg_s,
         ),
     )
     tracker.conn.commit()
@@ -143,53 +182,109 @@ def log_decision(tracker: Any, decision: Decision) -> int:
 
 def log_trade(tracker: Any, decision_id: int, result: TradeResult) -> int:
     """Log an executed trade."""
+    resolved_decision_id = _require_linked_decision(decision_id or result.signal.decision_id, "log_trade")
     market = result.signal.market
     paper_total, _ = tracker.get_paper_capital()
+    timestamp = utc_now().isoformat()
+    entry_fill_ratio = result.entry_fill_ratio
+    if entry_fill_ratio <= 0 and result.shares_requested:
+        entry_fill_ratio = (result.shares_filled or 0.0) / max(result.shares_requested, 1e-9)
+    has_entry_fill = (result.shares_filled or 0.0) > 0
+    columns = [
+        "decision_id", "timestamp", "run_id", "app_version", "strategy_version", "config_path",
+        "config_hash", "mode", "dry_run", "order_size_usd", "paper_capital_total",
+        "market_slug", "window_id", "coin", "strategy_type", "side",
+        "up_price", "down_price", "entry_price", "target_price",
+        "combined_cost", "fee_total", "shares", "shares_requested", "shares_filled", "blocked_min_5_shares",
+        "up_order_id", "down_order_id", "buy_order_id", "sell_order_id",
+        "status", "abort_cost", "error",
+        "entry_order_submitted_at", "entry_filled_at", "entry_time_to_fill_s",
+        "entry_limit_price", "entry_fill_price", "entry_slippage", "entry_fill_ratio",
+        "exit_order_submitted_at", "exit_filled_at", "exit_limit_price", "exit_fill_price",
+        "exit_slippage", "exit_reason", "exit_price", "pnl", "time_remaining_s",
+        "bid_at_exit", "ask_at_exit", "exit_spread",
+        "max_bid_seen", "min_bid_seen", "time_to_max_bid_s", "time_to_min_bid_s",
+        "first_profit_time_s", "scalp_hit", "high_confidence_hit", "hold_to_resolution",
+        "mfe", "mae", "peak_net_pnl", "trough_net_pnl", "stall_exit_triggered",
+        "dynamic_loss_cut_pct", "loss_pct_at_exit", "favorable_excursion",
+        "ever_profitable", "cancel_repost_count",
+    ]
+    values = (
+        resolved_decision_id,
+        timestamp,
+        tracker._runtime_value("run_id"),
+        tracker._runtime_value("app_version"),
+        tracker._runtime_value("strategy_version"),
+        tracker._runtime_value("config_path"),
+        tracker._runtime_value("config_hash"),
+        tracker._runtime_value("mode"),
+        int(bool(tracker._runtime_value("dry_run", True))),
+        tracker._runtime_value("order_size_usd"),
+        paper_total,
+        market.slug,
+        market.slug,
+        market.coin,
+        result.strategy_type or "dual_leg",
+        result.side or None,
+        result.up_fill_price or None,
+        result.down_fill_price or None,
+        result.signal.entry_price or None,
+        result.signal.target_sell_price or None,
+        result.total_cost,
+        result.fee_total,
+        result.shares,
+        result.shares_requested,
+        result.shares_filled,
+        int(bool(result.blocked_min_5_shares)),
+        result.up_order_id,
+        result.down_order_id,
+        result.buy_order_id,
+        result.sell_order_id,
+        result.status,
+        result.abort_cost,
+        result.error,
+        result.entry_order_submitted_at or timestamp,
+        result.entry_filled_at or (timestamp if has_entry_fill else None),
+        result.entry_time_to_fill_s if has_entry_fill else None,
+        result.entry_limit_price or result.signal.entry_price or result.signal.combined_cost,
+        result.entry_fill_price or (result.signal.entry_price if has_entry_fill else None),
+        result.entry_slippage if has_entry_fill else None,
+        entry_fill_ratio if has_entry_fill else 0.0,
+        result.exit_order_submitted_at or None,
+        result.exit_filled_at or None,
+        result.exit_limit_price or None,
+        result.exit_fill_price or None,
+        result.exit_slippage,
+        result.exit_reason or None,
+        result.exit_price or None,
+        result.realized_pnl if result.exit_reason else None,
+        result.time_remaining_s if result.exit_reason else None,
+        result.bid_at_exit if result.exit_reason else None,
+        result.ask_at_exit if result.exit_reason else None,
+        result.exit_spread if result.exit_reason else None,
+        result.max_bid_seen if result.max_bid_seen != 0.0 else None,
+        result.min_bid_seen if result.min_bid_seen != 0.0 else None,
+        result.time_to_max_bid_s if result.time_to_max_bid_s != 0.0 else None,
+        result.time_to_min_bid_s if result.time_to_min_bid_s != 0.0 else None,
+        result.first_profit_time_s if result.first_profit_time_s != 0.0 else None,
+        int(bool(result.scalp_hit)),
+        int(bool(result.high_confidence_hit)),
+        int(bool(result.hold_to_resolution)),
+        result.mfe if result.mfe != 0.0 else None,
+        result.mae if result.mae != 0.0 else None,
+        result.peak_net_pnl if result.peak_net_pnl != 0.0 else None,
+        result.trough_net_pnl if result.trough_net_pnl != 0.0 else None,
+        int(bool(result.stall_exit_triggered)),
+        result.dynamic_loss_cut_pct if result.dynamic_loss_cut_pct != 0.0 else None,
+        result.loss_pct_at_exit if result.loss_pct_at_exit != 0.0 else None,
+        result.favorable_excursion if result.favorable_excursion != 0.0 else None,
+        int(bool(result.ever_profitable)),
+        result.cancel_repost_count,
+    )
+    placeholders = ", ".join("?" for _ in columns)
     cursor = tracker.conn.execute(
-        """INSERT INTO trades (
-            decision_id, timestamp, run_id, app_version, strategy_version, config_path,
-            config_hash, mode, dry_run, order_size_usd, paper_capital_total,
-            market_slug, window_id, coin, strategy_type, side,
-            up_price, down_price, entry_price, target_price,
-            combined_cost, fee_total, shares, shares_requested, shares_filled, blocked_min_5_shares,
-            up_order_id, down_order_id, buy_order_id, sell_order_id,
-            status, abort_cost, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            decision_id,
-            utc_now().isoformat(),
-            tracker._runtime_value("run_id"),
-            tracker._runtime_value("app_version"),
-            tracker._runtime_value("strategy_version"),
-            tracker._runtime_value("config_path"),
-            tracker._runtime_value("config_hash"),
-            tracker._runtime_value("mode"),
-            int(bool(tracker._runtime_value("dry_run", True))),
-            tracker._runtime_value("order_size_usd"),
-            paper_total,
-            market.slug,
-            market.slug,
-            market.coin,
-            result.strategy_type or "dual_leg",
-            result.side or None,
-            result.up_fill_price or None,
-            result.down_fill_price or None,
-            result.signal.entry_price or None,
-            result.signal.target_sell_price or None,
-            result.total_cost,
-            result.fee_total,
-            result.shares,
-            result.shares_requested,
-            result.shares_filled,
-            int(bool(result.blocked_min_5_shares)),
-            result.up_order_id,
-            result.down_order_id,
-            result.buy_order_id,
-            result.sell_order_id,
-            result.status,
-            result.abort_cost,
-            result.error,
-        ),
+        f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})",
+        values,
     )
     tracker.conn.commit()
     return cursor.lastrowid
@@ -230,13 +325,19 @@ def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, bt
         actual = None
         if action == "TRADE":
             trade = tracker.conn.execute(
-                "SELECT combined_cost, fee_total, status, abort_cost FROM trades WHERE decision_id = ?",
+                """SELECT combined_cost, fee_total, status, abort_cost, pnl
+                   FROM trades
+                   WHERE decision_id = ?
+                   ORDER BY id DESC
+                   LIMIT 1""",
                 (dec_id,),
             ).fetchone()
             if trade:
-                t_cost, t_fee, t_status, t_abort = trade
+                t_cost, t_fee, t_status, t_abort, t_pnl = trade
                 if t_status == "success":
                     actual = 1.0 - (t_cost + t_fee)
+                elif t_status in ("closed_win", "closed_loss", "resolved_win", "resolved_loss") and t_pnl is not None:
+                    actual = t_pnl
                 elif t_status in ("aborted", "partial_abort"):
                     actual = -t_abort
                 else:
@@ -252,6 +353,155 @@ def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, bt
 
     tracker.conn.commit()
     logger.info(f"Outcome logged: {market_slug} -> {winner}, backfilled {len(decisions)} decisions")
+
+
+def update_live_trade(
+    tracker: Any,
+    trade_id: int,
+    *,
+    sell_order_id: str | None = None,
+    status: str | None = None,
+    error: str | None = None,
+    exit_order_submitted_at: str | None = None,
+    exit_limit_price: float | None = None,
+    exit_reason: str | None = None,
+    dynamic_loss_cut_pct: float | None = None,
+    cancel_repost_count: int | None = None,
+    hold_to_resolution: bool | None = None,
+    stall_exit_triggered: bool | None = None,
+) -> None:
+    _trade_update(
+        tracker,
+        trade_id,
+        {
+            "sell_order_id": sell_order_id,
+            "status": status,
+            "error": error,
+            "exit_order_submitted_at": exit_order_submitted_at,
+            "exit_limit_price": exit_limit_price,
+            "exit_reason": exit_reason,
+            "dynamic_loss_cut_pct": dynamic_loss_cut_pct,
+            "cancel_repost_count": cancel_repost_count,
+            "hold_to_resolution": hold_to_resolution,
+            "stall_exit_triggered": stall_exit_triggered,
+        },
+    )
+
+
+def record_live_trade_path(
+    tracker: Any,
+    trade_id: int,
+    *,
+    max_bid_seen: float | None = None,
+    min_bid_seen: float | None = None,
+    time_to_max_bid_s: float | None = None,
+    time_to_min_bid_s: float | None = None,
+    first_profit_time_s: float | None = None,
+    scalp_hit: bool | None = None,
+    high_confidence_hit: bool | None = None,
+    hold_to_resolution: bool | None = None,
+    mfe: float | None = None,
+    mae: float | None = None,
+    peak_net_pnl: float | None = None,
+    trough_net_pnl: float | None = None,
+    favorable_excursion: float | None = None,
+    ever_profitable: bool | None = None,
+    cancel_repost_count: int | None = None,
+) -> None:
+    _trade_update(
+        tracker,
+        trade_id,
+        {
+            "max_bid_seen": max_bid_seen,
+            "min_bid_seen": min_bid_seen,
+            "time_to_max_bid_s": time_to_max_bid_s,
+            "time_to_min_bid_s": time_to_min_bid_s,
+            "first_profit_time_s": first_profit_time_s,
+            "scalp_hit": scalp_hit,
+            "high_confidence_hit": high_confidence_hit,
+            "hold_to_resolution": hold_to_resolution,
+            "mfe": mfe,
+            "mae": mae,
+            "peak_net_pnl": peak_net_pnl,
+            "trough_net_pnl": trough_net_pnl,
+            "favorable_excursion": favorable_excursion,
+            "ever_profitable": ever_profitable,
+            "cancel_repost_count": cancel_repost_count,
+        },
+    )
+
+
+def close_live_trade(
+    tracker: Any,
+    trade_id: int,
+    *,
+    status: str,
+    exit_reason: str,
+    exit_price: float,
+    pnl: float,
+    time_remaining_s: float | None = None,
+    bid_at_exit: float | None = None,
+    ask_at_exit: float | None = None,
+    exit_limit_price: float | None = None,
+    exit_fill_price: float | None = None,
+    max_bid_seen: float | None = None,
+    min_bid_seen: float | None = None,
+    time_to_max_bid_s: float | None = None,
+    time_to_min_bid_s: float | None = None,
+    first_profit_time_s: float | None = None,
+    scalp_hit: bool | None = None,
+    high_confidence_hit: bool | None = None,
+    hold_to_resolution: bool | None = None,
+    mfe: float | None = None,
+    mae: float | None = None,
+    peak_net_pnl: float | None = None,
+    trough_net_pnl: float | None = None,
+    stall_exit_triggered: bool | None = None,
+    dynamic_loss_cut_pct: float | None = None,
+    loss_pct_at_exit: float | None = None,
+    favorable_excursion: float | None = None,
+    ever_profitable: bool | None = None,
+    cancel_repost_count: int | None = None,
+) -> None:
+    exit_filled_at = utc_now().isoformat()
+    exit_spread = None
+    if bid_at_exit is not None and ask_at_exit is not None:
+        exit_spread = ask_at_exit - bid_at_exit
+    _trade_update(
+        tracker,
+        trade_id,
+        {
+            "status": status,
+            "exit_reason": exit_reason,
+            "exit_price": exit_price,
+            "pnl": pnl,
+            "exit_filled_at": exit_filled_at,
+            "time_remaining_s": time_remaining_s,
+            "bid_at_exit": bid_at_exit,
+            "ask_at_exit": ask_at_exit,
+            "exit_spread": exit_spread,
+            "exit_limit_price": exit_limit_price,
+            "exit_fill_price": exit_fill_price if exit_fill_price is not None else exit_price,
+            "max_bid_seen": max_bid_seen,
+            "min_bid_seen": min_bid_seen,
+            "time_to_max_bid_s": time_to_max_bid_s,
+            "time_to_min_bid_s": time_to_min_bid_s,
+            "first_profit_time_s": first_profit_time_s,
+            "scalp_hit": scalp_hit,
+            "high_confidence_hit": high_confidence_hit,
+            "hold_to_resolution": hold_to_resolution,
+            "mfe": mfe,
+            "mae": mae,
+            "peak_net_pnl": peak_net_pnl,
+            "trough_net_pnl": trough_net_pnl,
+            "stall_exit_triggered": stall_exit_triggered,
+            "dynamic_loss_cut_pct": dynamic_loss_cut_pct,
+            "loss_pct_at_exit": loss_pct_at_exit,
+            "favorable_excursion": favorable_excursion,
+            "ever_profitable": ever_profitable,
+            "cancel_repost_count": cancel_repost_count,
+        },
+    )
 
 
 def update_decision_signal_context(

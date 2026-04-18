@@ -63,12 +63,17 @@ CREATE TABLE IF NOT EXISTS decisions (
     score_balance REAL,
     resignal_cooldown_s REAL,
     min_price_improvement REAL,
-    last_signal_age_s REAL
+    last_signal_age_s REAL,
+    source_prices_json TEXT,
+    source_ages_json TEXT,
+    source_dispersion_pct REAL,
+    source_staleness_max_s REAL,
+    source_staleness_avg_s REAL
 );
 
 CREATE TABLE IF NOT EXISTS trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    decision_id INTEGER REFERENCES decisions(id),
+    decision_id INTEGER NOT NULL REFERENCES decisions(id),
     timestamp TEXT NOT NULL,
     run_id TEXT,
     app_version TEXT,
@@ -100,7 +105,44 @@ CREATE TABLE IF NOT EXISTS trades (
     sell_order_id TEXT,
     status TEXT NOT NULL,
     abort_cost REAL DEFAULT 0,
-    error TEXT
+    error TEXT,
+    entry_order_submitted_at TEXT,
+    entry_filled_at TEXT,
+    entry_time_to_fill_s REAL,
+    entry_limit_price REAL,
+    entry_fill_price REAL,
+    entry_slippage REAL,
+    entry_fill_ratio REAL,
+    exit_order_submitted_at TEXT,
+    exit_filled_at TEXT,
+    exit_limit_price REAL,
+    exit_fill_price REAL,
+    exit_slippage REAL,
+    exit_reason TEXT,
+    exit_price REAL,
+    pnl REAL,
+    time_remaining_s REAL,
+    bid_at_exit REAL,
+    ask_at_exit REAL,
+    exit_spread REAL,
+    max_bid_seen REAL,
+    min_bid_seen REAL,
+    time_to_max_bid_s REAL,
+    time_to_min_bid_s REAL,
+    first_profit_time_s REAL,
+    scalp_hit INTEGER DEFAULT 0,
+    high_confidence_hit INTEGER DEFAULT 0,
+    hold_to_resolution INTEGER DEFAULT 0,
+    mfe REAL,
+    mae REAL,
+    peak_net_pnl REAL,
+    trough_net_pnl REAL,
+    stall_exit_triggered INTEGER DEFAULT 0,
+    dynamic_loss_cut_pct REAL,
+    loss_pct_at_exit REAL,
+    favorable_excursion REAL,
+    ever_profitable INTEGER DEFAULT 0,
+    cancel_repost_count INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS outcomes (
@@ -123,7 +165,7 @@ CREATE TABLE IF NOT EXISTS decision_outcomes (
 
 CREATE TABLE IF NOT EXISTS paper_trades (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    decision_id INTEGER REFERENCES decisions(id),
+    decision_id INTEGER NOT NULL REFERENCES decisions(id),
     timestamp TEXT NOT NULL,
     run_id TEXT,
     app_version TEXT,
@@ -186,7 +228,12 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     mae REAL,
     peak_net_pnl REAL,
     trough_net_pnl REAL,
-    stall_exit_triggered INTEGER DEFAULT 0
+    stall_exit_triggered INTEGER DEFAULT 0,
+    hold_to_resolution INTEGER DEFAULT 0,
+    loss_cut_threshold_pct REAL,
+    loss_pct_at_exit REAL,
+    favorable_excursion REAL,
+    ever_profitable INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -215,6 +262,7 @@ CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
 CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
+CREATE INDEX IF NOT EXISTS idx_trades_decision ON trades(decision_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
@@ -228,7 +276,7 @@ def migrate(conn) -> None:
         """
         CREATE TABLE IF NOT EXISTS paper_trades (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            decision_id INTEGER REFERENCES decisions(id),
+            decision_id INTEGER NOT NULL REFERENCES decisions(id),
             timestamp TEXT NOT NULL,
             run_id TEXT,
             app_version TEXT,
@@ -277,7 +325,12 @@ def migrate(conn) -> None:
             time_to_min_bid_s REAL,
             first_profit_time_s REAL,
             scalp_hit INTEGER DEFAULT 0,
-            high_confidence_hit INTEGER DEFAULT 0
+            high_confidence_hit INTEGER DEFAULT 0,
+            hold_to_resolution INTEGER DEFAULT 0,
+            loss_cut_threshold_pct REAL,
+            loss_pct_at_exit REAL,
+            favorable_excursion REAL,
+            ever_profitable INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS paper_capital (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -341,6 +394,11 @@ def migrate(conn) -> None:
         "resignal_cooldown_s": "REAL",
         "min_price_improvement": "REAL",
         "last_signal_age_s": "REAL",
+        "source_prices_json": "TEXT",
+        "source_ages_json": "TEXT",
+        "source_dispersion_pct": "REAL",
+        "source_staleness_max_s": "REAL",
+        "source_staleness_avg_s": "REAL",
     }
     for col, col_type in decision_new_cols.items():
         if col not in existing:
@@ -360,6 +418,43 @@ def migrate(conn) -> None:
         "shares_requested": "REAL",
         "shares_filled": "REAL",
         "blocked_min_5_shares": "INTEGER DEFAULT 0",
+        "entry_order_submitted_at": "TEXT",
+        "entry_filled_at": "TEXT",
+        "entry_time_to_fill_s": "REAL",
+        "entry_limit_price": "REAL",
+        "entry_fill_price": "REAL",
+        "entry_slippage": "REAL",
+        "entry_fill_ratio": "REAL",
+        "exit_order_submitted_at": "TEXT",
+        "exit_filled_at": "TEXT",
+        "exit_limit_price": "REAL",
+        "exit_fill_price": "REAL",
+        "exit_slippage": "REAL",
+        "exit_reason": "TEXT",
+        "exit_price": "REAL",
+        "pnl": "REAL",
+        "time_remaining_s": "REAL",
+        "bid_at_exit": "REAL",
+        "ask_at_exit": "REAL",
+        "exit_spread": "REAL",
+        "max_bid_seen": "REAL",
+        "min_bid_seen": "REAL",
+        "time_to_max_bid_s": "REAL",
+        "time_to_min_bid_s": "REAL",
+        "first_profit_time_s": "REAL",
+        "scalp_hit": "INTEGER DEFAULT 0",
+        "high_confidence_hit": "INTEGER DEFAULT 0",
+        "hold_to_resolution": "INTEGER DEFAULT 0",
+        "mfe": "REAL",
+        "mae": "REAL",
+        "peak_net_pnl": "REAL",
+        "trough_net_pnl": "REAL",
+        "stall_exit_triggered": "INTEGER DEFAULT 0",
+        "dynamic_loss_cut_pct": "REAL",
+        "loss_pct_at_exit": "REAL",
+        "favorable_excursion": "REAL",
+        "ever_profitable": "INTEGER DEFAULT 0",
+        "cancel_repost_count": "INTEGER DEFAULT 0",
     }
     for col, col_type in trade_new_cols.items():
         if col not in trade_cols:
@@ -420,6 +515,11 @@ def migrate(conn) -> None:
         "peak_net_pnl": "REAL",
         "trough_net_pnl": "REAL",
         "stall_exit_triggered": "INTEGER DEFAULT 0",
+        "hold_to_resolution": "INTEGER DEFAULT 0",
+        "loss_cut_threshold_pct": "REAL",
+        "loss_pct_at_exit": "REAL",
+        "favorable_excursion": "REAL",
+        "ever_profitable": "INTEGER DEFAULT 0",
     }
     for col, col_type in new_pt_cols.items():
         if col not in pt_cols:

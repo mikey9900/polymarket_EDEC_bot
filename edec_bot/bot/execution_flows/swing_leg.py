@@ -17,6 +17,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
     """Buy first leg of a swing trade and start monitoring for the second leg."""
     result = TradeResult(signal=signal, strategy_type="swing_leg", side=signal.side, status="pending")
     resolved_decision_id = signal.decision_id or decision_id
+    entry_submitted_at = datetime.now(timezone.utc)
+    result.entry_order_submitted_at = entry_submitted_at.isoformat()
+    result.entry_limit_price = signal.entry_price
     market = signal.market
     coin = market.coin.upper()
 
@@ -36,6 +39,10 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         result.status = "dry_run"
         result.shares = shares
         result.shares_filled = shares
+        result.entry_filled_at = result.entry_order_submitted_at
+        result.entry_time_to_fill_s = 0.0
+        result.entry_fill_ratio = 1.0
+        result.entry_fill_price = signal.entry_price
         result.total_cost = signal.entry_price * shares
         cost = signal.entry_price * shares
 
@@ -88,6 +95,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             first_token_id=token_id,
             first_entry_price=signal.entry_price,
             first_shares=shares,
+            decision_id=resolved_decision_id,
             first_paper_trade_id=trade_id,
         )
         engine._open_swing_positions[market.coin] = position
@@ -100,6 +108,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         result.error = f"Shares too small: {shares}"
         return result
 
+    position = None
     try:
         buy_order = await asyncio.to_thread(
             engine.client.create_order,
@@ -124,7 +133,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             first_token_id=token_id,
             first_entry_price=signal.entry_price,
             first_shares=shares,
+            decision_id=resolved_decision_id,
             first_buy_order_id=buy_order_id,
+            entry_order_submitted_at=result.entry_order_submitted_at,
             requested_shares=shares,
         )
         filled_shares = engine._filled_shares(buy_resp, shares)
@@ -141,6 +152,15 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             result.shares_filled = actual_shares
             result.total_cost = signal.entry_price * actual_shares
             result.fee_total = engine._per_share_fee(signal.entry_price, market.fee_rate) * actual_shares
+            result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+            result.entry_time_to_fill_s = max(
+                0.0,
+                (datetime.now(timezone.utc) - entry_submitted_at).total_seconds(),
+            )
+            result.entry_fill_price = engine._filled_price(buy_resp, signal.entry_price)
+            result.entry_slippage = result.entry_fill_price - signal.entry_price
+            result.entry_fill_ratio = actual_shares / max(shares, 1e-9)
+            position.entry_filled_at = result.entry_filled_at
             engine._open_swing_positions[market.coin] = position
             asyncio.create_task(engine._monitor_swing_leg(position, result))
             logger.info(
@@ -164,7 +184,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
 
     finally:
         if resolved_decision_id and result.status not in ("dry_run", "failed", "submitted"):
-            engine.tracker.log_trade(resolved_decision_id, result)
+            result.trade_id = engine.tracker.log_trade(resolved_decision_id, result)
+            if position is not None:
+                position.trade_id = result.trade_id
         if result.status != "dry_run":
             engine.risk_manager.record_attempt()
             if result.status == "open":
@@ -209,10 +231,26 @@ async def monitor_entry(engine: Any, position: SwingPosition, result: TradeResul
             result.shares_filled = actual_shares
             result.total_cost = position.first_entry_price * actual_shares
             result.fee_total = engine._per_share_fee(position.first_entry_price, position.market.fee_rate) * actual_shares
+            result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+            submitted_at = position.entry_order_submitted_at or result.entry_order_submitted_at
+            if submitted_at:
+                try:
+                    start = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+                    result.entry_time_to_fill_s = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - start).total_seconds(),
+                    )
+                except Exception:
+                    result.entry_time_to_fill_s = 0.0
+            result.entry_fill_price = engine._filled_price(order_status, position.first_entry_price)
+            result.entry_slippage = result.entry_fill_price - position.first_entry_price
+            result.entry_fill_ratio = actual_shares / max(requested_shares, 1e-9)
+            position.entry_filled_at = result.entry_filled_at
             engine._pending_swing_entries.pop(position.market.coin, None)
             engine._open_swing_positions[position.market.coin] = position
             if result.signal.decision_id:
-                engine.tracker.log_trade(result.signal.decision_id, result)
+                result.trade_id = engine.tracker.log_trade(result.signal.decision_id, result)
+                position.trade_id = result.trade_id
             engine.risk_manager.open_position(result)
             logger.info(
                 f"[{coin}] SWING entry filled: BUY {position.first_side.upper()}@{position.first_entry_price:.3f} "
@@ -243,6 +281,23 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
     time_to_min_bid_s = None
     first_profit_time_s = None
     high_confidence_hit = False
+    peak_net_pnl = None
+    trough_net_pnl = None
+    mfe = None
+    mae = None
+    ever_profitable = False
+    if result is not None:
+        max_bid_seen = result.max_bid_seen or None
+        min_bid_seen = result.min_bid_seen or None
+        time_to_max_bid_s = result.time_to_max_bid_s or None
+        time_to_min_bid_s = result.time_to_min_bid_s or None
+        first_profit_time_s = result.first_profit_time_s or None
+        high_confidence_hit = bool(result.high_confidence_hit)
+        peak_net_pnl = result.peak_net_pnl if result.peak_net_pnl else None
+        trough_net_pnl = result.trough_net_pnl if result.trough_net_pnl else None
+        mfe = result.mfe if result.mfe else None
+        mae = result.mae if result.mae else None
+        ever_profitable = bool(result.ever_profitable)
 
     while True:
         await engine._wait_book_update()
@@ -263,15 +318,53 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                 order_status = await asyncio.to_thread(engine.client.get_order, position.sell_order_id)
                 status = engine._response_status(order_status)
                 if engine._is_order_filled(order_status, position.first_shares):
-                    exit_price = position.pending_exit_price or position.first_entry_price
+                    exit_price = engine._filled_price(order_status, position.pending_exit_price or position.first_entry_price)
                     actual_profit = engine._net_pnl(
                         position.first_entry_price,
                         exit_price,
                         position.market.fee_rate,
                         position.first_shares,
                     )
-                    result.status = "success"
+                    result.status = "closed_win" if actual_profit > 0 else "closed_loss"
                     result.sell_order_id = position.sell_order_id
+                    result.exit_reason = position.pending_exit_reason or "manual"
+                    result.exit_filled_at = datetime.now(timezone.utc).isoformat()
+                    result.exit_price = exit_price
+                    result.exit_fill_price = exit_price
+                    result.exit_slippage = exit_price - (result.exit_limit_price or position.pending_exit_price or exit_price)
+                    result.realized_pnl = actual_profit
+                    result.time_remaining_s = remaining
+                    result.loss_pct_at_exit = max(
+                        0.0,
+                        (position.first_entry_price - exit_price) / max(position.first_entry_price, 1e-9),
+                    )
+                    result.favorable_excursion = max(0.0, (max_bid_seen or position.first_entry_price) - position.first_entry_price)
+                    engine.tracker.close_live_trade(
+                        result.trade_id,
+                        status=result.status,
+                        exit_reason=result.exit_reason,
+                        exit_price=exit_price,
+                        pnl=actual_profit,
+                        time_remaining_s=remaining,
+                        exit_limit_price=result.exit_limit_price or position.pending_exit_price,
+                        exit_fill_price=exit_price,
+                        max_bid_seen=max_bid_seen,
+                        min_bid_seen=min_bid_seen,
+                        time_to_max_bid_s=time_to_max_bid_s,
+                        time_to_min_bid_s=time_to_min_bid_s,
+                        first_profit_time_s=first_profit_time_s,
+                        high_confidence_hit=high_confidence_hit,
+                        hold_to_resolution=position.hold_to_resolution,
+                        mfe=mfe,
+                        mae=mae,
+                        peak_net_pnl=peak_net_pnl,
+                        trough_net_pnl=trough_net_pnl,
+                        dynamic_loss_cut_pct=result.dynamic_loss_cut_pct or None,
+                        loss_pct_at_exit=result.loss_pct_at_exit,
+                        favorable_excursion=result.favorable_excursion,
+                        ever_profitable=ever_profitable,
+                        cancel_repost_count=position.cancel_repost_count,
+                    )
                     engine.risk_manager.close_position(result, actual_profit)
                     engine._open_swing_positions.pop(position.market.coin, None)
                     logger.info(f"[{coin}] SWING SELL FILLED @{exit_price:.3f} pnl=${actual_profit:+.4f}")
@@ -281,6 +374,13 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     result.sell_order_id = None
                     position.pending_exit_reason = ""
                     position.pending_exit_price = 0.0
+                    if result.trade_id:
+                        engine.tracker.update_live_trade(
+                            result.trade_id,
+                            sell_order_id="",
+                            status="open",
+                            cancel_repost_count=position.cancel_repost_count,
+                        )
                 else:
                     continue
             except Exception as exc:
@@ -296,6 +396,9 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
         bid = first_book.best_bid
         ask = first_book.best_ask
         loss_pct = (position.first_entry_price - bid) / position.first_entry_price if bid > 0 else 1.0
+        fee_buy = engine._per_share_fee(position.first_entry_price, position.market.fee_rate)
+        fee_sell = engine._per_share_fee(bid, position.market.fee_rate)
+        net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
         elapsed_s = max(0.0, (datetime.now(timezone.utc) - monitor_started_at).total_seconds())
         changed = False
         if bid > 0 and (max_bid_seen is None or bid > max_bid_seen):
@@ -306,6 +409,33 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
             min_bid_seen = bid
             time_to_min_bid_s = elapsed_s
             changed = True
+        if peak_net_pnl is None or net_pnl > peak_net_pnl:
+            peak_net_pnl = net_pnl
+            changed = True
+        if trough_net_pnl is None or net_pnl < trough_net_pnl:
+            trough_net_pnl = net_pnl
+            changed = True
+        favorable_excursion = max(0.0, (max_bid_seen or bid) - position.first_entry_price)
+        mfe = favorable_excursion
+        mae = max(0.0, position.first_entry_price - (min_bid_seen or bid))
+        if not ever_profitable and net_pnl > 0:
+            ever_profitable = True
+            changed = True
+        if result is not None:
+            result.max_bid_seen = max_bid_seen or 0.0
+            result.min_bid_seen = min_bid_seen or 0.0
+            result.time_to_max_bid_s = time_to_max_bid_s or 0.0
+            result.time_to_min_bid_s = time_to_min_bid_s or 0.0
+            result.first_profit_time_s = first_profit_time_s or 0.0
+            result.high_confidence_hit = high_confidence_hit
+            result.hold_to_resolution = position.hold_to_resolution
+            result.mfe = mfe or 0.0
+            result.mae = mae or 0.0
+            result.peak_net_pnl = peak_net_pnl or 0.0
+            result.trough_net_pnl = trough_net_pnl or 0.0
+            result.favorable_excursion = favorable_excursion
+            result.ever_profitable = ever_profitable
+            result.cancel_repost_count = position.cancel_repost_count
 
         if bid >= cfg.high_confidence_bid:
             high_confidence_hit = True
@@ -318,6 +448,34 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     time_to_min_bid_s=time_to_min_bid_s,
                     first_profit_time_s=first_profit_time_s,
                     high_confidence_hit=True,
+                    hold_to_resolution=True,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
+                )
+            elif result is not None and result.trade_id:
+                result.high_confidence_hit = True
+                result.hold_to_resolution = True
+                engine.tracker.record_live_trade_path(
+                    result.trade_id,
+                    max_bid_seen=max_bid_seen,
+                    min_bid_seen=min_bid_seen,
+                    time_to_max_bid_s=time_to_max_bid_s,
+                    time_to_min_bid_s=time_to_min_bid_s,
+                    first_profit_time_s=first_profit_time_s,
+                    high_confidence_hit=True,
+                    hold_to_resolution=True,
+                    mfe=mfe,
+                    mae=mae,
+                    peak_net_pnl=peak_net_pnl,
+                    trough_net_pnl=trough_net_pnl,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
+                    cancel_repost_count=position.cancel_repost_count,
+                )
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    hold_to_resolution=True,
+                    cancel_repost_count=position.cancel_repost_count,
                 )
             logger.info(
                 f"[{coin}] SWING HIGH-CONFIDENCE @{bid:.3f} - "
@@ -333,10 +491,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
         dynamic_loss_cut = cfg.loss_cut_pct * time_factor
 
         if first_profit_time_s is None:
-            fee_buy = engine._per_share_fee(position.first_entry_price, position.market.fee_rate)
-            fee_sell = engine._per_share_fee(bid, position.market.fee_rate)
-            net_pnl_probe = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
-            if net_pnl_probe > 0:
+            if net_pnl > 0:
                 first_profit_time_s = elapsed_s
                 changed = True
 
@@ -349,6 +504,27 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                 time_to_min_bid_s=time_to_min_bid_s,
                 first_profit_time_s=first_profit_time_s,
                 high_confidence_hit=high_confidence_hit,
+                hold_to_resolution=False,
+                favorable_excursion=favorable_excursion,
+                ever_profitable=ever_profitable,
+            )
+        elif result is not None and result.trade_id and changed:
+            engine.tracker.record_live_trade_path(
+                result.trade_id,
+                max_bid_seen=max_bid_seen,
+                min_bid_seen=min_bid_seen,
+                time_to_max_bid_s=time_to_max_bid_s,
+                time_to_min_bid_s=time_to_min_bid_s,
+                first_profit_time_s=first_profit_time_s,
+                high_confidence_hit=high_confidence_hit,
+                hold_to_resolution=position.hold_to_resolution,
+                mfe=mfe,
+                mae=mae,
+                peak_net_pnl=peak_net_pnl,
+                trough_net_pnl=trough_net_pnl,
+                favorable_excursion=favorable_excursion,
+                ever_profitable=ever_profitable,
+                cancel_repost_count=position.cancel_repost_count,
             )
 
         if loss_pct > 0 and loss_pct >= dynamic_loss_cut:
@@ -371,6 +547,10 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     time_remaining_s=remaining,
                     bid_at_exit=exit_bid,
                     ask_at_exit=ask,
+                    loss_cut_threshold_pct=dynamic_loss_cut,
+                    loss_pct_at_exit=loss_pct,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
             else:
                 try:
@@ -380,11 +560,28 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                         {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                     )
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                    submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                     position.pending_exit_reason = "loss_cut"
                     position.pending_exit_price = max(0.01, exit_bid - 0.02)
                     if result is not None:
                         result.sell_order_id = position.sell_order_id
+                        result.exit_order_submitted_at = submitted_at
+                        result.exit_limit_price = position.pending_exit_price
+                        result.exit_reason = "loss_cut"
+                        result.dynamic_loss_cut_pct = dynamic_loss_cut
+                        result.loss_pct_at_exit = loss_pct
+                        if result.trade_id:
+                            engine.tracker.update_live_trade(
+                                result.trade_id,
+                                sell_order_id=position.sell_order_id,
+                                status="open",
+                                exit_order_submitted_at=submitted_at,
+                                exit_limit_price=position.pending_exit_price,
+                                exit_reason="loss_cut",
+                                dynamic_loss_cut_pct=dynamic_loss_cut,
+                                cancel_repost_count=position.cancel_repost_count,
+                            )
                 except Exception as exc:
                     logger.error(f"[{coin}] Swing loss cut sell failed: {exc}")
             if is_dry:
@@ -392,9 +589,6 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                 return
             continue
 
-        fee_buy = engine._per_share_fee(position.first_entry_price, position.market.fee_rate)
-        fee_sell = engine._per_share_fee(bid, position.market.fee_rate)
-        net_pnl = (bid - position.first_entry_price - fee_buy - fee_sell) * position.first_shares
         if net_pnl > 0:
             pnl = net_pnl
             logger.info(f"[{coin}] SWING NET-POSITIVE EXIT @{bid:.3f} pnl=${pnl:+.4f}")
@@ -408,6 +602,8 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     time_remaining_s=remaining,
                     bid_at_exit=bid,
                     ask_at_exit=ask,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
             else:
                 try:
@@ -417,11 +613,25 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                         {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                     )
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                    submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                     position.pending_exit_reason = "profit_target"
                     position.pending_exit_price = bid
                     if result is not None:
                         result.sell_order_id = position.sell_order_id
+                        result.exit_order_submitted_at = submitted_at
+                        result.exit_limit_price = bid
+                        result.exit_reason = "profit_target"
+                        if result.trade_id:
+                            engine.tracker.update_live_trade(
+                                result.trade_id,
+                                sell_order_id=position.sell_order_id,
+                                status="open",
+                                exit_order_submitted_at=submitted_at,
+                                exit_limit_price=bid,
+                                exit_reason="profit_target",
+                                cancel_repost_count=position.cancel_repost_count,
+                            )
                 except Exception as exc:
                     logger.error(f"[{coin}] Swing target sell failed: {exc}")
             if is_dry:
@@ -444,6 +654,8 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     time_remaining_s=remaining,
                     bid_at_exit=bid,
                     ask_at_exit=ask,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
             else:
                 try:
@@ -453,11 +665,25 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                         {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                     )
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                    submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                     position.pending_exit_reason = "near_close"
                     position.pending_exit_price = bid
                     if result is not None:
                         result.sell_order_id = position.sell_order_id
+                        result.exit_order_submitted_at = submitted_at
+                        result.exit_limit_price = bid
+                        result.exit_reason = "near_close"
+                        if result.trade_id:
+                            engine.tracker.update_live_trade(
+                                result.trade_id,
+                                sell_order_id=position.sell_order_id,
+                                status="open",
+                                exit_order_submitted_at=submitted_at,
+                                exit_limit_price=bid,
+                                exit_reason="near_close",
+                                cancel_repost_count=position.cancel_repost_count,
+                            )
                 except Exception as exc:
                     logger.error(f"[{coin}] Swing near-close sell failed: {exc}")
             if is_dry:

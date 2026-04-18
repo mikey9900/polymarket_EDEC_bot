@@ -68,6 +68,11 @@ class PriceAggregator:
 
         # Weighted median
         price = self._weighted_median(active)
+        source_ages = {src: max(0.0, now - tick.timestamp) for src, tick in active.items()}
+        prices = [tick.price for tick in active.values()]
+        source_dispersion_pct = 0.0
+        if price > 0 and prices:
+            source_dispersion_pct = ((max(prices) - min(prices)) / price) * 100.0
 
         # Velocity calculations
         vel_30 = self._calc_velocity(coin, now, 30)
@@ -85,6 +90,10 @@ class PriceAggregator:
             is_trending=is_trending,
             source_count=len(active),
             sources={src: tick.price for src, tick in active.items()},
+            source_ages_s=source_ages,
+            source_dispersion_pct=source_dispersion_pct,
+            source_staleness_max_s=max(source_ages.values()) if source_ages else 0.0,
+            source_staleness_avg_s=(sum(source_ages.values()) / len(source_ages)) if source_ages else 0.0,
             coin=coin,
         )
 

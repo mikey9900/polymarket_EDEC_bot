@@ -17,6 +17,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
     """Buy one side with a GTC limit and monitor it with strategy-specific exits."""
     result = TradeResult(signal=signal, strategy_type=signal.strategy_type, side=signal.side, status="pending")
     resolved_decision_id = signal.decision_id or decision_id
+    entry_submitted_at = datetime.now(timezone.utc)
+    result.entry_order_submitted_at = entry_submitted_at.isoformat()
+    result.entry_limit_price = signal.entry_price
 
     market = signal.market
     coin = market.coin.upper()
@@ -31,6 +34,10 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         result.status = "dry_run"
         result.shares = shares
         result.shares_filled = shares
+        result.entry_filled_at = result.entry_order_submitted_at
+        result.entry_time_to_fill_s = 0.0
+        result.entry_fill_ratio = 1.0
+        result.entry_fill_price = signal.entry_price
         result.total_cost = signal.entry_price * shares
         result.fee_total = signal.fee_total
         cost = signal.entry_price * shares
@@ -99,6 +106,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         return result
 
     result.shares = shares
+    position = None
 
     try:
         buy_order = await asyncio.to_thread(
@@ -128,6 +136,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             sell_order_id=None,
             strategy_type=signal.strategy_type,
             decision_id=resolved_decision_id,
+            entry_order_submitted_at=result.entry_order_submitted_at,
             requested_shares=shares,
         )
         filled_shares = engine._filled_shares(buy_resp, shares)
@@ -144,6 +153,15 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             result.shares_filled = actual_shares
             result.total_cost = signal.entry_price * actual_shares
             result.fee_total = engine._per_share_fee(signal.entry_price, market.fee_rate) * actual_shares
+            result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+            result.entry_time_to_fill_s = max(
+                0.0,
+                (datetime.now(timezone.utc) - entry_submitted_at).total_seconds(),
+            )
+            result.entry_fill_price = engine._filled_price(buy_resp, signal.entry_price)
+            result.entry_slippage = result.entry_fill_price - signal.entry_price
+            result.entry_fill_ratio = actual_shares / max(shares, 1e-9)
+            position.entry_filled_at = result.entry_filled_at
             engine._open_positions[buy_order_id] = position
             asyncio.create_task(engine._monitor_single_leg(position, result))
             if signal.strategy_type == "lead_lag":
@@ -189,7 +207,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
 
     finally:
         if resolved_decision_id and result.status not in ("dry_run", "submitted"):
-            engine.tracker.log_trade(resolved_decision_id, result)
+            result.trade_id = engine.tracker.log_trade(resolved_decision_id, result)
+            if position is not None:
+                position.trade_id = result.trade_id
         if result.status != "dry_run":
             engine.risk_manager.record_attempt()
             if result.status == "open":
@@ -232,10 +252,26 @@ async def monitor_entry(engine: Any, position: SingleLegPosition, result: TradeR
             result.shares_filled = actual_shares
             result.total_cost = position.entry_price * actual_shares
             result.fee_total = engine._per_share_fee(position.entry_price, position.market.fee_rate) * actual_shares
+            result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+            submitted_at = position.entry_order_submitted_at or result.entry_order_submitted_at
+            if submitted_at:
+                try:
+                    start = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+                    result.entry_time_to_fill_s = max(
+                        0.0,
+                        (datetime.now(timezone.utc) - start).total_seconds(),
+                    )
+                except Exception:
+                    result.entry_time_to_fill_s = 0.0
+            result.entry_fill_price = engine._filled_price(order_status, position.entry_price)
+            result.entry_slippage = result.entry_fill_price - position.entry_price
+            result.entry_fill_ratio = actual_shares / max(requested_shares, 1e-9)
+            position.entry_filled_at = result.entry_filled_at
             engine._pending_single_entries.pop(position.buy_order_id, None)
             engine._open_positions[position.buy_order_id] = position
             if position.decision_id:
-                engine.tracker.log_trade(position.decision_id, result)
+                result.trade_id = engine.tracker.log_trade(position.decision_id, result)
+                position.trade_id = result.trade_id
             engine.risk_manager.open_position(result)
             logger.info(
                 f"[{coin}] {position.strategy_type.upper()} entry filled: "
@@ -261,8 +297,35 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
     cfg = engine.config.single_leg
     high_confidence_held = position.hold_to_resolution
     monitor_started_at = datetime.now(timezone.utc)
-    max_bid_seen = None
-    ever_profitable = False
+    max_bid_seen = result.max_bid_seen or None
+    min_bid_seen = result.min_bid_seen or None
+    time_to_max_bid_s = result.time_to_max_bid_s or None
+    time_to_min_bid_s = result.time_to_min_bid_s or None
+    first_profit_time_s = result.first_profit_time_s or None
+    scalp_hit = bool(result.scalp_hit)
+    high_confidence_hit = bool(result.high_confidence_hit)
+    peak_net_pnl = result.peak_net_pnl if result.peak_net_pnl else None
+    trough_net_pnl = result.trough_net_pnl if result.trough_net_pnl else None
+    mfe = result.mfe if result.mfe else None
+    mae = result.mae if result.mae else None
+    ever_profitable = bool(result.ever_profitable)
+
+    def sync_result(favorable_excursion: float) -> None:
+        result.max_bid_seen = max_bid_seen or 0.0
+        result.min_bid_seen = min_bid_seen or 0.0
+        result.time_to_max_bid_s = time_to_max_bid_s or 0.0
+        result.time_to_min_bid_s = time_to_min_bid_s or 0.0
+        result.first_profit_time_s = first_profit_time_s or 0.0
+        result.scalp_hit = scalp_hit
+        result.high_confidence_hit = high_confidence_hit
+        result.hold_to_resolution = high_confidence_held
+        result.mfe = mfe or 0.0
+        result.mae = mae or 0.0
+        result.peak_net_pnl = peak_net_pnl or 0.0
+        result.trough_net_pnl = trough_net_pnl or 0.0
+        result.favorable_excursion = favorable_excursion
+        result.ever_profitable = ever_profitable
+        result.cancel_repost_count = position.cancel_repost_count
 
     while True:
         await engine._wait_book_update()
@@ -273,19 +336,127 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
             logger.info(f"[{coin}] Live position awaiting market resolution: {position.buy_order_id}")
             return
 
+        try:
+            book = await engine._fetch_book_price(position.token_id)
+            bid = book.best_bid
+            ask = book.best_ask
+        except Exception:
+            continue
+
+        if bid <= 0:
+            continue
+
+        elapsed_s = max(0.0, (datetime.now(timezone.utc) - monitor_started_at).total_seconds())
+        changed = False
+        if max_bid_seen is None or bid > max_bid_seen:
+            max_bid_seen = bid
+            time_to_max_bid_s = elapsed_s
+            changed = True
+        if min_bid_seen is None or bid < min_bid_seen:
+            min_bid_seen = bid
+            time_to_min_bid_s = elapsed_s
+            changed = True
+
+        net_pnl = engine._net_pnl(position.entry_price, bid, position.market.fee_rate, position.shares)
+        favorable_excursion = max(0.0, (max_bid_seen if max_bid_seen is not None else bid) - position.entry_price)
+        loss_pct = max(0.0, (position.entry_price - bid) / max(position.entry_price, 1e-9))
+        if peak_net_pnl is None or net_pnl > peak_net_pnl:
+            peak_net_pnl = net_pnl
+            changed = True
+        if trough_net_pnl is None or net_pnl < trough_net_pnl:
+            trough_net_pnl = net_pnl
+            changed = True
+        mfe = favorable_excursion
+        mae = max(0.0, position.entry_price - (min_bid_seen if min_bid_seen is not None else bid))
+        if first_profit_time_s is None and net_pnl > 0:
+            first_profit_time_s = elapsed_s
+            changed = True
+        if not ever_profitable and net_pnl > 0:
+            ever_profitable = True
+            changed = True
+        if position.strategy_type != "lead_lag":
+            if bid >= cfg.scalp_take_profit_bid and not scalp_hit:
+                scalp_hit = True
+                changed = True
+            if bid >= cfg.high_confidence_bid and not high_confidence_hit:
+                high_confidence_hit = True
+                changed = True
+        sync_result(favorable_excursion)
+        if changed and result.trade_id:
+            engine.tracker.record_live_trade_path(
+                result.trade_id,
+                max_bid_seen=max_bid_seen,
+                min_bid_seen=min_bid_seen,
+                time_to_max_bid_s=time_to_max_bid_s,
+                time_to_min_bid_s=time_to_min_bid_s,
+                first_profit_time_s=first_profit_time_s,
+                scalp_hit=scalp_hit,
+                high_confidence_hit=high_confidence_hit,
+                hold_to_resolution=high_confidence_held,
+                mfe=mfe,
+                mae=mae,
+                peak_net_pnl=peak_net_pnl,
+                trough_net_pnl=trough_net_pnl,
+                favorable_excursion=favorable_excursion,
+                ever_profitable=ever_profitable,
+                cancel_repost_count=position.cancel_repost_count,
+            )
+
         if position.sell_order_id and not high_confidence_held:
             try:
                 order_status = await asyncio.to_thread(engine.client.get_order, position.sell_order_id)
                 status = engine._response_status(order_status)
                 if engine._is_order_filled(order_status, position.shares):
-                    exit_price = position.pending_exit_price or position.target_price
-                    result.status = "success"
-                    result.sell_order_id = position.sell_order_id
+                    exit_price = engine._filled_price(order_status, position.pending_exit_price or position.target_price)
                     actual_profit = engine._net_pnl(
                         position.entry_price,
                         exit_price,
                         position.market.fee_rate,
                         position.shares,
+                    )
+                    result.status = "closed_win" if actual_profit > 0 else "closed_loss"
+                    result.sell_order_id = position.sell_order_id
+                    result.exit_reason = position.pending_exit_reason or "manual"
+                    result.exit_filled_at = datetime.now(timezone.utc).isoformat()
+                    result.exit_price = exit_price
+                    result.exit_fill_price = exit_price
+                    result.exit_slippage = exit_price - (result.exit_limit_price or position.pending_exit_price or exit_price)
+                    result.realized_pnl = actual_profit
+                    result.time_remaining_s = remaining
+                    result.bid_at_exit = bid
+                    result.ask_at_exit = ask
+                    result.exit_spread = ask - bid
+                    result.loss_pct_at_exit = loss_pct
+                    result.stall_exit_triggered = result.exit_reason == "stall_exit"
+                    engine.tracker.close_live_trade(
+                        result.trade_id,
+                        status=result.status,
+                        exit_reason=result.exit_reason,
+                        exit_price=exit_price,
+                        pnl=actual_profit,
+                        time_remaining_s=remaining,
+                        bid_at_exit=bid,
+                        ask_at_exit=ask,
+                        exit_limit_price=result.exit_limit_price or position.pending_exit_price,
+                        exit_fill_price=exit_price,
+                        max_bid_seen=max_bid_seen,
+                        min_bid_seen=min_bid_seen,
+                        time_to_max_bid_s=time_to_max_bid_s,
+                        time_to_min_bid_s=time_to_min_bid_s,
+                        first_profit_time_s=first_profit_time_s,
+                        scalp_hit=scalp_hit,
+                        high_confidence_hit=high_confidence_hit,
+                        hold_to_resolution=high_confidence_held,
+                        mfe=mfe,
+                        mae=mae,
+                        peak_net_pnl=peak_net_pnl,
+                        trough_net_pnl=trough_net_pnl,
+                        stall_exit_triggered=result.stall_exit_triggered,
+                        dynamic_loss_cut_pct=result.dynamic_loss_cut_pct or None,
+                        loss_pct_at_exit=loss_pct,
+                        favorable_excursion=favorable_excursion,
+                        ever_profitable=ever_profitable,
+                        cancel_repost_count=position.cancel_repost_count,
                     )
                     engine.risk_manager.close_position(result, actual_profit)
                     logger.info(
@@ -299,24 +470,18 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     result.sell_order_id = None
                     position.pending_exit_reason = ""
                     position.pending_exit_price = 0.0
+                    if result.trade_id:
+                        engine.tracker.update_live_trade(
+                            result.trade_id,
+                            sell_order_id="",
+                            status="open",
+                            cancel_repost_count=position.cancel_repost_count,
+                        )
                 else:
                     continue
             except Exception as exc:
                 logger.warning(f"[{coin}] Order status check failed: {exc}")
                 continue
-
-        try:
-            book = await engine._fetch_book_price(position.token_id)
-            bid = book.best_bid
-        except Exception:
-            continue
-
-        if bid <= 0:
-            continue
-
-        elapsed_s = max(0.0, (datetime.now(timezone.utc) - monitor_started_at).total_seconds())
-        if max_bid_seen is None or bid > max_bid_seen:
-            max_bid_seen = bid
 
         if position.strategy_type == "lead_lag":
             exit_reason, net_pnl, loss_pct = engine._lead_lag_exit_reason(
@@ -331,7 +496,6 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 shares=position.shares,
                 fee_rate=position.market.fee_rate,
             )
-            ever_profitable = ever_profitable or net_pnl > 0
             if exit_reason and not position.sell_order_id:
                 try:
                     exit_price = engine._live_exit_price(bid, exit_reason)
@@ -341,10 +505,29 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                         {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                     )
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                    submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                     position.pending_exit_reason = exit_reason
                     position.pending_exit_price = exit_price
                     result.sell_order_id = position.sell_order_id
+                    result.exit_order_submitted_at = submitted_at
+                    result.exit_limit_price = exit_price
+                    result.exit_reason = exit_reason
+                    result.time_remaining_s = remaining
+                    result.loss_pct_at_exit = loss_pct
+                    result.stall_exit_triggered = exit_reason == "stall_exit"
+                    if result.trade_id:
+                        engine.tracker.update_live_trade(
+                            result.trade_id,
+                            sell_order_id=position.sell_order_id,
+                            status="open",
+                            exit_order_submitted_at=submitted_at,
+                            exit_limit_price=exit_price,
+                            exit_reason=exit_reason,
+                            cancel_repost_count=position.cancel_repost_count,
+                            hold_to_resolution=high_confidence_held,
+                            stall_exit_triggered=result.stall_exit_triggered,
+                        )
                     logger.info(
                         f"[{coin}] LEAD-LAG {exit_reason.upper()} @{exit_price:.3f} "
                         f"(bid={bid:.3f}, pnl=${net_pnl:+.4f}, loss={loss_pct:.1%}, {remaining:.0f}s left)"
@@ -353,8 +536,6 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     logger.error(f"[{coin}] Lead-lag sell failed: {exc}")
             continue
 
-        loss_pct = (position.entry_price - bid) / position.entry_price
-        net_pnl = engine._net_pnl(position.entry_price, bid, position.market.fee_rate, position.shares)
         dynamic_loss_cut = engine._dynamic_single_leg_loss_cut(remaining)
 
         if bid >= cfg.scalp_take_profit_bid and bid < cfg.high_confidence_bid and net_pnl >= cfg.scalp_min_profit_usd:
@@ -366,10 +547,25 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                 )
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                 position.pending_exit_reason = "profit_target"
                 position.pending_exit_price = scalp_price
                 result.sell_order_id = position.sell_order_id
+                result.exit_order_submitted_at = submitted_at
+                result.exit_limit_price = scalp_price
+                result.exit_reason = "profit_target"
+                result.time_remaining_s = remaining
+                if result.trade_id:
+                    engine.tracker.update_live_trade(
+                        result.trade_id,
+                        sell_order_id=position.sell_order_id,
+                        status="open",
+                        exit_order_submitted_at=submitted_at,
+                        exit_limit_price=scalp_price,
+                        exit_reason="profit_target",
+                        cancel_repost_count=position.cancel_repost_count,
+                    )
                 logger.info(
                     f"[{coin}] SCALP EXIT @{scalp_price:.3f} "
                     f"(net pnl=${net_pnl:+.4f}, target>={cfg.scalp_take_profit_bid:.2f})"
@@ -381,6 +577,32 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
         if bid >= cfg.high_confidence_bid and not high_confidence_held:
             high_confidence_held = True
             position.hold_to_resolution = True
+            result.high_confidence_hit = True
+            result.hold_to_resolution = True
+            if result.trade_id:
+                engine.tracker.record_live_trade_path(
+                    result.trade_id,
+                    max_bid_seen=max_bid_seen,
+                    min_bid_seen=min_bid_seen,
+                    time_to_max_bid_s=time_to_max_bid_s,
+                    time_to_min_bid_s=time_to_min_bid_s,
+                    first_profit_time_s=first_profit_time_s,
+                    scalp_hit=scalp_hit,
+                    high_confidence_hit=True,
+                    hold_to_resolution=True,
+                    mfe=mfe,
+                    mae=mae,
+                    peak_net_pnl=peak_net_pnl,
+                    trough_net_pnl=trough_net_pnl,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
+                    cancel_repost_count=position.cancel_repost_count,
+                )
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    hold_to_resolution=True,
+                    cancel_repost_count=position.cancel_repost_count,
+                )
             logger.info(
                 f"[{coin}] HIGH-CONFIDENCE @{bid:.3f} - "
                 f"holding {position.side.upper()} to resolution ({remaining:.0f}s left)"
@@ -393,8 +615,10 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     await asyncio.to_thread(engine.client.cancel, position.sell_order_id)
                 except Exception:
                     pass
+                position.cancel_repost_count += 1
                 position.sell_order_id = None
                 result.sell_order_id = None
+                result.cancel_repost_count = position.cancel_repost_count
             if position.sell_order_id:
                 continue
             try:
@@ -405,10 +629,28 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                 )
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                 position.pending_exit_reason = "loss_cut"
                 position.pending_exit_price = emergency_price
                 result.sell_order_id = position.sell_order_id
+                result.exit_order_submitted_at = submitted_at
+                result.exit_limit_price = emergency_price
+                result.exit_reason = "loss_cut"
+                result.dynamic_loss_cut_pct = dynamic_loss_cut
+                result.time_remaining_s = remaining
+                result.loss_pct_at_exit = loss_pct
+                if result.trade_id:
+                    engine.tracker.update_live_trade(
+                        result.trade_id,
+                        sell_order_id=position.sell_order_id,
+                        status="open",
+                        exit_order_submitted_at=submitted_at,
+                        exit_limit_price=emergency_price,
+                        exit_reason="loss_cut",
+                        dynamic_loss_cut_pct=dynamic_loss_cut,
+                        cancel_repost_count=position.cancel_repost_count,
+                    )
                 logger.info(
                     f"[{coin}] LOSS CUT @{emergency_price:.3f} "
                     f"(loss={loss_pct:.0%} >= {dynamic_loss_cut:.0%}, {remaining:.0f}s left)"
@@ -423,8 +665,10 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     await asyncio.to_thread(engine.client.cancel, position.sell_order_id)
                 except Exception:
                     pass
+                position.cancel_repost_count += 1
                 position.sell_order_id = None
                 result.sell_order_id = None
+                result.cancel_repost_count = position.cancel_repost_count
             if position.sell_order_id:
                 continue
             try:
@@ -435,10 +679,25 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     {"tick_size": position.market.tick_size, "neg_risk": position.market.neg_risk},
                 )
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
+                submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
                 position.pending_exit_reason = "near_close"
                 position.pending_exit_price = emergency_price
                 result.sell_order_id = position.sell_order_id
+                result.exit_order_submitted_at = submitted_at
+                result.exit_limit_price = emergency_price
+                result.exit_reason = "near_close"
+                result.time_remaining_s = remaining
+                if result.trade_id:
+                    engine.tracker.update_live_trade(
+                        result.trade_id,
+                        sell_order_id=position.sell_order_id,
+                        status="open",
+                        exit_order_submitted_at=submitted_at,
+                        exit_limit_price=emergency_price,
+                        exit_reason="near_close",
+                        cancel_repost_count=position.cancel_repost_count,
+                    )
                 logger.info(f"[{coin}] NEAR-CLOSE emergency sell @ {emergency_price:.3f}")
             except Exception as exc:
                 logger.error(f"[{coin}] Near-close sell failed: {exc}")
@@ -499,14 +758,17 @@ async def monitor_paper_position(
                 changed = True
 
             net_pnl = engine._net_pnl(entry_price, bid, market.fee_rate, shares)
-            ever_profitable = ever_profitable or net_pnl > 0
+            favorable_excursion = max(0.0, (max_bid_seen or bid) - entry_price)
+            if not ever_profitable and net_pnl > 0:
+                ever_profitable = True
+                changed = True
             if peak_net_pnl is None or net_pnl > peak_net_pnl:
                 peak_net_pnl = net_pnl
                 changed = True
             if trough_net_pnl is None or net_pnl < trough_net_pnl:
                 trough_net_pnl = net_pnl
                 changed = True
-            mfe = max(0.0, (max_bid_seen or bid) - entry_price)
+            mfe = favorable_excursion
             mae = max(0.0, entry_price - (min_bid_seen or bid))
             if first_profit_time_s is None and net_pnl > 0:
                 first_profit_time_s = elapsed_s
@@ -527,10 +789,13 @@ async def monitor_paper_position(
                     first_profit_time_s=first_profit_time_s,
                     scalp_hit=scalp_hit,
                     high_confidence_hit=high_confidence_hit,
+                    hold_to_resolution=False,
                     mfe=mfe,
                     mae=mae,
                     peak_net_pnl=peak_net_pnl,
                     trough_net_pnl=trough_net_pnl,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
 
             if strategy_type == "lead_lag":
@@ -558,6 +823,9 @@ async def monitor_paper_position(
                         bid_at_exit=bid,
                         ask_at_exit=ask,
                         stall_exit_triggered=(exit_reason == "stall_exit"),
+                        loss_pct_at_exit=loss_pct,
+                        favorable_excursion=favorable_excursion,
+                        ever_profitable=ever_profitable,
                     )
                     logger.info(
                         f"[{coin}] Paper LEAD-LAG {exit_reason.upper()} @{bid:.3f} "
@@ -576,10 +844,13 @@ async def monitor_paper_position(
                     first_profit_time_s=first_profit_time_s,
                     scalp_hit=scalp_hit,
                     high_confidence_hit=True,
+                    hold_to_resolution=True,
                     mfe=mfe,
                     mae=mae,
                     peak_net_pnl=peak_net_pnl,
                     trough_net_pnl=trough_net_pnl,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
                 logger.info(f"[{coin}] Paper HIGH-CONFIDENCE @{bid:.3f} - holding to resolution ({remaining:.0f}s)")
                 return
@@ -594,6 +865,8 @@ async def monitor_paper_position(
                     time_remaining_s=remaining,
                     bid_at_exit=bid,
                     ask_at_exit=ask,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
                 logger.info(
                     f"[{coin}] Paper SCALP EXIT @{bid:.3f} "
@@ -614,6 +887,10 @@ async def monitor_paper_position(
                     time_remaining_s=remaining,
                     bid_at_exit=bid,
                     ask_at_exit=ask,
+                    loss_cut_threshold_pct=dynamic_loss_cut,
+                    loss_pct_at_exit=loss_pct,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
                 logger.info(
                     f"[{coin}] Paper LOSS CUT @{bid:.3f} "
@@ -633,6 +910,8 @@ async def monitor_paper_position(
                     time_remaining_s=remaining,
                     bid_at_exit=bid,
                     ask_at_exit=ask,
+                    favorable_excursion=favorable_excursion,
+                    ever_profitable=ever_profitable,
                 )
                 logger.info(f"[{coin}] Paper NEAR-CLOSE exit @{bid:.3f} pnl=${net_pnl:+.4f}")
                 return

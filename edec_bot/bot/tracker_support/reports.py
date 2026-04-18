@@ -23,7 +23,7 @@ def get_daily_stats(tracker: Any, date: str | None = None) -> dict:
     ).fetchall()
 
     total_trades = len(trades)
-    successful = sum(1 for trade in trades if trade[0] == "success")
+    successful = sum(1 for trade in trades if trade[0] in ("success", "closed_win", "resolved_win"))
     aborted = sum(1 for trade in trades if trade[0] in ("aborted", "partial_abort"))
     decision_counts = {action: count for action, count in decisions}
 
@@ -44,7 +44,7 @@ def get_recent_trades(tracker: Any, limit: int = 10) -> list[dict]:
         """SELECT t.timestamp, t.market_slug, t.coin, t.strategy_type, t.side,
                   t.up_price, t.down_price, t.entry_price, t.target_price,
                   t.combined_cost, t.fee_total, t.shares, t.status, t.abort_cost,
-                  do.actual_profit
+                  COALESCE(t.pnl, do.actual_profit), t.exit_reason
            FROM trades t
            LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
            ORDER BY t.id DESC LIMIT ?""",
@@ -68,6 +68,7 @@ def get_recent_trades(tracker: Any, limit: int = 10) -> list[dict]:
             "status": row[12],
             "abort_cost": row[13],
             "actual_profit": row[14],
+            "exit_reason": row[15],
         }
         for row in rows
     ]

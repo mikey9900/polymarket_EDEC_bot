@@ -367,9 +367,6 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
     """Detailed per-trade journal with entry reasoning, market context, and lessons."""
     sheet_name = "Loss Journal" if status == "closed_loss" else "Win Journal"
     ws = wb.create_sheet(sheet_name)
-    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
-    decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
-
     # Row 1 — section divider labels (merged cells)
     sections = [
         ("TRADE INFO",      1,  7),
@@ -457,14 +454,7 @@ def _build_trade_journal_sheet(wb, conn, date_str: str | None, status: str):
             d.time_remaining_s    AS entry_remaining,
             d.reason              AS decision_reason
         FROM paper_trades pt
-        LEFT JOIN (
-            SELECT market_slug, strategy_type, MAX(id) AS best_id
-            FROM decisions
-            WHERE action != 'SKIP'
-            GROUP BY market_slug, strategy_type
-        ) top_d ON top_d.market_slug   = pt.market_slug
-               AND top_d.strategy_type = pt.strategy_type
-        LEFT JOIN decisions d ON d.id = {decision_join_id}
+        LEFT JOIN decisions d ON d.id = pt.decision_id
         WHERE pt.status = ? {extra}
         ORDER BY pt.timestamp DESC
     """, params).fetchall()
@@ -584,6 +574,7 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         "Score Spread", "Score Time", "Score Balance",
         "Target Delta", "Hard Stop Delta", "MFE", "MAE",
         "Peak Net P&L", "Trough Net P&L", "Stall Exit",
+        "Hold To Res", "Loss Cut Threshold", "Loss % @ Exit", "Favorable Excursion", "Ever Profitable",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -605,7 +596,8 @@ def _build_paper_trades_sheet(wb, conn, date_str):
                signal_score, score_velocity, score_entry, score_depth,
                score_spread, score_time, score_balance,
                target_delta, hard_stop_delta, mfe, mae,
-               peak_net_pnl, trough_net_pnl, stall_exit_triggered
+               peak_net_pnl, trough_net_pnl, stall_exit_triggered,
+               hold_to_resolution, loss_cut_threshold_pct, loss_pct_at_exit, favorable_excursion, ever_profitable
         FROM paper_trades {where}
         ORDER BY id DESC LIMIT 10000
     """, params)
@@ -967,9 +959,9 @@ def _build_daily_summary_sheet(wb, conn):
 
         live = conn.execute("""
             SELECT COUNT(*),
-                   SUM(CASE WHEN status='success' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN status IN ('success','closed_win','resolved_win') THEN 1 ELSE 0 END),
                    SUM(CASE WHEN status IN ('aborted','partial_abort') THEN 1 ELSE 0 END),
-                   ROUND(COALESCE(SUM(do.actual_profit), 0), 4)
+                   ROUND(COALESCE(SUM(COALESCE(t.pnl, do.actual_profit)), 0), 4)
             FROM trades t
             LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
             WHERE DATE(t.timestamp) = ?
@@ -1009,8 +1001,9 @@ def _build_trades_sheet(wb, conn, date_str):
     ws = wb.create_sheet("Live Trades")
     headers = [
         "Timestamp", "Coin", "Strategy", "Side", "Market",
-        "UP Price $", "DOWN Price $", "Entry $", "Target $",
-        "Combined Cost", "Fees $", "Shares", "Status", "Abort Cost $", "Actual P&L $",
+        "Entry Limit $", "Entry Fill $", "Entry Slip $", "Target $", "Exit Limit $", "Exit Fill $",
+        "Exit Reason", "Hold To Res", "Shares", "Status", "Abort Cost $", "Actual P&L $",
+        "Max Bid $", "Min Bid $", "MFE", "MAE", "Loss % @ Exit", "Reposts",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -1020,22 +1013,24 @@ def _build_trades_sheet(wb, conn, date_str):
     params = (f"{date_str}%",) if date_str else ()
     for ri, row in enumerate(conn.execute(f"""
         SELECT t.timestamp, t.coin, t.strategy_type, t.side, t.market_slug,
-               t.up_price, t.down_price, t.entry_price, t.target_price,
-               t.combined_cost, t.fee_total, t.shares, t.status, t.abort_cost,
-               do.actual_profit
+               COALESCE(t.entry_limit_price, t.entry_price), t.entry_fill_price, t.entry_slippage,
+               t.target_price, t.exit_limit_price, t.exit_fill_price,
+               t.exit_reason, t.hold_to_resolution, t.shares, t.status, t.abort_cost,
+               COALESCE(t.pnl, do.actual_profit), t.max_bid_seen, t.min_bid_seen,
+               t.mfe, t.mae, t.loss_pct_at_exit, t.cancel_repost_count
         FROM trades t
         LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
         {where} ORDER BY t.id DESC
     """, params), start=2):
         r = list(row)
         ws.append(r)
-        status = str(r[12] or "").lower()
-        row_fill = (WIN_FILL if status == "success" else
-                    LOSS_FILL if status in ("aborted", "partial_abort", "failed") else None)
+        status = str(r[14] or "").lower()
+        row_fill = (WIN_FILL if status in ("success", "closed_win", "resolved_win") else
+                    LOSS_FILL if status in ("aborted", "partial_abort", "failed", "closed_loss", "resolved_loss") else None)
         if row_fill:
             for col in range(1, len(headers) + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
-        _pnl_cell(ws.cell(row=ri, column=15))
+        _pnl_cell(ws.cell(row=ri, column=17))
 
     _auto_width(ws)
     ws.auto_filter.ref = ws.dimensions
@@ -1052,7 +1047,7 @@ def _build_decisions_sheet(wb, conn, date_str):
         "UP Ask", "DOWN Ask", "Combined",
         "Coin Price $", "Velocity 30s %", "Velocity 60s %",
         "UP Depth $", "DOWN Depth $", "Time Left (s)",
-        "Feeds", "Passed Filters", "Failed Filters",
+        "Feeds", "Feed Dispersion %", "Max Staleness (s)", "Avg Staleness (s)", "Passed Filters", "Failed Filters",
         "Action", "Reason", "Would Have Profited", "Hypothetical P&L $",
     ]
     ws.append(headers)
@@ -1066,7 +1061,8 @@ def _build_decisions_sheet(wb, conn, date_str):
                d.up_best_ask, d.down_best_ask, d.combined_cost,
                d.btc_price, d.coin_velocity_30s, d.coin_velocity_60s,
                d.up_depth_usd, d.down_depth_usd, d.time_remaining_s,
-               d.feed_count, d.filter_passed, d.filter_failed,
+               d.feed_count, d.source_dispersion_pct, d.source_staleness_max_s, d.source_staleness_avg_s,
+               d.filter_passed, d.filter_failed,
                d.action, d.reason,
                do.would_have_profited, do.hypothetical_profit
         FROM decisions d
@@ -1075,11 +1071,11 @@ def _build_decisions_sheet(wb, conn, date_str):
     """, params), start=2):
         r = list(row)
         ws.append(r)
-        action = str(r[16] or "").upper()
+        action = str(r[19] or "").upper()
         if action in ("TRADE", "DRY_RUN_SIGNAL"):
             for col in range(1, len(headers) + 1):
                 ws.cell(row=ri, column=col).fill = WIN_FILL
-        _pnl_cell(ws.cell(row=ri, column=20))
+        _pnl_cell(ws.cell(row=ri, column=23))
 
     _auto_width(ws)
     ws.auto_filter.ref = ws.dimensions
@@ -1100,7 +1096,7 @@ def _build_signals_sheet(wb, conn, date_str):
         "Entry Bid $", "Entry Ask $", "Entry Spread $",
         "Entry Depth $", "Opposite Depth $", "Depth Ratio",
         "Resignal Cooldown (s)", "Min Price Improvement", "Last Signal Age (s)",
-        "Passed Filters", "Failed Filters",
+        "Feed Dispersion %", "Max Staleness (s)", "Avg Staleness (s)", "Passed Filters", "Failed Filters",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -1117,6 +1113,7 @@ def _build_signals_sheet(wb, conn, date_str):
                entry_bid, entry_ask, entry_spread,
                entry_depth_side_usd, opposite_depth_usd, depth_ratio,
                resignal_cooldown_s, min_price_improvement, last_signal_age_s,
+               source_dispersion_pct, source_staleness_max_s, source_staleness_avg_s,
                filter_passed, filter_failed
         FROM decisions
         {where}

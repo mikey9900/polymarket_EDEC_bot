@@ -1,6 +1,7 @@
 """Strategy engine — dual-leg and single-leg filter chains across all monitored coins."""
 
 import asyncio
+import json
 import logging
 import math
 from datetime import datetime, timezone
@@ -411,6 +412,11 @@ class StrategyEngine:
             filter_results=filters,
             action=action,
             reason=reason,
+            source_prices_json=json.dumps(agg.sources, sort_keys=True) if agg else "",
+            source_ages_json=json.dumps(agg.source_ages_s, sort_keys=True) if agg else "",
+            source_dispersion_pct=agg.source_dispersion_pct if agg else 0.0,
+            source_staleness_max_s=agg.source_staleness_max_s if agg else 0.0,
+            source_staleness_avg_s=agg.source_staleness_avg_s if agg else 0.0,
             **extra_fields,
         )
         return self.tracker.log_decision(decision)

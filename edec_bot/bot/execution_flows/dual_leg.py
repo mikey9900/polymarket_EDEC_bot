@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from bot.models import DualOrderState, TradeResult, TradeSignal
@@ -15,6 +16,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
     """Execute a dual-leg arb trade using FOK orders."""
     result = TradeResult(signal=signal, strategy_type="dual_leg")
     resolved_decision_id = signal.decision_id or decision_id
+    entry_submitted_at = datetime.now(timezone.utc)
+    result.entry_order_submitted_at = entry_submitted_at.isoformat()
+    result.entry_limit_price = signal.combined_cost
 
     if engine.config.execution.dry_run:
         result.status = "dry_run"
@@ -25,6 +29,10 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         result.shares = engine._calc_shares(signal.up_price)
         result.shares_requested = result.shares
         result.shares_filled = result.shares
+        result.entry_filled_at = result.entry_order_submitted_at
+        result.entry_time_to_fill_s = 0.0
+        result.entry_fill_ratio = 1.0
+        result.entry_fill_price = signal.combined_cost
         cost = signal.combined_cost * result.shares
         if engine.tracker.has_paper_capital(cost):
             engine.tracker.log_paper_trade(
@@ -85,7 +93,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
 
         result.up_order_id = up_resp.get("orderID", up_resp.get("id", ""))
         result.up_filled = True
-        result.up_fill_price = signal.up_price
+        result.up_fill_price = engine._filled_price(up_resp, signal.up_price)
         engine.state = DualOrderState.FIRST_PLACED
 
         engine.state = DualOrderState.PLACING_SECOND
@@ -111,10 +119,18 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
 
         result.down_order_id = down_resp.get("orderID", down_resp.get("id", ""))
         result.down_filled = True
-        result.down_fill_price = signal.down_price
+        result.down_fill_price = engine._filled_price(down_resp, signal.down_price)
         result.total_cost = signal.combined_cost
         result.fee_total = signal.fee_total
         result.status = "success"
+        result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+        result.entry_time_to_fill_s = max(
+            0.0,
+            (datetime.now(timezone.utc) - entry_submitted_at).total_seconds(),
+        )
+        result.entry_fill_ratio = 1.0
+        result.entry_fill_price = (result.up_fill_price + result.down_fill_price)
+        result.entry_slippage = result.entry_fill_price - result.entry_limit_price
         engine.state = DualOrderState.DONE
 
         logger.info(
@@ -154,6 +170,6 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
 
     finally:
         if resolved_decision_id and result.status != "dry_run":
-            engine.tracker.log_trade(resolved_decision_id, result)
+            result.trade_id = engine.tracker.log_trade(resolved_decision_id, result)
         if result.status != "dry_run":
             engine.risk_manager.record_trade(result)

@@ -30,8 +30,6 @@ HEADERS = [
 
 
 def fetch_recent_trade_rows(conn: sqlite3.Connection, limit: int) -> list[sqlite3.Row]:
-    pt_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_trades)")}
-    decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
     return conn.execute(
         f"""
         SELECT
@@ -105,14 +103,7 @@ def fetch_recent_trade_rows(conn: sqlite3.Connection, limit: int) -> list[sqlite
             pt.trough_net_pnl,
             pt.stall_exit_triggered
         FROM paper_trades pt
-        LEFT JOIN (
-            SELECT market_slug, strategy_type, MAX(id) AS best_id
-            FROM decisions
-            WHERE action != 'SKIP'
-            GROUP BY market_slug, strategy_type
-        ) top_d ON top_d.market_slug = pt.market_slug
-               AND top_d.strategy_type = pt.strategy_type
-        LEFT JOIN decisions d ON d.id = {decision_join_id}
+        LEFT JOIN decisions d ON d.id = pt.decision_id
         ORDER BY pt.id DESC
         LIMIT ?
         """,

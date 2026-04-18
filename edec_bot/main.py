@@ -169,14 +169,14 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
                     agg = aggregator.get_aggregated_price(market.coin)
                     coin_close = agg.price if agg else 0
 
+                    tracker.close_paper_trades(market.slug, outcome)
+                    live_pnl = executor.resolve_market_positions(market.slug, outcome)
                     tracker.log_outcome(
                         market_slug=market.slug,
                         winner=outcome,
                         btc_open=0,
                         btc_close=coin_close,
                     )
-                    tracker.close_paper_trades(market.slug, outcome)
-                    live_pnl = executor.resolve_market_positions(market.slug, outcome)
                     await telegram.alert_resolution(market.slug, outcome, live_pnl)
                     logger.info(f"Resolved {market.slug} → {outcome}")
                 else:

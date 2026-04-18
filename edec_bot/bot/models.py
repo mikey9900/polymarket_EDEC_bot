@@ -23,6 +23,10 @@ class AggregatedPrice:
     is_trending: bool
     source_count: int
     sources: dict
+    source_ages_s: dict = field(default_factory=dict)
+    source_dispersion_pct: float = 0.0
+    source_staleness_max_s: float = 0.0
+    source_staleness_avg_s: float = 0.0
     coin: str = "btc"
 
 
@@ -113,6 +117,8 @@ class SwingPosition:
     first_token_id: str
     first_entry_price: float
     first_shares: float
+    decision_id: int = 0
+    trade_id: int = 0
     requested_shares: float = 0.0
     first_paper_trade_id: Optional[int] = None
     first_buy_order_id: str = ""
@@ -120,6 +126,9 @@ class SwingPosition:
     hold_to_resolution: bool = False
     pending_exit_reason: str = ""
     pending_exit_price: float = 0.0
+    entry_order_submitted_at: str = ""
+    entry_filled_at: str = ""
+    cancel_repost_count: int = 0
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -135,10 +144,14 @@ class SingleLegPosition:
     sell_order_id: Optional[str] = None
     strategy_type: str = "single_leg"
     decision_id: int = 0
+    trade_id: int = 0
     requested_shares: float = 0.0
     hold_to_resolution: bool = False
     pending_exit_reason: str = ""
     pending_exit_price: float = 0.0
+    entry_order_submitted_at: str = ""
+    entry_filled_at: str = ""
+    cancel_repost_count: int = 0
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -156,6 +169,7 @@ class DualOrderState(Enum):
 class TradeResult:
     signal: TradeSignal
     strategy_type: str = ""
+    trade_id: int = 0
     up_order_id: Optional[str] = None
     down_order_id: Optional[str] = None
     up_filled: bool = False
@@ -174,6 +188,43 @@ class TradeResult:
     status: str = "pending"
     abort_cost: float = 0.0
     error: str = ""
+    entry_order_submitted_at: str = ""
+    entry_filled_at: str = ""
+    entry_time_to_fill_s: float = 0.0
+    entry_limit_price: float = 0.0
+    entry_fill_price: float = 0.0
+    entry_slippage: float = 0.0
+    entry_fill_ratio: float = 0.0
+    exit_order_submitted_at: str = ""
+    exit_filled_at: str = ""
+    exit_limit_price: float = 0.0
+    exit_fill_price: float = 0.0
+    exit_slippage: float = 0.0
+    exit_reason: str = ""
+    exit_price: float = 0.0
+    realized_pnl: float = 0.0
+    time_remaining_s: float = 0.0
+    bid_at_exit: float = 0.0
+    ask_at_exit: float = 0.0
+    exit_spread: float = 0.0
+    max_bid_seen: float = 0.0
+    min_bid_seen: float = 0.0
+    time_to_max_bid_s: float = 0.0
+    time_to_min_bid_s: float = 0.0
+    first_profit_time_s: float = 0.0
+    scalp_hit: bool = False
+    high_confidence_hit: bool = False
+    hold_to_resolution: bool = False
+    mfe: float = 0.0
+    mae: float = 0.0
+    peak_net_pnl: float = 0.0
+    trough_net_pnl: float = 0.0
+    stall_exit_triggered: bool = False
+    dynamic_loss_cut_pct: float = 0.0
+    loss_pct_at_exit: float = 0.0
+    favorable_excursion: float = 0.0
+    ever_profitable: bool = False
+    cancel_repost_count: int = 0
 
 
 @dataclass
@@ -229,3 +280,8 @@ class Decision:
     resignal_cooldown_s: float = 0.0
     min_price_improvement: float = 0.0
     last_signal_age_s: Optional[float] = None
+    source_prices_json: str = ""
+    source_ages_json: str = ""
+    source_dispersion_pct: float = 0.0
+    source_staleness_max_s: float = 0.0
+    source_staleness_avg_s: float = 0.0

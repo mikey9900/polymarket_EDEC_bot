@@ -295,6 +295,32 @@ class ExecutionEngine:
         return 0.0
 
     @classmethod
+    def _filled_price(cls, response: dict | None, fallback: float = 0.0) -> float:
+        if not response:
+            return fallback
+        nested_order = response.get("order")
+        containers = [response]
+        if isinstance(nested_order, dict):
+            containers.append(nested_order)
+        keys = (
+            "avg_price",
+            "avgPrice",
+            "average_price",
+            "averagePrice",
+            "matched_price",
+            "matchedPrice",
+            "fill_price",
+            "fillPrice",
+            "price",
+        )
+        for container in containers:
+            for key in keys:
+                price = cls._safe_float(container.get(key))
+                if price > 0:
+                    return price
+        return fallback
+
+    @classmethod
     def _has_any_fill(cls, response: dict | None) -> bool:
         return cls._filled_shares(response) > 0 or cls._response_status(response) in ("matched", "filled")
 
@@ -327,7 +353,42 @@ class ExecutionEngine:
 
     def resolve_market_positions(self, market_slug: str, winner: str) -> float:
         """Resolve risk state and clear any in-memory positions for a settled market."""
-        pnl = self.risk_manager.resolve_market(market_slug, winner)
+        matching = [p for p in self.risk_manager.open_positions if p.signal.market.slug == market_slug]
+        pnl = 0.0
+        for result in matching:
+            actual_profit = self.risk_manager._resolution_profit(result, winner)
+            pnl += actual_profit
+            result.realized_pnl = actual_profit
+            strategy_type = result.strategy_type or result.signal.strategy_type
+            exit_price = 1.0 if strategy_type == "dual_leg" or actual_profit >= 0 else 0.0
+            if result.trade_id:
+                self.tracker.close_live_trade(
+                    result.trade_id,
+                    status="resolved_win" if actual_profit >= 0 else "resolved_loss",
+                    exit_reason="resolution",
+                    exit_price=exit_price,
+                    pnl=actual_profit,
+                    time_remaining_s=0.0,
+                    exit_limit_price=exit_price,
+                    exit_fill_price=exit_price,
+                    max_bid_seen=result.max_bid_seen or None,
+                    min_bid_seen=result.min_bid_seen or None,
+                    time_to_max_bid_s=result.time_to_max_bid_s or None,
+                    time_to_min_bid_s=result.time_to_min_bid_s or None,
+                    first_profit_time_s=result.first_profit_time_s or None,
+                    scalp_hit=result.scalp_hit,
+                    high_confidence_hit=result.high_confidence_hit,
+                    hold_to_resolution=result.hold_to_resolution,
+                    mfe=result.mfe or None,
+                    mae=result.mae or None,
+                    peak_net_pnl=result.peak_net_pnl or None,
+                    trough_net_pnl=result.trough_net_pnl or None,
+                    dynamic_loss_cut_pct=result.dynamic_loss_cut_pct or None,
+                    favorable_excursion=result.favorable_excursion or None,
+                    ever_profitable=result.ever_profitable,
+                    cancel_repost_count=result.cancel_repost_count or None,
+                )
+            self.risk_manager.close_position(result, actual_profit)
         self._open_positions = {
             order_id: position
             for order_id, position in self._open_positions.items()

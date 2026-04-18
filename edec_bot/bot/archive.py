@@ -555,6 +555,43 @@ def export_last_24h_excel(
                 "status",
                 "abort_cost",
                 "error",
+                "entry_order_submitted_at",
+                "entry_filled_at",
+                "entry_time_to_fill_s",
+                "entry_limit_price",
+                "entry_fill_price",
+                "entry_slippage",
+                "entry_fill_ratio",
+                "exit_order_submitted_at",
+                "exit_filled_at",
+                "exit_limit_price",
+                "exit_fill_price",
+                "exit_slippage",
+                "exit_reason",
+                "exit_price",
+                "pnl",
+                "time_remaining_s",
+                "bid_at_exit",
+                "ask_at_exit",
+                "exit_spread",
+                "max_bid_seen",
+                "min_bid_seen",
+                "time_to_max_bid_s",
+                "time_to_min_bid_s",
+                "first_profit_time_s",
+                "scalp_hit",
+                "high_confidence_hit",
+                "hold_to_resolution",
+                "mfe",
+                "mae",
+                "peak_net_pnl",
+                "trough_net_pnl",
+                "stall_exit_triggered",
+                "dynamic_loss_cut_pct",
+                "loss_pct_at_exit",
+                "favorable_excursion",
+                "ever_profitable",
+                "cancel_repost_count",
             ],
         )
         lt_cols, lt_rows = _select_all(
@@ -606,6 +643,11 @@ def export_last_24h_excel(
                 "filter_failed",
                 "action",
                 "reason",
+                "source_prices_json",
+                "source_ages_json",
+                "source_dispersion_pct",
+                "source_staleness_max_s",
+                "source_staleness_avg_s",
             ],
         )
         d_cols, d_rows = _select_all(
@@ -667,6 +709,11 @@ def export_last_24h_excel(
                 "last_signal_age_s",
                 "filter_passed",
                 "filter_failed",
+                "source_prices_json",
+                "source_ages_json",
+                "source_dispersion_pct",
+                "source_staleness_max_s",
+                "source_staleness_avg_s",
             ],
         )
         sig_cols, sig_rows = _select_all(
@@ -794,6 +841,11 @@ def export_recent_trades_csv_gz(
                 ("peak_net_pnl", "peak_net_pnl"),
                 ("trough_net_pnl", "trough_net_pnl"),
                 ("stall_exit_triggered", "stall_exit_triggered"),
+                ("hold_to_resolution", "hold_to_resolution"),
+                ("loss_cut_threshold_pct", "loss_cut_threshold_pct"),
+                ("loss_pct_at_exit", "loss_pct_at_exit"),
+                ("favorable_excursion", "favorable_excursion"),
+                ("ever_profitable", "ever_profitable"),
             ],
         )
         d_select = _aliased_select(
@@ -808,32 +860,13 @@ def export_recent_trades_csv_gz(
                 ("up_depth_usd", "up_depth_usd"),
                 ("down_depth_usd", "down_depth_usd"),
                 ("time_remaining_s", "decision_time_remaining_s"),
+                ("source_prices_json", "source_prices_json"),
+                ("source_ages_json", "source_ages_json"),
+                ("source_dispersion_pct", "source_dispersion_pct"),
+                ("source_staleness_max_s", "source_staleness_max_s"),
+                ("source_staleness_avg_s", "source_staleness_avg_s"),
             ],
         )
-        decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
-
-        has_pt_strategy = "strategy_type" in pt_cols
-        has_d_strategy = "strategy_type" in d_cols
-        if has_pt_strategy and has_d_strategy:
-            join_sql = """
-            LEFT JOIN (
-                SELECT market_slug, strategy_type, MAX(id) AS best_id
-                FROM decisions
-                WHERE action != 'SKIP'
-                GROUP BY market_slug, strategy_type
-            ) top_d ON top_d.market_slug = pt.market_slug
-                   AND top_d.strategy_type = pt.strategy_type
-            """
-        else:
-            join_sql = """
-            LEFT JOIN (
-                SELECT market_slug, MAX(id) AS best_id
-                FROM decisions
-                WHERE action != 'SKIP'
-                GROUP BY market_slug
-            ) top_d ON top_d.market_slug = pt.market_slug
-            """
-
         columns, rows = _select_all(
             conn,
             f"""
@@ -841,8 +874,7 @@ def export_recent_trades_csv_gz(
                 {pt_select},
                 {d_select}
             FROM paper_trades pt
-            {join_sql}
-            LEFT JOIN decisions d ON d.id = {decision_join_id}
+            LEFT JOIN decisions d ON d.id = pt.decision_id
             ORDER BY pt.id DESC
             LIMIT ?
             """,
@@ -884,6 +916,11 @@ def export_recent_trades_csv_gz(
                 "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
                 "decision_time_remaining_s": "te", "mfe": "mfe", "mae": "mae",
                 "peak_net_pnl": "pnp", "trough_net_pnl": "tnp", "stall_exit_triggered": "sx",
+                "hold_to_resolution": "hr", "loss_cut_threshold_pct": "lct",
+                "loss_pct_at_exit": "lpx", "favorable_excursion": "fex",
+                "ever_profitable": "evp", "source_prices_json": "spj",
+                "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+                "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
@@ -951,6 +988,11 @@ def export_recent_signals_csv_gz(
                 ("last_signal_age_s", "last_signal_age_s"),
                 ("filter_passed", "filter_passed"),
                 ("filter_failed", "filter_failed"),
+                ("source_prices_json", "source_prices_json"),
+                ("source_ages_json", "source_ages_json"),
+                ("source_dispersion_pct", "source_dispersion_pct"),
+                ("source_staleness_max_s", "source_staleness_max_s"),
+                ("source_staleness_avg_s", "source_staleness_avg_s"),
             ],
         )
         columns, rows = _select_all(
@@ -992,7 +1034,9 @@ def export_recent_signals_csv_gz(
                 "entry_ask": "ea", "entry_spread": "es", "entry_depth_side_usd": "eds",
                 "opposite_depth_usd": "ods", "depth_ratio": "drt", "resignal_cooldown_s": "rcd",
                 "min_price_improvement": "mpi", "last_signal_age_s": "lsa",
-                "filter_passed": "fp", "filter_failed": "ff",
+                "filter_passed": "fp", "filter_failed": "ff", "source_prices_json": "spj",
+                "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+                "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
@@ -1048,6 +1092,11 @@ def export_session_trades_csv_gz(
                 ("scalp_hit", "scalp_hit"), ("high_confidence_hit", "high_confidence_hit"),
                 ("mfe", "mfe"), ("mae", "mae"), ("peak_net_pnl", "peak_net_pnl"),
                 ("trough_net_pnl", "trough_net_pnl"), ("stall_exit_triggered", "stall_exit_triggered"),
+                ("hold_to_resolution", "hold_to_resolution"),
+                ("loss_cut_threshold_pct", "loss_cut_threshold_pct"),
+                ("loss_pct_at_exit", "loss_pct_at_exit"),
+                ("favorable_excursion", "favorable_excursion"),
+                ("ever_profitable", "ever_profitable"),
             ],
         )
         d_select = _aliased_select(
@@ -1058,36 +1107,19 @@ def export_session_trades_csv_gz(
                 ("reason", "decision_reason"), ("coin_velocity_30s", "coin_velocity_30s"),
                 ("coin_velocity_60s", "coin_velocity_60s"), ("up_depth_usd", "up_depth_usd"),
                 ("down_depth_usd", "down_depth_usd"), ("time_remaining_s", "decision_time_remaining_s"),
+                ("source_prices_json", "source_prices_json"),
+                ("source_ages_json", "source_ages_json"),
+                ("source_dispersion_pct", "source_dispersion_pct"),
+                ("source_staleness_max_s", "source_staleness_max_s"),
+                ("source_staleness_avg_s", "source_staleness_avg_s"),
             ],
         )
-        decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
-
-        has_pt_strategy = "strategy_type" in pt_cols
-        has_d_strategy = "strategy_type" in d_cols
-        if has_pt_strategy and has_d_strategy:
-            join_sql = """
-            LEFT JOIN (
-                SELECT market_slug, strategy_type, MAX(id) AS best_id
-                FROM decisions WHERE action != 'SKIP'
-                GROUP BY market_slug, strategy_type
-            ) top_d ON top_d.market_slug = pt.market_slug AND top_d.strategy_type = pt.strategy_type
-            """
-        else:
-            join_sql = """
-            LEFT JOIN (
-                SELECT market_slug, MAX(id) AS best_id
-                FROM decisions WHERE action != 'SKIP'
-                GROUP BY market_slug
-            ) top_d ON top_d.market_slug = pt.market_slug
-            """
-
         columns, rows = _select_all(
             conn,
             f"""
             SELECT {pt_select}, {d_select}
             FROM paper_trades pt
-            {join_sql}
-            LEFT JOIN decisions d ON d.id = {decision_join_id}
+            LEFT JOIN decisions d ON d.id = pt.decision_id
             WHERE pt.timestamp >= ?
             ORDER BY pt.id ASC
             """,
@@ -1127,6 +1159,11 @@ def export_session_trades_csv_gz(
                 "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
                 "decision_time_remaining_s": "te", "mfe": "mfe", "mae": "mae",
                 "peak_net_pnl": "pnp", "trough_net_pnl": "tnp", "stall_exit_triggered": "sx",
+                "hold_to_resolution": "hr", "loss_cut_threshold_pct": "lct",
+                "loss_pct_at_exit": "lpx", "favorable_excursion": "fex",
+                "ever_profitable": "evp", "source_prices_json": "spj",
+                "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+                "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
@@ -1174,6 +1211,11 @@ def export_session_signals_csv_gz(
                 ("min_price_improvement", "min_price_improvement"),
                 ("last_signal_age_s", "last_signal_age_s"),
                 ("filter_passed", "filter_passed"), ("filter_failed", "filter_failed"),
+                ("source_prices_json", "source_prices_json"),
+                ("source_ages_json", "source_ages_json"),
+                ("source_dispersion_pct", "source_dispersion_pct"),
+                ("source_staleness_max_s", "source_staleness_max_s"),
+                ("source_staleness_avg_s", "source_staleness_avg_s"),
             ],
         )
 
@@ -1214,7 +1256,9 @@ def export_session_signals_csv_gz(
                 "entry_ask": "ea", "entry_spread": "es", "entry_depth_side_usd": "eds",
                 "opposite_depth_usd": "ods", "depth_ratio": "drt", "resignal_cooldown_s": "rcd",
                 "min_price_improvement": "mpi", "last_signal_age_s": "lsa",
-                "filter_passed": "fp", "filter_failed": "ff",
+                "filter_passed": "fp", "filter_failed": "ff", "source_prices_json": "spj",
+                "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+                "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)

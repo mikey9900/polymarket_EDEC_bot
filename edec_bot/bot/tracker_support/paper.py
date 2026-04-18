@@ -10,6 +10,13 @@ from bot.tracker_support.schema import utc_now
 logger = logging.getLogger(__name__)
 
 
+def _require_linked_decision(decision_id: int | None) -> int:
+    resolved = int(decision_id or 0)
+    if resolved <= 0:
+        raise ValueError("paper trades require a valid decision_id for export-safe attribution")
+    return resolved
+
+
 def set_paper_capital(tracker: Any, amount: float) -> None:
     """Set (or reset) the paper trading bankroll."""
     tracker.conn.execute("DELETE FROM paper_capital WHERE id = 1")
@@ -69,10 +76,11 @@ def log_paper_trade(
     hard_stop_delta: float | None = None,
 ) -> int:
     """Open a paper trade and deduct cost from balance."""
+    resolved_decision_id = _require_linked_decision(decision_id)
     cost = entry_price * shares
     paper_total, _ = tracker.get_paper_capital()
     values = (
-        decision_id,
+        resolved_decision_id,
         utc_now().isoformat(),
         tracker._runtime_value("run_id"),
         tracker._runtime_value("app_version"),
@@ -150,10 +158,13 @@ def record_paper_trade_path(
     first_profit_time_s: float | None = None,
     scalp_hit: bool | None = None,
     high_confidence_hit: bool | None = None,
+    hold_to_resolution: bool | None = None,
     mfe: float | None = None,
     mae: float | None = None,
     peak_net_pnl: float | None = None,
     trough_net_pnl: float | None = None,
+    favorable_excursion: float | None = None,
+    ever_profitable: bool | None = None,
 ) -> None:
     assignments: list[str] = []
     values: list[object] = []
@@ -167,6 +178,7 @@ def record_paper_trade_path(
         "mae": mae,
         "peak_net_pnl": peak_net_pnl,
         "trough_net_pnl": trough_net_pnl,
+        "favorable_excursion": favorable_excursion,
     }
     for col, value in mapping.items():
         if value is not None:
@@ -178,6 +190,12 @@ def record_paper_trade_path(
     if high_confidence_hit is not None:
         assignments.append("high_confidence_hit = ?")
         values.append(int(bool(high_confidence_hit)))
+    if hold_to_resolution is not None:
+        assignments.append("hold_to_resolution = ?")
+        values.append(int(bool(hold_to_resolution)))
+    if ever_profitable is not None:
+        assignments.append("ever_profitable = ?")
+        values.append(int(bool(ever_profitable)))
     if not assignments:
         return
     values.append(trade_id)
@@ -256,6 +274,10 @@ def close_paper_trade_early(
     bid_at_exit: float | None = None,
     ask_at_exit: float | None = None,
     stall_exit_triggered: bool | None = None,
+    loss_cut_threshold_pct: float | None = None,
+    loss_pct_at_exit: float | None = None,
+    favorable_excursion: float | None = None,
+    ever_profitable: bool | None = None,
 ) -> None:
     """Close a paper trade early before market resolution."""
     row = tracker.conn.execute(
@@ -270,7 +292,11 @@ def close_paper_trade_early(
         """UPDATE paper_trades
            SET status=?, exit_price=?, pnl=?,
                exit_reason=?, exit_timestamp=?, time_remaining_s=?, bid_at_exit=?,
-               ask_at_exit=?, exit_spread=?, stall_exit_triggered=COALESCE(?, stall_exit_triggered)
+               ask_at_exit=?, exit_spread=?, stall_exit_triggered=COALESCE(?, stall_exit_triggered),
+               loss_cut_threshold_pct=COALESCE(?, loss_cut_threshold_pct),
+               loss_pct_at_exit=COALESCE(?, loss_pct_at_exit),
+               favorable_excursion=COALESCE(?, favorable_excursion),
+               ever_profitable=COALESCE(?, ever_profitable)
            WHERE id=?""",
         (
             status,
@@ -283,6 +309,10 @@ def close_paper_trade_early(
             ask_at_exit,
             (ask_at_exit - bid_at_exit) if (ask_at_exit is not None and bid_at_exit is not None) else None,
             int(bool(stall_exit_triggered)) if stall_exit_triggered is not None else None,
+            loss_cut_threshold_pct,
+            loss_pct_at_exit,
+            favorable_excursion,
+            int(bool(ever_profitable)) if ever_profitable is not None else None,
             trade_id,
         ),
     )

@@ -33,7 +33,11 @@
     "dropbox_refresh_token": "",
     "dropbox_app_key": "",
     "dropbox_app_secret": "",
-    "dropbox_root": "/"
+    "dropbox_root": "/",
+    "github_token": "",
+    "github_repo": "",
+    "github_branch": "main",
+    "github_export_path": "session_exports"
   },
   "schema": {
     "private_key": "str",
@@ -49,7 +53,11 @@
     "dropbox_refresh_token": "password",
     "dropbox_app_key": "str",
     "dropbox_app_secret": "password",
-    "dropbox_root": "str"
+    "dropbox_root": "str",
+    "github_token": "password",
+    "github_repo": "str",
+    "github_branch": "str",
+    "github_export_path": "str"
   },
   "map": [
     "data:rw"

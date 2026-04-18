@@ -51,7 +51,7 @@ class TelegramBot:
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
                  archive_fn=None, archive_latest_fn=None, archive_health_fn=None,
-                 repo_sync_fn=None, session_export_fn=None):
+                 repo_sync_fn=None, session_export_fn=None, excel_dropbox_link_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -66,6 +66,7 @@ class TelegramBot:
         self.archive_health_fn = archive_health_fn
         self.repo_sync_fn = repo_sync_fn
         self.session_export_fn = session_export_fn
+        self.excel_dropbox_link_fn = excel_dropbox_link_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -634,6 +635,32 @@ class TelegramBot:
             return False, "File does not exist"
         filename = os.path.basename(path)
         is_excel = path.lower().endswith(".xlsx")
+
+        if is_excel and self.excel_dropbox_link_fn:
+            try:
+                loop = asyncio.get_running_loop()
+                url, dbx_err = await loop.run_in_executor(None, self.excel_dropbox_link_fn, path)
+                if url:
+                    is_link = url.startswith("https://")
+                    display = url if is_link else url.replace("//", "/")
+                    text = (
+                        f"📊 Excel export on Dropbox:\n{display}"
+                        if is_link
+                        else f"📊 Excel saved to Dropbox (enable `sharing.write` scope for a clickable link):\n`{display}`"
+                    )
+                    sent_msg = await self._app.bot.send_message(
+                        chat_id=self.chat_id, text=text, parse_mode="Markdown",
+                    )
+                    self._track(sent_msg)
+                    logger.info("Sent Dropbox ref for Excel %s: %s", path, url)
+                    return True, None
+                reason = dbx_err or "unknown error"
+                logger.warning("Dropbox Excel link failed for %s: %s", path, reason)
+                return False, f"Excel Dropbox failed: {reason}"
+            except Exception as exc:
+                logger.warning("Dropbox Excel link error for %s: %s", path, exc)
+                return False, f"Excel Dropbox error: {exc}"
+
         use_in_memory_upload = is_excel or os.path.getsize(path) <= 1024 * 1024
         attempts = max(1, self._SEND_FILE_ATTEMPTS)
         for attempt in range(1, attempts + 1):

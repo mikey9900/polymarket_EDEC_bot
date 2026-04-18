@@ -1098,7 +1098,7 @@ def _dropbox_upload_file(local_path: str, dropbox_path: str, dropbox_auth: dict[
                 ),
             },
         )
-        with request.urlopen(req, timeout=30) as resp:
+        with request.urlopen(req, timeout=300) as resp:
             raw = resp.read().decode("utf-8")
             payload = json.loads(raw) if raw else {}
             if resp.status < 200 or resp.status >= 300:
@@ -1196,7 +1196,7 @@ def _dropbox_download_file(dropbox_path: str, dropbox_auth: dict[str, Any], loca
                 "Dropbox-API-Arg": json.dumps({"path": dropbox_path}),
             },
         )
-        with request.urlopen(req, timeout=30) as resp:
+        with request.urlopen(req, timeout=300) as resp:
             body = resp.read()
             p = Path(local_path)
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -1223,6 +1223,128 @@ def _dropbox_download_file(dropbox_path: str, dropbox_auth: dict[str, Any], loca
             "error_details": _dropbox_error_details(str(e)),
             "path": str(local_path),
         }
+
+
+def _dropbox_create_or_get_shared_link(dropbox_path: str, dropbox_auth: dict[str, Any]) -> str | None:
+    """Return a Dropbox shared link URL for dropbox_path, creating one if needed. Returns None on failure."""
+    try:
+        token = _resolve_dropbox_access_token(dropbox_auth)
+    except Exception:
+        return None
+
+    create_req = request.Request(
+        url="https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        data=json.dumps({"path": dropbox_path}).encode("utf-8"),
+        method="POST",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+    )
+    try:
+        with request.urlopen(create_req, timeout=20) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("url")
+    except urlerror.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode("utf-8")
+        except Exception:
+            pass
+        if e.code != 409:
+            return None
+        # A link already exists — extract URL from the error metadata
+        try:
+            payload = json.loads(body)
+            err_obj = payload.get("error") or {}
+            err_meta = err_obj.get("metadata") if isinstance(err_obj, dict) else None
+            if isinstance(err_meta, dict) and err_meta.get("url"):
+                return err_meta["url"]
+        except Exception:
+            pass
+        # Fall back to listing existing shared links
+        list_req = request.Request(
+            url="https://api.dropboxapi.com/2/sharing/list_shared_links",
+            data=json.dumps({"path": dropbox_path, "direct_only": True}).encode("utf-8"),
+            method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with request.urlopen(list_req, timeout=20) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                links = result.get("links") or []
+                return links[0].get("url") if links else None
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def get_or_upload_excel_link(
+    local_path: str,
+    output_dir: str,
+    label: str,
+    dropbox_root: str = "/",
+    dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Upload local_path to Dropbox if needed, then return (url_or_path, error).
+
+    Checks the archive index first — if the file was successfully uploaded
+    previously, skips the re-upload and goes straight to the shared link.
+    Returns (result, None) on success or (None, reason) on failure.
+    """
+    try:
+        dropbox_auth = _build_dropbox_auth(
+            dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
+        )
+        if not dropbox_auth:
+            return None, "Dropbox not configured (no token or refresh-token set)"
+
+        local_name = Path(local_path).name
+        dbx_path: str | None = None
+
+        # Check the archive index for a known Dropbox path for this file,
+        # but only trust it if the corresponding upload actually succeeded.
+        label_s = _safe_label(label)
+        index_path = Path(output_dir) / f"{label_s}_latest_index.json"
+        if index_path.exists():
+            try:
+                with open(index_path, "r", encoding="utf-8") as fh:
+                    idx = json.load(fh)
+                dbx_files = idx.get("dropbox_files") or {}
+                dbx_uploads = idx.get("dropbox_uploads") or {}
+                for key, path_val in dbx_files.items():
+                    if path_val and Path(path_val).name == local_name:
+                        if (dbx_uploads.get(key) or {}).get("ok"):
+                            dbx_path = path_val
+                        break
+            except Exception:
+                pass
+
+        if not dbx_path:
+            root = _normalize_dropbox_root(dropbox_root)
+            dbx_path = f"{root}/latest/{local_name}"
+            result = _dropbox_upload_file(local_path, dbx_path, dropbox_auth)
+            if not result.get("ok"):
+                err = str(result.get("error") or result.get("status") or "unknown error")
+                details = result.get("error_details") or {}
+                friendly = (details.get("friendly") or "").strip()
+                reason = friendly or err
+                logger.warning("Dropbox upload failed for %s: %s", local_path, err)
+                return None, f"Dropbox upload failed: {reason}"
+
+        url = _dropbox_create_or_get_shared_link(dbx_path, dropbox_auth)
+        if url:
+            return url, None
+        # Shared link unavailable (scope may be missing) — return the raw Dropbox path
+        logger.warning("Shared link unavailable for %s; returning raw Dropbox path", dbx_path)
+        return dbx_path, None
+    except Exception as exc:
+        logger.warning("get_or_upload_excel_link failed for %s: %s", local_path, exc)
+        return None, str(exc)
 
 
 def sync_dropbox_latest_to_local(
@@ -1358,7 +1480,7 @@ def _normalize_dropbox_root(dropbox_root: str | None) -> str:
     while "//" in root:
         root = root.replace("//", "/")
     normalized = root.rstrip("/")
-    return normalized or "/"
+    return normalized  # "" means Dropbox app root; callers format as f"{root}/subpath/..."
 
 
 def _dropbox_latest_remote_candidates(

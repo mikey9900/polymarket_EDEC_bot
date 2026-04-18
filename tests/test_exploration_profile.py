@@ -275,6 +275,7 @@ class ExplorationProfileTests(unittest.TestCase):
             score_balance=9.5,
             target_delta=0.06,
             hard_stop_delta=0.058,
+            decision_id=decision_id,
         )
         trade_id = tracker.conn.execute("SELECT MAX(id) FROM paper_trades").fetchone()[0]
         tracker.record_paper_trade_path(

@@ -24,7 +24,7 @@ HEADERS = [
     "fp", "ff", "why",
     "er", "xp", "xb", "xa", "xs", "tx", "hd",
     "pnl", "pp", "maxb", "minb", "ttmax", "ttmin", "tfp", "sc", "hc",
-    "mfe", "mae", "pnp", "tnp", "sx",
+    "mfe", "mae", "pnp", "tnp", "sx", "rw", "rm",
     "status",
 ]
 
@@ -102,6 +102,9 @@ def fetch_recent_trade_rows(conn: sqlite3.Connection, limit: int) -> list[sqlite
             pt.peak_net_pnl,
             pt.trough_net_pnl,
             pt.stall_exit_triggered
+            ,
+            pt.resolution_winner,
+            pt.resolution_side_match
         FROM paper_trades pt
         LEFT JOIN decisions d ON d.id = pt.decision_id
         ORDER BY pt.id DESC
@@ -194,5 +197,5 @@ def format_recent_trade_row(row):
         int(bool(row[41])) if row[41] is not None else None,
         int(bool(row[42])) if row[42] is not None else None,
         row[64], row[65], row[66], row[67], int(bool(row[68])) if row[68] is not None else None,
-        row[43],
+        row[69], row[70], row[43],
     ]

@@ -44,9 +44,11 @@ def get_recent_trades(tracker: Any, limit: int = 10) -> list[dict]:
         """SELECT t.timestamp, t.market_slug, t.coin, t.strategy_type, t.side,
                   t.up_price, t.down_price, t.entry_price, t.target_price,
                   t.combined_cost, t.fee_total, t.shares, t.status, t.abort_cost,
-                  COALESCE(t.pnl, do.actual_profit), t.exit_reason
+                  COALESCE(t.pnl, do.actual_profit), t.exit_reason,
+                  COALESCE(t.resolution_winner, o.winner), t.resolution_side_match
            FROM trades t
            LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
+           LEFT JOIN outcomes o ON o.market_slug = t.market_slug
            ORDER BY t.id DESC LIMIT ?""",
         (limit,),
     ).fetchall()
@@ -69,6 +71,8 @@ def get_recent_trades(tracker: Any, limit: int = 10) -> list[dict]:
             "abort_cost": row[13],
             "actual_profit": row[14],
             "exit_reason": row[15],
+            "resolution_winner": row[16],
+            "resolution_side_match": row[17],
         }
         for row in rows
     ]

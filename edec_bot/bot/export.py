@@ -575,6 +575,7 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         "Target Delta", "Hard Stop Delta", "MFE", "MAE",
         "Peak Net P&L", "Trough Net P&L", "Stall Exit",
         "Hold To Res", "Loss Cut Threshold", "Loss % @ Exit", "Favorable Excursion", "Ever Profitable",
+        "Resolution Winner", "Resolution Match",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -597,7 +598,8 @@ def _build_paper_trades_sheet(wb, conn, date_str):
                score_spread, score_time, score_balance,
                target_delta, hard_stop_delta, mfe, mae,
                peak_net_pnl, trough_net_pnl, stall_exit_triggered,
-               hold_to_resolution, loss_cut_threshold_pct, loss_pct_at_exit, favorable_excursion, ever_profitable
+               hold_to_resolution, loss_cut_threshold_pct, loss_pct_at_exit, favorable_excursion, ever_profitable,
+               resolution_winner, resolution_side_match
         FROM paper_trades {where}
         ORDER BY id DESC LIMIT 10000
     """, params)
@@ -1002,7 +1004,8 @@ def _build_trades_sheet(wb, conn, date_str):
     headers = [
         "Timestamp", "Coin", "Strategy", "Side", "Market",
         "Entry Limit $", "Entry Fill $", "Entry Slip $", "Target $", "Exit Limit $", "Exit Fill $",
-        "Exit Reason", "Hold To Res", "Shares", "Status", "Abort Cost $", "Actual P&L $",
+        "Exit Reason", "Hold To Res", "Resolution Winner", "Resolution Match",
+        "Shares", "Status", "Abort Cost $", "Actual P&L $",
         "Max Bid $", "Min Bid $", "MFE", "MAE", "Loss % @ Exit", "Reposts",
     ]
     ws.append(headers)
@@ -1015,22 +1018,24 @@ def _build_trades_sheet(wb, conn, date_str):
         SELECT t.timestamp, t.coin, t.strategy_type, t.side, t.market_slug,
                COALESCE(t.entry_limit_price, t.entry_price), t.entry_fill_price, t.entry_slippage,
                t.target_price, t.exit_limit_price, t.exit_fill_price,
-               t.exit_reason, t.hold_to_resolution, t.shares, t.status, t.abort_cost,
+               t.exit_reason, t.hold_to_resolution, COALESCE(t.resolution_winner, o.winner), t.resolution_side_match,
+               t.shares, t.status, t.abort_cost,
                COALESCE(t.pnl, do.actual_profit), t.max_bid_seen, t.min_bid_seen,
                t.mfe, t.mae, t.loss_pct_at_exit, t.cancel_repost_count
         FROM trades t
         LEFT JOIN decision_outcomes do ON do.decision_id = t.decision_id
+        LEFT JOIN outcomes o ON o.market_slug = t.market_slug
         {where} ORDER BY t.id DESC
     """, params), start=2):
         r = list(row)
         ws.append(r)
-        status = str(r[14] or "").lower()
+        status = str(r[16] or "").lower()
         row_fill = (WIN_FILL if status in ("success", "closed_win", "resolved_win") else
                     LOSS_FILL if status in ("aborted", "partial_abort", "failed", "closed_loss", "resolved_loss") else None)
         if row_fill:
             for col in range(1, len(headers) + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
-        _pnl_cell(ws.cell(row=ri, column=17))
+        _pnl_cell(ws.cell(row=ri, column=19))
 
     _auto_width(ws)
     ws.auto_filter.ref = ws.dimensions

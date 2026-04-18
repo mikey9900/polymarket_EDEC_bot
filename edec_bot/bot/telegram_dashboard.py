@@ -157,7 +157,7 @@ def build_main_keyboard(*, is_running: bool, is_dry: bool, order_size: float, ca
             InlineKeyboardButton("🧭 Archive Health", callback_data="archive_health"),
         ],
         [
-            InlineKeyboardButton("📊 Last 100 Trades", callback_data="export_recent"),
+            InlineKeyboardButton("📤 Session Export", callback_data="session_export"),
             InlineKeyboardButton("🗄 Latest Archive", callback_data="export_latest"),
             InlineKeyboardButton("📥 Sync Dropbox", callback_data="sync_repo_latest"),
         ],

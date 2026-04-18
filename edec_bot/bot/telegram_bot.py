@@ -51,7 +51,7 @@ class TelegramBot:
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
                  scanner=None, strategy_engine=None, executor=None, aggregator=None,
                  archive_fn=None, archive_latest_fn=None, archive_health_fn=None,
-                 repo_sync_fn=None):
+                 repo_sync_fn=None, session_export_fn=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -65,6 +65,7 @@ class TelegramBot:
         self.archive_latest_fn = archive_latest_fn
         self.archive_health_fn = archive_health_fn
         self.repo_sync_fn = repo_sync_fn
+        self.session_export_fn = session_export_fn
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -930,6 +931,39 @@ class TelegramBot:
                 )
         except Exception as e:
             await self._reply_tracked(reply_message, f"Export error: {e}")
+
+    async def _handle_session_export_request(self, reply_message) -> None:
+        if not self.session_export_fn:
+            await self._reply_tracked(reply_message, "Session export not configured.")
+            return
+        await self._reply_tracked(
+            reply_message,
+            "\u23f3 Exporting session trades/signals to Dropbox + GitHub...",
+        )
+        try:
+            result = await self._run_blocking(self.session_export_fn)
+            trade_count = result.get("trade_count", 0)
+            signal_count = result.get("signal_count", 0)
+            since = result.get("session_since_utc", "unknown")
+            lines = [
+                f"\u2705 *Session Export Complete*",
+                f"Trades: {trade_count} | Signals: {signal_count}",
+                f"Since: `{since}`",
+            ]
+            uploads = result.get("dropbox_uploads") or {}
+            failed_dbx = [k for k, v in uploads.items() if not v.get("ok")]
+            if failed_dbx:
+                lines.append(f"\u26a0\ufe0f Dropbox failed: {', '.join(failed_dbx)}")
+            pushes = result.get("github_pushes")
+            if pushes is None:
+                lines.append("\u2139\ufe0f GitHub push skipped (EDEC_GITHUB_TOKEN / EDEC_GITHUB_REPO not set)")
+            else:
+                failed_gh = [k for k, v in pushes.items() if not v.get("ok")]
+                if failed_gh:
+                    lines.append(f"\u26a0\ufe0f GitHub failed: {', '.join(failed_gh)}")
+            await self._reply_tracked(reply_message, "\n".join(lines), parse_mode="Markdown")
+        except Exception as e:
+            await self._reply_tracked(reply_message, f"Session export error: {e}")
 
     async def _handle_latest_export_request(self, reply_message, *, wait_text: str) -> None:
         await self._reply_tracked(reply_message, wait_text)

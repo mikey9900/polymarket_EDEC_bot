@@ -16,6 +16,7 @@ from bot.archive import (
     archive_health_snapshot,
     latest_archive_paths,
     run_daily_archive,
+    run_session_export,
     sync_dropbox_latest_to_local,
 )
 from bot.export import export_to_excel, export_recent_to_excel
@@ -347,6 +348,10 @@ async def main():
     dropbox_root = os.getenv("EDEC_DROPBOX_ROOT") or ha_options.get("dropbox_root") or "/"
     default_repo_sync_dir = str(Path(__file__).resolve().parent / "dropbox_sync")
     repo_sync_dir = os.getenv("EDEC_REPO_SYNC_DIR", default_repo_sync_dir)
+    github_token = os.getenv("EDEC_GITHUB_TOKEN") or ha_options.get("github_token")
+    github_repo = os.getenv("EDEC_GITHUB_REPO") or ha_options.get("github_repo")
+    github_branch = os.getenv("EDEC_GITHUB_BRANCH") or ha_options.get("github_branch") or "main"
+    github_export_path = os.getenv("EDEC_GITHUB_EXPORT_PATH") or ha_options.get("github_export_path") or "session_exports"
     dashboard_api_enabled = _as_bool(os.getenv("EDEC_DASHBOARD_API_ENABLED"), True)
     dashboard_api_host = os.getenv("EDEC_DASHBOARD_API_HOST", "0.0.0.0")
     dashboard_api_port = _as_int(os.getenv("EDEC_DASHBOARD_API_PORT"), 8099)
@@ -395,6 +400,22 @@ async def main():
             expand_trades_csv=True,
         )
 
+    def do_session_export() -> dict:
+        return run_session_export(
+            db_path="data/decisions.db",
+            output_dir=archive_output_dir,
+            label=archive_label,
+            dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
+            dropbox_root=str(dropbox_root),
+            github_token=github_token,
+            github_repo=github_repo,
+            github_branch=str(github_branch),
+            github_export_path=str(github_export_path),
+        )
+
     telegram = TelegramBot(
         config, tracker, risk_manager,
         export_fn=do_export,
@@ -407,6 +428,7 @@ async def main():
         archive_latest_fn=do_archive_latest,
         archive_health_fn=do_archive_health,
         repo_sync_fn=do_repo_sync_latest,
+        session_export_fn=do_session_export,
     )
     dashboard_state = None
     live_api = None

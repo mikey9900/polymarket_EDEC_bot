@@ -178,7 +178,7 @@ async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
         await query.edit_message_text(text, parse_mode="Markdown", reply_markup=back_kb)
         return True
 
-    if data in ("export_today", "export_all", "export_recent", "export_latest", "sync_repo_latest"):
+    if data in ("export_today", "export_all", "export_recent", "export_latest", "sync_repo_latest", "session_export"):
         bot._set_dashboard_view("main")
 
         async def _export_job() -> None:
@@ -192,6 +192,8 @@ async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
                 )
             elif data == "export_recent":
                 await bot._handle_recent_export_request(query.message)
+            elif data == "session_export":
+                await bot._handle_session_export_request(query.message)
             elif data == "export_latest":
                 await bot._handle_latest_export_request(
                     query.message,

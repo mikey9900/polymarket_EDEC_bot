@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import gzip
 import json
@@ -126,6 +127,56 @@ def _dropbox_error_details(raw_error: str) -> dict[str, Any]:
         details["friendly"] = "Dropbox file not found at the configured path."
 
     return details
+
+
+def _github_push_file(
+    local_path: str,
+    repo_path: str,
+    github_token: str,
+    github_repo: str,
+    github_branch: str = "main",
+    commit_message: str | None = None,
+) -> dict[str, Any]:
+    """Push a single file to GitHub via the Contents API (no external deps)."""
+    with open(local_path, "rb") as fh:
+        content_b64 = base64.b64encode(fh.read()).decode("utf-8")
+
+    msg = commit_message or f"Update session export: {Path(local_path).name}"
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/{repo_path}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    # GET existing file to obtain SHA (needed for updates)
+    sha: str | None = None
+    try:
+        get_req = request.Request(f"{api_url}?ref={github_branch}", headers=headers)
+        with request.urlopen(get_req, timeout=15) as resp:
+            sha = json.loads(resp.read().decode("utf-8")).get("sha")
+    except urlerror.HTTPError as exc:
+        if exc.code != 404:
+            return {"ok": False, "path": repo_path, "error": exc.read().decode("utf-8"), "status": exc.code}
+
+    payload: dict[str, Any] = {"message": msg, "content": content_b64, "branch": github_branch}
+    if sha:
+        payload["sha"] = sha
+
+    put_req = request.Request(
+        api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    try:
+        with request.urlopen(put_req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return {"ok": True, "path": repo_path, "sha": data.get("content", {}).get("sha")}
+    except urlerror.HTTPError as exc:
+        return {"ok": False, "path": repo_path, "error": exc.read().decode("utf-8"), "status": exc.code}
+    except Exception as exc:
+        return {"ok": False, "path": repo_path, "error": str(exc)}
 
 
 def _is_optional_latest_missing(item: dict[str, Any] | None, key: str) -> bool:
@@ -807,6 +858,228 @@ def export_recent_signals_csv_gz(
         conn.close()
 
 
+def export_session_trades_csv_gz(
+    db_path: str,
+    output_dir: str,
+    label: str,
+    since_utc: str,
+    now_utc: datetime | None = None,
+) -> tuple[str, int, int | None, int | None]:
+    """Export all paper trades since since_utc (ISO timestamp) as a gzipped CSV."""
+    now_utc = now_utc or _utc_now()
+    conn = sqlite3.connect(db_path)
+    try:
+        pt_cols = _table_columns(conn, "paper_trades")
+        d_cols = _table_columns(conn, "decisions")
+
+        pt_select = _aliased_select(
+            "pt",
+            pt_cols,
+            [
+                ("id", "trade_id"), ("timestamp", "timestamp"), ("run_id", "run_id"),
+                ("app_version", "app_version"), ("strategy_version", "strategy_version"),
+                ("config_hash", "config_hash"), ("mode", "mode"), ("dry_run", "dry_run"),
+                ("order_size_usd", "order_size_usd"), ("paper_capital_total", "paper_capital_total"),
+                ("market_slug", "market_slug"), ("window_id", "window_id"), ("coin", "coin"),
+                ("strategy_type", "strategy_type"), ("signal_context", "signal_context"),
+                ("signal_overlap_count", "signal_overlap_count"), ("side", "side"),
+                ("entry_price", "entry_price"), ("entry_bid", "entry_bid"), ("entry_ask", "entry_ask"),
+                ("entry_spread", "entry_spread"), ("target_price", "target_price"),
+                ("shares", "shares"), ("shares_requested", "shares_requested"),
+                ("shares_filled", "shares_filled"), ("blocked_min_5_shares", "blocked_min_5_shares"),
+                ("cost", "cost"), ("fee_total", "fee_total"), ("status", "status"),
+                ("exit_price", "exit_price"), ("pnl", "pnl"), ("exit_reason", "exit_reason"),
+                ("exit_timestamp", "exit_timestamp"), ("time_remaining_s", "time_remaining_s"),
+                ("bid_at_exit", "bid_at_exit"), ("ask_at_exit", "ask_at_exit"),
+                ("exit_spread", "exit_spread"), ("market_start_time", "market_start_time"),
+                ("market_end_time", "market_end_time"), ("entry_depth_side_usd", "entry_depth_side_usd"),
+                ("opposite_depth_usd", "opposite_depth_usd"), ("depth_ratio", "depth_ratio"),
+                ("signal_score", "signal_score"), ("score_velocity", "score_velocity"),
+                ("score_entry", "score_entry"), ("score_depth", "score_depth"),
+                ("score_spread", "score_spread"), ("score_time", "score_time"),
+                ("score_balance", "score_balance"), ("target_delta", "target_delta"),
+                ("hard_stop_delta", "hard_stop_delta"), ("max_bid_seen", "max_bid_seen"),
+                ("min_bid_seen", "min_bid_seen"), ("time_to_max_bid_s", "time_to_max_bid_s"),
+                ("time_to_min_bid_s", "time_to_min_bid_s"), ("first_profit_time_s", "first_profit_time_s"),
+                ("scalp_hit", "scalp_hit"), ("high_confidence_hit", "high_confidence_hit"),
+                ("mfe", "mfe"), ("mae", "mae"), ("peak_net_pnl", "peak_net_pnl"),
+                ("trough_net_pnl", "trough_net_pnl"), ("stall_exit_triggered", "stall_exit_triggered"),
+            ],
+        )
+        d_select = _aliased_select(
+            "d",
+            d_cols,
+            [
+                ("filter_passed", "filter_passed"), ("filter_failed", "filter_failed"),
+                ("reason", "decision_reason"), ("coin_velocity_30s", "coin_velocity_30s"),
+                ("coin_velocity_60s", "coin_velocity_60s"), ("up_depth_usd", "up_depth_usd"),
+                ("down_depth_usd", "down_depth_usd"), ("time_remaining_s", "decision_time_remaining_s"),
+            ],
+        )
+        decision_join_id = "COALESCE(pt.decision_id, top_d.best_id)" if "decision_id" in pt_cols else "top_d.best_id"
+
+        has_pt_strategy = "strategy_type" in pt_cols
+        has_d_strategy = "strategy_type" in d_cols
+        if has_pt_strategy and has_d_strategy:
+            join_sql = """
+            LEFT JOIN (
+                SELECT market_slug, strategy_type, MAX(id) AS best_id
+                FROM decisions WHERE action != 'SKIP'
+                GROUP BY market_slug, strategy_type
+            ) top_d ON top_d.market_slug = pt.market_slug AND top_d.strategy_type = pt.strategy_type
+            """
+        else:
+            join_sql = """
+            LEFT JOIN (
+                SELECT market_slug, MAX(id) AS best_id
+                FROM decisions WHERE action != 'SKIP'
+                GROUP BY market_slug
+            ) top_d ON top_d.market_slug = pt.market_slug
+            """
+
+        columns, rows = _select_all(
+            conn,
+            f"""
+            SELECT {pt_select}, {d_select}
+            FROM paper_trades pt
+            {join_sql}
+            LEFT JOIN decisions d ON d.id = {decision_join_id}
+            WHERE pt.timestamp >= ?
+            ORDER BY pt.id ASC
+            """,
+            (since_utc,),
+        )
+
+        ids = [int(r[0]) for r in rows if r and r[0] is not None]
+        newest = max(ids) if ids else None
+        oldest = min(ids) if ids else None
+
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        date_stamp = now_utc.strftime("%Y-%m-%d")
+        time_stamp = now_utc.strftime("%H%M%S")
+        out_path = Path(output_dir) / f"{date_stamp}_{time_stamp}_{label}_session_trades.csv.gz"
+
+        with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            compact_names = {
+                "trade_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+                "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+                "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+                "window_id": "wid", "coin": "c", "strategy_type": "st", "signal_context": "ctx",
+                "signal_overlap_count": "ov", "side": "sd", "entry_price": "ep", "entry_bid": "eb",
+                "entry_ask": "ea", "entry_spread": "es", "target_price": "tp", "shares": "sh",
+                "shares_requested": "srq", "shares_filled": "sfl", "blocked_min_5_shares": "b5",
+                "cost": "cs", "fee_total": "fee", "status": "status", "exit_price": "xp",
+                "pnl": "pnl", "exit_reason": "er", "exit_timestamp": "xt", "time_remaining_s": "tx",
+                "bid_at_exit": "xb", "ask_at_exit": "xa", "exit_spread": "xs", "market_start_time": "ms",
+                "market_end_time": "me", "entry_depth_side_usd": "eds", "opposite_depth_usd": "ods",
+                "depth_ratio": "drt", "max_bid_seen": "maxb", "min_bid_seen": "minb",
+                "time_to_max_bid_s": "ttmax", "time_to_min_bid_s": "ttmin", "first_profit_time_s": "tfp",
+                "signal_score": "sg", "score_velocity": "sgv", "score_entry": "sge",
+                "score_depth": "sgd", "score_spread": "sgs", "score_time": "sgt",
+                "score_balance": "sgb", "target_delta": "td", "hard_stop_delta": "hsd",
+                "scalp_hit": "sc", "high_confidence_hit": "hc", "filter_passed": "fp",
+                "filter_failed": "ff", "decision_reason": "why", "coin_velocity_30s": "v30",
+                "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
+                "decision_time_remaining_s": "te", "mfe": "mfe", "mae": "mae",
+                "peak_net_pnl": "pnp", "trough_net_pnl": "tnp", "stall_exit_triggered": "sx",
+            }
+            writer.writerow([compact_names.get(col, col) for col in columns])
+            writer.writerows(rows)
+
+        return str(out_path), len(rows), oldest, newest
+    finally:
+        conn.close()
+
+
+def export_session_signals_csv_gz(
+    db_path: str,
+    output_dir: str,
+    label: str,
+    since_utc: str,
+    now_utc: datetime | None = None,
+) -> tuple[str, int, int | None, int | None]:
+    """Export all signals since since_utc (ISO timestamp) as a gzipped CSV."""
+    now_utc = now_utc or _utc_now()
+    conn = sqlite3.connect(db_path)
+    try:
+        d_cols = _table_columns(conn, "decisions")
+        d_select = _aliased_select(
+            "d",
+            d_cols,
+            [
+                ("id", "decision_id"), ("timestamp", "timestamp"), ("run_id", "run_id"),
+                ("app_version", "app_version"), ("strategy_version", "strategy_version"),
+                ("config_hash", "config_hash"), ("mode", "mode"), ("dry_run", "dry_run"),
+                ("order_size_usd", "order_size_usd"), ("paper_capital_total", "paper_capital_total"),
+                ("market_slug", "market_slug"), ("window_id", "window_id"), ("coin", "coin"),
+                ("strategy_type", "strategy_type"), ("action", "action"),
+                ("suppressed_reason", "suppressed_reason"), ("reason", "reason"),
+                ("signal_context", "signal_context"), ("signal_overlap_count", "signal_overlap_count"),
+                ("entry_price", "entry_price"), ("target_price", "target_price"),
+                ("expected_profit_per_share", "expected_profit_per_share"),
+                ("signal_score", "signal_score"), ("score_velocity", "score_velocity"),
+                ("score_entry", "score_entry"), ("score_depth", "score_depth"),
+                ("score_spread", "score_spread"), ("score_time", "score_time"),
+                ("score_balance", "score_balance"), ("time_remaining_s", "time_remaining_s"),
+                ("coin_velocity_30s", "coin_velocity_30s"), ("coin_velocity_60s", "coin_velocity_60s"),
+                ("entry_bid", "entry_bid"), ("entry_ask", "entry_ask"), ("entry_spread", "entry_spread"),
+                ("entry_depth_side_usd", "entry_depth_side_usd"),
+                ("opposite_depth_usd", "opposite_depth_usd"), ("depth_ratio", "depth_ratio"),
+                ("resignal_cooldown_s", "resignal_cooldown_s"),
+                ("min_price_improvement", "min_price_improvement"),
+                ("last_signal_age_s", "last_signal_age_s"),
+                ("filter_passed", "filter_passed"), ("filter_failed", "filter_failed"),
+            ],
+        )
+
+        columns, rows = _select_all(
+            conn,
+            f"""
+            SELECT {d_select}
+            FROM decisions d
+            WHERE d.action IN ('DRY_RUN_SIGNAL', 'TRADE', 'SUPPRESSED')
+              AND d.timestamp >= ?
+            ORDER BY d.id ASC
+            """,
+            (since_utc,),
+        )
+
+        ids = [int(r[0]) for r in rows if r and r[0] is not None]
+        newest = max(ids) if ids else None
+        oldest = min(ids) if ids else None
+
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        date_stamp = now_utc.strftime("%Y-%m-%d")
+        time_stamp = now_utc.strftime("%H%M%S")
+        out_path = Path(output_dir) / f"{date_stamp}_{time_stamp}_{label}_session_signals.csv.gz"
+
+        with gzip.open(out_path, "wt", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            compact_names = {
+                "decision_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+                "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+                "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+                "window_id": "wid", "coin": "c", "strategy_type": "st", "action": "act",
+                "suppressed_reason": "sup", "reason": "why", "signal_context": "ctx",
+                "signal_overlap_count": "ov", "entry_price": "ep", "target_price": "tp",
+                "expected_profit_per_share": "eps", "signal_score": "sg", "score_velocity": "sgv",
+                "score_entry": "sge", "score_depth": "sgd", "score_spread": "sgs",
+                "score_time": "sgt", "score_balance": "sgb", "time_remaining_s": "te",
+                "coin_velocity_30s": "v30", "coin_velocity_60s": "v60", "entry_bid": "eb",
+                "entry_ask": "ea", "entry_spread": "es", "entry_depth_side_usd": "eds",
+                "opposite_depth_usd": "ods", "depth_ratio": "drt", "resignal_cooldown_s": "rcd",
+                "min_price_improvement": "mpi", "last_signal_age_s": "lsa",
+                "filter_passed": "fp", "filter_failed": "ff",
+            }
+            writer.writerow([compact_names.get(col, col) for col in columns])
+            writer.writerows(rows)
+
+        return str(out_path), len(rows), oldest, newest
+    finally:
+        conn.close()
+
+
 def _dropbox_upload_file(local_path: str, dropbox_path: str, dropbox_auth: dict[str, Any]) -> dict[str, Any]:
     with open(local_path, "rb") as fh:
         body = fh.read()
@@ -1288,6 +1561,130 @@ def run_daily_archive(
         "dropbox_files": index["dropbox_files"],
         "dropbox_uploads": index["dropbox_uploads"],
     }
+
+
+def run_session_export(
+    db_path: str = "data/decisions.db",
+    output_dir: str = "data/exports",
+    label: str = "EDEC-BOT",
+    dropbox_token: str | None = None,
+    dropbox_refresh_token: str | None = None,
+    dropbox_app_key: str | None = None,
+    dropbox_app_secret: str | None = None,
+    dropbox_root: str = "/",
+    github_token: str | None = None,
+    github_repo: str | None = None,
+    github_branch: str = "main",
+    github_export_path: str = "session_exports",
+) -> dict[str, Any]:
+    """Export all trades + signals since last stats reset → Dropbox + GitHub."""
+    now_utc = _utc_now()
+    label = _safe_label(label)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    # Resolve reset_at from DB
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT reset_at FROM paper_capital WHERE id = 1").fetchone()
+        reset_at = row[0] if row and row[0] else "1970-01-01"
+    finally:
+        conn.close()
+
+    dropbox_auth = _build_dropbox_auth(
+        dropbox_token=dropbox_token,
+        dropbox_refresh_token=dropbox_refresh_token,
+        dropbox_app_key=dropbox_app_key,
+        dropbox_app_secret=dropbox_app_secret,
+    )
+
+    trades_path, trade_count, oldest_id, newest_id = export_session_trades_csv_gz(
+        db_path=db_path, output_dir=output_dir, label=label, since_utc=reset_at, now_utc=now_utc,
+    )
+    signals_path, signal_count, oldest_sig, newest_sig = export_session_signals_csv_gz(
+        db_path=db_path, output_dir=output_dir, label=label, since_utc=reset_at, now_utc=now_utc,
+    )
+
+    date_stamp = now_utc.strftime("%Y-%m-%d")
+    time_stamp = now_utc.strftime("%H%M%S")
+    index_filename = f"{date_stamp}_{time_stamp}_{label}_session_index.json"
+    index_path = output_path / index_filename
+    index: dict[str, Any] = {
+        "label": label,
+        "exported_at_utc": now_utc.isoformat(),
+        "session_since_utc": reset_at,
+        "row_counts": {
+            "session_trades_rows": trade_count,
+            "session_signals_rows": signal_count,
+        },
+        "trade_id_range": {"oldest": oldest_id, "newest": newest_id},
+        "signal_id_range": {"oldest": oldest_sig, "newest": newest_sig},
+        "local_files": {
+            "session_trades_csv_gz": Path(trades_path).name,
+            "session_signals_csv_gz": Path(signals_path).name,
+            "session_index_json": index_filename,
+        },
+        "dropbox_uploads": None,
+        "github_pushes": None,
+    }
+    index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+
+    result: dict[str, Any] = {
+        "trades_path": trades_path,
+        "signals_path": signals_path,
+        "index_path": str(index_path),
+        "trade_count": trade_count,
+        "signal_count": signal_count,
+        "session_since_utc": reset_at,
+        "dropbox_uploads": None,
+        "github_pushes": None,
+    }
+
+    if dropbox_auth:
+        root = _normalize_dropbox_root(dropbox_root)
+        folder = f"{root}/session-exports"
+        uploads = {
+            "session_trades_csv_gz": _dropbox_upload_file(
+                trades_path, f"{folder}/{Path(trades_path).name}", dropbox_auth
+            ),
+            "session_signals_csv_gz": _dropbox_upload_file(
+                signals_path, f"{folder}/{Path(signals_path).name}", dropbox_auth
+            ),
+            "session_index_json": _dropbox_upload_file(
+                str(index_path), f"{folder}/{index_filename}", dropbox_auth
+            ),
+        }
+        index["dropbox_uploads"] = uploads
+        index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+        result["dropbox_uploads"] = uploads
+
+    if github_token and github_repo:
+        export_folder = github_export_path.strip("/")
+        folder_ts = now_utc.strftime("%Y-%m-%d_%H%M%S")
+        pushes: dict[str, Any] = {}
+        for local_path, key in [
+            (trades_path, "session_trades_csv_gz"),
+            (signals_path, "session_signals_csv_gz"),
+            (str(index_path), "session_index_json"),
+        ]:
+            repo_file_path = f"{export_folder}/{folder_ts}/{Path(local_path).name}"
+            pushes[key] = _github_push_file(
+                local_path=local_path,
+                repo_path=repo_file_path,
+                github_token=github_token,
+                github_repo=github_repo,
+                github_branch=github_branch,
+                commit_message=f"Session export {folder_ts}: {Path(local_path).name}",
+            )
+        index["github_pushes"] = pushes
+        index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+        result["github_pushes"] = pushes
+
+    logger.info(
+        "Session export complete: %d trades, %d signals since %s",
+        trade_count, signal_count, reset_at,
+    )
+    return result
 
 
 def latest_archive_paths(output_dir: str = "data/exports", label: str = "EDEC-BOT") -> dict[str, str]:

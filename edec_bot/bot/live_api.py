@@ -622,7 +622,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.31</span></div>
+    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.32</span></div>
     <div class="topstats">
       <div class="pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
       <div class="pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>

@@ -489,6 +489,28 @@ async def main():
     feed_pairs = []
     tasks = []
 
+    async def _loop_lag_monitor():
+        """Detect when the asyncio loop is starved.
+
+        Sleeps 500ms; when it wakes, compares actual elapsed time to expected.
+        Logs a WARNING when the loop was held for >1s.
+        """
+        loop = asyncio.get_running_loop()
+        target_interval = 0.5
+        threshold_s = 1.0
+        last = loop.time()
+        while True:
+            await asyncio.sleep(target_interval)
+            now = loop.time()
+            actual = now - last
+            lag = actual - target_interval
+            if lag >= threshold_s:
+                logging.getLogger("edec.loop_lag").warning(
+                    "Event loop blocked for %.2fs (expected sleep %.1fs, slept %.2fs)",
+                    lag, target_interval, actual,
+                )
+            last = now
+
     try:
         if live_api:
             await dashboard_state.start()
@@ -501,6 +523,7 @@ async def main():
         for task, feed in feed_pairs:
             tasks.append(task)
 
+        tasks.append(asyncio.create_task(_loop_lag_monitor(), name="loop-lag-monitor"))
         tasks.append(asyncio.create_task(aggregator.run(price_queue)))
         tasks.append(asyncio.create_task(scanner.run()))
         tasks.append(asyncio.create_task(strategy.run(signal_queue)))

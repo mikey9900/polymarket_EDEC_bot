@@ -20,7 +20,7 @@ logger = logging.getLogger("edec.dashboard_state")
 # Feed names we display LEDs for. Order matters → drives the LED row left→right.
 EXPECTED_FEEDS = ("binance", "coinbase", "coingecko", "polymarket_rtds")
 CONTROL_MODE_ORDER = ("both", "dual", "single", "lead", "swing", "off")
-CONTROL_BUDGET_OPTIONS = (1, 2, 5, 10, 15, 20)
+CONTROL_BUDGET_OPTIONS = (1, 2, 5, 10, 15, 20, 50, 100)
 CONTROL_REQUEST_TIMEOUT_S = 180.0
 
 
@@ -37,14 +37,7 @@ class DashboardStateService:
         strategy_engine,
         executor,
         aggregator,
-        export_fn=None,
-        export_recent_fn=None,
-        archive_fn=None,
-        archive_latest_fn=None,
-        archive_health_fn=None,
-        repo_sync_fn=None,
         session_export_fn=None,
-        fetch_github_fn=None,
         update_interval_s: float = 0.1,
         history_sample_interval_s: float = 0.5,
         history_points: int = 600,
@@ -64,14 +57,7 @@ class DashboardStateService:
         self.strategy_engine = strategy_engine
         self.executor = executor
         self.aggregator = aggregator
-        self.export_fn = export_fn
-        self.export_recent_fn = export_recent_fn
-        self.archive_fn = archive_fn
-        self.archive_latest_fn = archive_latest_fn
-        self.archive_health_fn = archive_health_fn
-        self.repo_sync_fn = repo_sync_fn
         self.session_export_fn = session_export_fn
-        self.fetch_github_fn = fetch_github_fn
         # Floor at 50ms so we don't pin a CPU.
         self.update_interval_s = max(0.05, float(update_interval_s))
         self.history_sample_interval_s = max(self.update_interval_s, float(history_sample_interval_s))
@@ -101,13 +87,11 @@ class DashboardStateService:
             "recent_resolutions_by_coin": {},
             "paper_capital": (0.0, 0.0),
         }
-        self._next_slow_refresh_at: float = 0.0
         # Per-coin captured strike: {coin: (slug, strike_price)}. Sampled from
         # the live aggregator the first time we see each new market window so
         # the dashboard can draw the open-price line.
         self._market_strikes: dict[str, tuple[str, float]] = {}
         self._slow_loop_task: asyncio.Task | None = None
-        self._slow_refresh_in_flight: bool = False
         self._last_control: dict[str, Any] = {
             "action": None,
             "ok": None,
@@ -312,13 +296,9 @@ class DashboardStateService:
             "scanning": scanning,
             "mode": getattr(self.strategy_engine, "mode", "unknown"),
             "order_size_usd": order_size,
-            "available_modes": list(CONTROL_MODE_ORDER),
-            "budget_options": list(CONTROL_BUDGET_OPTIONS),
             "available_actions": self._available_actions(),
-            "last_action": last_control.get("action"),
             "last_message": last_control.get("message"),
             "last_ok": last_control.get("ok"),
-            "last_at_utc": last_control.get("timestamp_utc"),
         }
 
     def _available_actions(self) -> dict[str, bool]:
@@ -329,15 +309,7 @@ class DashboardStateService:
             "mode": bool(self.strategy_engine),
             "budget": bool(self.executor),
             "reset_stats": bool(self.tracker or self.risk_manager),
-            "export_today": callable(self.export_fn),
-            "export_all": callable(self.export_fn),
-            "export_recent": callable(self.export_recent_fn),
             "session_export": callable(self.session_export_fn),
-            "archive_now": callable(self.archive_fn),
-            "archive_latest": callable(self.archive_latest_fn),
-            "archive_health": callable(self.archive_health_fn) or callable(self.archive_latest_fn),
-            "sync_repo_latest": callable(self.repo_sync_fn),
-            "fetch_github": callable(self.fetch_github_fn),
         }
 
     def _build_coin_payload(
@@ -553,15 +525,6 @@ class DashboardStateService:
         with self._thread_lock:
             return self._thread_history
 
-    @staticmethod
-    def _path_name(path: Any) -> str:
-        if not path:
-            return "unknown"
-        try:
-            return Path(str(path)).name or str(path)
-        except Exception:
-            return str(path)
-
     def _set_last_control(self, action: str, ok: bool | None, message: str) -> None:
         self._last_control = {
             "action": action,
@@ -573,104 +536,11 @@ class DashboardStateService:
     def _control_unavailable(self, message: str) -> dict[str, Any]:
         return {"ok": False, "status": 400, "message": message}
 
-    def _format_archive_health_message(self, health: dict[str, Any]) -> str:
-        local = health.get("local") or {}
-        local_ok = sum(1 for exists in local.values() if exists)
-        local_total = len(local) or 0
-        live = health.get("dropbox_live")
-        if live is None:
-            live_text = "Dropbox off"
-        else:
-            live_text = "Dropbox ok" if live.get("ok") else "Dropbox warn"
-        return f"Archive health: local {local_ok}/{local_total} | {live_text}."
-
-    def _format_archive_latest_message(self, paths: dict[str, Any]) -> str:
-        file_map = {
-            "latest_excel": paths.get("latest_excel"),
-            "latest_trades": paths.get("latest_trades"),
-            "latest_signals": paths.get("latest_signals"),
-            "latest_index": paths.get("latest_index"),
-        }
-        present = sum(1 for path in file_map.values() if path and Path(str(path)).exists())
-        return (
-            f"Latest archive files: {present}/{len(file_map)} present | "
-            f"{self._path_name(file_map.get('latest_index'))}."
-        )
-
-    @staticmethod
-    def _archive_latest_ok(paths: dict[str, Any]) -> bool:
-        required_keys = ("latest_excel", "latest_trades", "latest_index")
-        return all(paths.get(key) and Path(str(paths.get(key))).exists() for key in required_keys)
-
-    @staticmethod
-    def _archive_health_ok(health: dict[str, Any]) -> bool:
-        local = health.get("local") or {}
-        local_ok = all(bool(exists) for exists in local.values()) if local else False
-        live = health.get("dropbox_live")
-        live_ok = True if live is None else bool(live.get("ok"))
-        return local_ok and live_ok
-
-    def _format_archive_now_message(self, result: dict[str, Any]) -> str:
-        row_counts = result.get("row_counts") or {}
-        return (
-            f"Archive ready: {self._path_name(result.get('index_path'))} | "
-            f"recent {row_counts.get('recent_trades_rows', 0)}/{row_counts.get('recent_signals_rows', 0)}."
-        )
-
-    def _format_repo_sync_message(self, result: dict[str, Any]) -> str:
-        downloads = result.get("downloads") or {}
-        required_keys = tuple(key for key in downloads.keys() if key != "latest_signals_csv_gz")
-        ok_count = sum(1 for key in required_keys if downloads.get(key, {}).get("ok"))
-        status = "ok" if result.get("ok") else "partial"
-        return (
-            f"Repo sync {status}: {ok_count}/{len(required_keys)} files | "
-            f"{self._path_name(result.get('output_dir'))}."
-        )
-
-    def _format_github_fetch_message(self, result: dict[str, Any]) -> str:
-        if not result.get("ok"):
-            return f"GitHub fetch failed: {result.get('error') or 'unknown error'}"
-        fetched_count = int(result.get("fetched_count") or 0)
-        note = result.get("note")
-        if note:
-            return f"GitHub exports: {note}."
-        return (
-            f"GitHub exports fetched: {fetched_count} folder(s) | "
-            f"{self._path_name(result.get('output_dir'))}."
-        )
-
     async def _run_control_job(self, job) -> Any:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, job)
 
     async def _apply_long_control(self, action: str, value: Any = None) -> dict[str, Any]:
-        if action == "export_today":
-            if not callable(self.export_fn):
-                return self._control_unavailable("Export is not configured.")
-            path = await self._run_control_job(lambda: self.export_fn(today_only=True))
-            return {
-                "ok": True,
-                "status": 200,
-                "message": f"Today's export ready: {self._path_name(path)}.",
-            }
-        if action == "export_all":
-            if not callable(self.export_fn):
-                return self._control_unavailable("Export is not configured.")
-            path = await self._run_control_job(lambda: self.export_fn(today_only=False))
-            return {
-                "ok": True,
-                "status": 200,
-                "message": f"Full export ready: {self._path_name(path)}.",
-            }
-        if action == "export_recent":
-            if not callable(self.export_recent_fn):
-                return self._control_unavailable("Recent export is not configured.")
-            path = await self._run_control_job(self.export_recent_fn)
-            return {
-                "ok": True,
-                "status": 200,
-                "message": f"Recent export ready: {self._path_name(path)}.",
-            }
         if action == "session_export":
             if not callable(self.session_export_fn):
                 return self._control_unavailable("Session export is not configured.")
@@ -680,61 +550,9 @@ class DashboardStateService:
                 "status": 200,
                 "message": (
                     f"Session export ready: {int(result.get('trade_count', 0))} trades, "
-                    f"{int(result.get('signal_count', 0))} signals."
+                    f"{int(result.get('signal_count', 0))} signals, "
+                    f"XLSX {Path(str(result.get('excel_path') or '')).name or 'ready'}."
                 ),
-            }
-        if action == "archive_now":
-            if not callable(self.archive_fn):
-                return self._control_unavailable("Archive run is not configured.")
-            result = await self._run_control_job(self.archive_fn)
-            return {
-                "ok": True,
-                "status": 200,
-                "message": self._format_archive_now_message(result),
-            }
-        if action == "archive_latest":
-            if not callable(self.archive_latest_fn):
-                return self._control_unavailable("Latest archive lookup is not configured.")
-            result = await self._run_control_job(self.archive_latest_fn)
-            return {
-                "ok": self._archive_latest_ok(result or {}),
-                "status": 200 if self._archive_latest_ok(result or {}) else 500,
-                "message": self._format_archive_latest_message(result or {}),
-            }
-        if action == "archive_health":
-            if callable(self.archive_health_fn):
-                health = await self._run_control_job(self.archive_health_fn)
-            elif callable(self.archive_latest_fn):
-                latest = await self._run_control_job(self.archive_latest_fn)
-                health = {"local": {key: Path(str(path)).exists() for key, path in (latest or {}).items()}}
-            else:
-                return self._control_unavailable("Archive health is not configured.")
-            return {
-                "ok": self._archive_health_ok(health or {}),
-                "status": 200 if self._archive_health_ok(health or {}) else 500,
-                "message": self._format_archive_health_message(health or {}),
-            }
-        if action == "sync_repo_latest":
-            if not callable(self.repo_sync_fn):
-                return self._control_unavailable("Repo sync is not configured.")
-            result = await self._run_control_job(self.repo_sync_fn)
-            return {
-                "ok": bool(result.get("ok")),
-                "status": 200 if result.get("ok") else 500,
-                "message": self._format_repo_sync_message(result),
-            }
-        if action == "fetch_github":
-            if not callable(self.fetch_github_fn):
-                return self._control_unavailable("GitHub export fetch is not configured.")
-            try:
-                limit = max(1, min(10, int(value))) if value is not None else 3
-            except (TypeError, ValueError):
-                limit = 3
-            result = await self._run_control_job(lambda: self.fetch_github_fn(limit=limit))
-            return {
-                "ok": bool(result.get("ok")),
-                "status": 200 if result.get("ok") else 500,
-                "message": self._format_github_fetch_message(result),
             }
         return {"ok": False, "status": 400, "message": f"Unknown action: {action or 'empty'}"}
 
@@ -792,17 +610,7 @@ class DashboardStateService:
 
     async def _apply_control_async(self, action: str, value: Any = None) -> dict[str, Any]:
         action = str(action or "").strip().lower()
-        if action in {
-            "export_today",
-            "export_all",
-            "export_recent",
-            "session_export",
-            "archive_now",
-            "archive_latest",
-            "archive_health",
-            "sync_repo_latest",
-            "fetch_github",
-        }:
+        if action == "session_export":
             try:
                 result = await self._apply_long_control(action, value)
             except Exception as exc:

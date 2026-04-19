@@ -35,13 +35,11 @@ class LiveApiServer:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: asyncio.AbstractServer | None = None
         self._ready = threading.Event()
-        self._stop = threading.Event()
 
     def start_threaded(self) -> None:
         """Spin up the server on a dedicated thread + event loop."""
         if self._thread is not None and self._thread.is_alive():
             return
-        self._stop.clear()
         self._ready.clear()
         self._thread = threading.Thread(
             target=self._run_thread, name="edec-dashboard-api", daemon=True
@@ -53,7 +51,6 @@ class LiveApiServer:
     def stop_threaded(self) -> None:
         if self._loop is None or not self._loop.is_running():
             return
-        self._stop.set()
         try:
             self._loop.call_soon_threadsafe(self._loop.stop)
         except Exception:
@@ -189,6 +186,7 @@ class LiveApiServer:
             405: "Method Not Allowed",
             500: "Internal Server Error",
             503: "Service Unavailable",
+            504: "Gateway Timeout",
         }.get(status, "OK")
         headers = [
             f"HTTP/1.1 {status} {reason}",
@@ -383,7 +381,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
   }
-  .control-block.span-2 { grid-column: span 2; }
   .control-block {
     background: rgba(10, 15, 38, 0.68);
     border: 1px solid #1f2a55;
@@ -685,37 +682,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     letter-spacing: 1.5px;
   }
 
-  /* LED row */
-  .leds { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  .led {
-    display: flex; flex-direction: column; align-items: center; gap: 3px;
-    min-width: 36px;
-  }
-  .led .dot {
-    width: 12px; height: 12px;
-    border-radius: 50%;
-    background: #20263d;
-    border: 1px solid #000;
-    box-shadow: inset 0 -2px 3px rgba(0,0,0,0.6), inset 0 1px 1px rgba(255,255,255,0.06);
-  }
-  .led.on .dot {
-    background: radial-gradient(circle at 35% 30%, #b3ffd1, var(--neon-lime) 70%);
-    box-shadow:
-      inset 0 -2px 3px rgba(0,0,0,0.4),
-      0 0 8px var(--neon-lime),
-      0 0 14px rgba(57,255,20,0.6);
-    animation: blink 2s infinite;
-  }
-  .led.stale .dot {
-    background: radial-gradient(circle at 35% 30%, #ffe8a8, var(--neon-amber) 70%);
-    box-shadow: 0 0 6px var(--neon-amber);
-  }
-  .led .lbl {
-    font-size: 10px; color: var(--text-dim); letter-spacing: 1px;
-    font-family: "Press Start 2P", "VT323", monospace;
-  }
-  .led.on .lbl { color: var(--text); }
-
   /* Big readouts */
   .strike-row {
     display: flex; align-items: baseline; justify-content: space-between;
@@ -812,20 +778,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .pnl-pos { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
   .pnl-neg { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); }
   .muted { color: var(--text-dim); font-style: italic; }
-
-  /* Session readout */
-  .session {
-    display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
-    font-size: 16px;
-  }
-  .session .item .lbl {
-    color: var(--text-dim); font-size: 10px; letter-spacing: 1px;
-    font-family: "Press Start 2P", "VT323", monospace;
-    display: block;
-  }
-  .session .w { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
-  .session .l { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); }
-  .session .o { color: var(--neon-amber); text-shadow: 0 0 4px var(--neon-amber); }
 
   /* Live chart slot (Step 3) */
   .chart-slot {
@@ -936,7 +888,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
-    .control-block.span-2 { grid-column: auto; }
     .chart-slot { height: 104px; }
     .ticker-lock { grid-template-columns: auto 92px; gap: 4px; }
     .live-price { font-size: 20px; width: 92px; min-width: 92px; }
@@ -983,8 +934,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .session-inline .item { gap: 4px; padding: 3px 6px; }
     .session-inline .lbl { font-size: 8px; }
     .session-inline .val { font-size: 11px; }
-    .session { gap: 8px; font-size: 14px; }
-    .session .item .lbl { font-size: 9px; }
     .chart-slot { height: 84px; }
     .chart-empty { font-size: 8px; letter-spacing: 1px; }
     .chart-feed { font-size: 6px; padding: 2px 4px; }
@@ -1027,7 +976,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
             <button id="btn-start" type="button" class="ctl-btn" data-action="start">START</button>
             <button id="btn-stop" type="button" class="ctl-btn" data-action="stop">STOP</button>
             <button id="btn-kill" type="button" class="ctl-btn warn" data-action="kill">KILL</button>
-            <button id="btn-reset" type="button" class="ctl-btn" data-action="reset_stats">RESET</button>
+            <button id="btn-reset" type="button" class="ctl-btn" data-action="reset_stats">CLEAR STATS</button>
           </div>
           <div class="control-readout">
             <div class="readout-pill"><span class="lbl">STATE</span><span id="ctrl-state">-</span></div>
@@ -1055,30 +1004,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
             <button type="button" class="ctl-btn" data-action="budget" data-value="10">$10</button>
             <button type="button" class="ctl-btn" data-action="budget" data-value="15">$15</button>
             <button type="button" class="ctl-btn" data-action="budget" data-value="20">$20</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="50">$50</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="100">$100</button>
           </div>
         </div>
         <div class="control-block">
-          <span class="head">ARCHIVE CHECK</span>
+          <span class="head">SESSION EXPORT</span>
           <div class="control-row">
-            <button type="button" class="ctl-btn" data-action="archive_latest">LATEST</button>
-            <button type="button" class="ctl-btn" data-action="archive_health">HEALTH</button>
-          </div>
-        </div>
-        <div class="control-block span-2">
-          <span class="head">EXPORTS</span>
-          <div class="control-row">
-            <button type="button" class="ctl-btn" data-action="export_today">TODAY</button>
-            <button type="button" class="ctl-btn" data-action="export_all">FULL</button>
-            <button type="button" class="ctl-btn" data-action="export_recent">RECENT</button>
-            <button type="button" class="ctl-btn" data-action="session_export">SESSION</button>
-          </div>
-        </div>
-        <div class="control-block span-2">
-          <span class="head">ARCHIVE + SYNC</span>
-          <div class="control-row">
-            <button type="button" class="ctl-btn" data-action="archive_now">ARCHIVE NOW</button>
-            <button type="button" class="ctl-btn" data-action="sync_repo_latest">SYNC LATEST</button>
-            <button type="button" class="ctl-btn" data-action="fetch_github">GH FETCH</button>
+            <button type="button" class="ctl-btn" data-action="session_export">EXPORT SESSION</button>
           </div>
         </div>
       </div>

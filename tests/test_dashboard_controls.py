@@ -133,42 +133,10 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         callbacks = {}
         if with_callbacks:
             callbacks = {
-                "export_fn": lambda today_only=False: f"data/{'today' if today_only else 'all'}.xlsx",
-                "export_recent_fn": lambda: "data/recent.xlsx",
-                "archive_fn": lambda: {
-                    "index_path": "data/EDEC-BOT_latest_index.json",
-                    "row_counts": {"recent_trades_rows": 12, "recent_signals_rows": 8},
-                },
-                "archive_latest_fn": lambda: {
-                    "latest_excel": "data/EDEC-BOT_latest_last24h.xlsx",
-                    "latest_trades": "data/EDEC-BOT_latest_trades.csv.gz",
-                    "latest_signals": "data/EDEC-BOT_latest_signals.csv.gz",
-                    "latest_index": "data/EDEC-BOT_latest_index.json",
-                },
-                "archive_health_fn": lambda: {
-                    "local": {
-                        "latest_excel_exists": True,
-                        "latest_trades_exists": True,
-                        "latest_signals_exists": False,
-                        "latest_index_exists": True,
-                    },
-                    "dropbox_live": {"ok": False},
-                },
-                "repo_sync_fn": lambda: {
-                    "ok": True,
-                    "output_dir": "data/dropbox_sync",
-                    "downloads": {
-                        "latest_last24h_xlsx": {"ok": True},
-                        "latest_trades_csv_gz": {"ok": True},
-                        "latest_signals_csv_gz": {"ok": False},
-                        "latest_index_json": {"ok": True},
-                    },
-                },
-                "session_export_fn": lambda: {"trade_count": 7, "signal_count": 14},
-                "fetch_github_fn": lambda limit=3: {
-                    "ok": True,
-                    "fetched_count": limit,
-                    "output_dir": "data/github_exports",
+                "session_export_fn": lambda: {
+                    "trade_count": 7,
+                    "signal_count": 14,
+                    "excel_path": "data/session_export.xlsx",
                 },
             }
         service = DashboardStateService(
@@ -193,7 +161,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["controls"]["mode"], "both")
         self.assertEqual(snapshot["controls"]["order_size_usd"], 10.0)
         self.assertEqual(snapshot["summary"]["paper"]["pnl"], 15.0)
-        self.assertFalse(snapshot["controls"]["available_actions"]["export_today"])
+        self.assertFalse(snapshot["controls"]["available_actions"]["session_export"])
         self.assertEqual(snapshot["controls"]["last_message"], "CONTROL LINK STANDBY")
 
     async def test_apply_control_async_updates_mode_and_budget(self):
@@ -257,32 +225,20 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             [{"winner": "UP", "slug": "poly-1"}, {"winner": "DOWN", "slug": "poly-2"}],
         )
 
-    async def test_apply_control_async_runs_export_archive_and_sync_actions(self):
+    async def test_apply_control_async_runs_session_export_action(self):
         service = self._build_service(with_callbacks=True)
 
-        export_result = await service._apply_control_async("export_today")
         session_result = await service._apply_control_async("session_export")
-        health_result = await service._apply_control_async("archive_health")
-        sync_result = await service._apply_control_async("sync_repo_latest")
-        github_result = await service._apply_control_async("fetch_github", 2)
-
-        self.assertTrue(export_result["ok"])
-        self.assertIn("today.xlsx", export_result["message"])
         self.assertTrue(session_result["ok"])
         self.assertIn("7 trades, 14 signals", session_result["message"])
-        self.assertFalse(health_result["ok"])
-        self.assertIn("Archive health: local 3/4 | Dropbox warn.", health_result["message"])
-        self.assertTrue(sync_result["ok"])
-        self.assertIn("Repo sync ok: 3/3 files", sync_result["message"])
-        self.assertTrue(github_result["ok"])
-        self.assertIn("2 folder(s)", github_result["message"])
+        self.assertIn("session_export.xlsx", session_result["message"])
         self.assertEqual(
-            github_result["state"]["controls"]["available_actions"]["session_export"],
+            session_result["state"]["controls"]["available_actions"]["session_export"],
             True,
         )
         self.assertEqual(
-            github_result["state"]["controls"]["last_action"],
-            "fetch_github",
+            session_result["state"]["controls"]["last_message"],
+            session_result["message"],
         )
 
 

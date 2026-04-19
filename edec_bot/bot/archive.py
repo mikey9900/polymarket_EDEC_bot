@@ -433,6 +433,59 @@ def _sheet_from_rows(wb: Workbook, sheet_name: str, columns: list[str], rows: li
     _auto_width(ws)
 
 
+def _read_gzip_csv_rows(path: str) -> tuple[list[str], list[tuple[Any, ...]]]:
+    with gzip.open(path, "rt", encoding="utf-8", newline="") as fh:
+        reader = csv.reader(fh)
+        columns = next(reader, [])
+        rows = [tuple(row) for row in reader]
+    return columns, rows
+
+
+def _build_session_excel_export(
+    *,
+    output_dir: str,
+    label: str,
+    now_utc: datetime,
+    reset_at: str,
+    trades_path: str,
+    signals_path: str,
+    trade_count: int,
+    signal_count: int,
+) -> str:
+    date_stamp = now_utc.strftime("%Y-%m-%d")
+    time_stamp = now_utc.strftime("%H%M%S")
+    excel_filename = f"{date_stamp}_{time_stamp}_{label}_session_export.xlsx"
+    excel_path = Path(output_dir) / excel_filename
+
+    wb = Workbook()
+    summary = wb.active
+    summary.title = "Summary"
+    summary.append(["Field", "Value"])
+    _style_header(summary, 2)
+    _freeze(summary)
+    summary_rows = [
+        ("Label", label),
+        ("Exported At UTC", now_utc.isoformat()),
+        ("Session Since UTC", reset_at),
+        ("Session Trades Rows", trade_count),
+        ("Session Signals Rows", signal_count),
+        ("Trades CSV.GZ", Path(trades_path).name),
+        ("Signals CSV.GZ", Path(signals_path).name),
+    ]
+    for row in summary_rows:
+        summary.append(list(row))
+    summary.auto_filter.ref = "A1:B1"
+    _auto_width(summary)
+
+    trade_columns, trade_rows = _read_gzip_csv_rows(trades_path)
+    signal_columns, signal_rows = _read_gzip_csv_rows(signals_path)
+    _sheet_from_rows(wb, "Session Trades", trade_columns, trade_rows)
+    _sheet_from_rows(wb, "Session Signals", signal_columns, signal_rows)
+
+    wb.save(excel_path)
+    return str(excel_path)
+
+
 def export_last_24h_excel(
     db_path: str,
     output_dir: str,
@@ -1955,6 +2008,16 @@ def run_session_export(
     signals_path, signal_count, oldest_sig, newest_sig = export_session_signals_csv_gz(
         db_path=db_path, output_dir=output_dir, label=label, since_utc=reset_at, now_utc=now_utc,
     )
+    excel_path = _build_session_excel_export(
+        output_dir=output_dir,
+        label=label,
+        now_utc=now_utc,
+        reset_at=reset_at,
+        trades_path=trades_path,
+        signals_path=signals_path,
+        trade_count=trade_count,
+        signal_count=signal_count,
+    )
 
     date_stamp = now_utc.strftime("%Y-%m-%d")
     time_stamp = now_utc.strftime("%H%M%S")
@@ -1971,6 +2034,7 @@ def run_session_export(
         "trade_id_range": {"oldest": oldest_id, "newest": newest_id},
         "signal_id_range": {"oldest": oldest_sig, "newest": newest_sig},
         "local_files": {
+            "session_excel_xlsx": Path(excel_path).name,
             "session_trades_csv_gz": Path(trades_path).name,
             "session_signals_csv_gz": Path(signals_path).name,
             "session_index_json": index_filename,
@@ -1981,6 +2045,7 @@ def run_session_export(
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     result: dict[str, Any] = {
+        "excel_path": excel_path,
         "trades_path": trades_path,
         "signals_path": signals_path,
         "index_path": str(index_path),
@@ -1995,6 +2060,9 @@ def run_session_export(
         root = _normalize_dropbox_root(dropbox_root)
         folder = f"{root}/session-exports"
         uploads = {
+            "session_excel_xlsx": _dropbox_upload_file(
+                excel_path, f"{folder}/{Path(excel_path).name}", dropbox_auth
+            ),
             "session_trades_csv_gz": _dropbox_upload_file(
                 trades_path, f"{folder}/{Path(trades_path).name}", dropbox_auth
             ),
@@ -2014,6 +2082,7 @@ def run_session_export(
         folder_ts = now_utc.strftime("%Y-%m-%d_%H%M%S")
         pushes: dict[str, Any] = {}
         for local_path, key in [
+            (excel_path, "session_excel_xlsx"),
             (trades_path, "session_trades_csv_gz"),
             (signals_path, "session_signals_csv_gz"),
             (str(index_path), "session_index_json"),

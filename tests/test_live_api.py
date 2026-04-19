@@ -50,16 +50,21 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertNotIn("__APP_VERSION__", html)
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
         self.assertIn('data-action="reset_stats"', html)
-        self.assertIn('data-action="export_today"', html)
-        self.assertIn('data-action="export_all"', html)
-        self.assertIn('data-action="export_recent"', html)
         self.assertIn('data-action="session_export"', html)
-        self.assertIn('data-action="archive_now"', html)
-        self.assertIn('data-action="archive_latest"', html)
-        self.assertIn('data-action="archive_health"', html)
-        self.assertIn('data-action="sync_repo_latest"', html)
-        self.assertIn('data-action="fetch_github"', html)
-        self.assertIn("ARCHIVE + SYNC", html)
+        self.assertIn('CLEAR STATS', html)
+        self.assertIn('EXPORT SESSION', html)
+        self.assertIn('data-action="budget" data-value="50"', html)
+        self.assertIn('data-action="budget" data-value="100"', html)
+        self.assertIn("SESSION EXPORT", html)
+        self.assertNotIn('data-action="export_today"', html)
+        self.assertNotIn('data-action="export_all"', html)
+        self.assertNotIn('data-action="export_recent"', html)
+        self.assertNotIn('data-action="archive_now"', html)
+        self.assertNotIn('data-action="archive_latest"', html)
+        self.assertNotIn('data-action="archive_health"', html)
+        self.assertNotIn('data-action="sync_repo_latest"', html)
+        self.assertNotIn('data-action="fetch_github"', html)
+        self.assertNotIn("ARCHIVE + SYNC", html)
         self.assertIn("function syncControlButtons(controls)", html)
         self.assertIn('controls.last_message || "CONTROL LINK STANDBY"', html)
         self.assertIn('setClassList(btn, "unavailable", !enabled);', html)
@@ -107,7 +112,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('rgba(255,184,0,0.12)', html)
         self.assertIn('text-align: left;', html)
         self.assertIn('white-space: nowrap;', html)
-        self.assertIn('.control-block.span-2 { grid-column: span 2; }', html)
+        self.assertNotIn('.control-block.span-2 { grid-column: span 2; }', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -195,6 +200,41 @@ class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.dashboard_state.control_payloads, [{"action": "budget", "value": "15"}])
         payload = json.loads(response_body)
         self.assertTrue(payload["ok"])
+
+    async def test_post_control_timeout_uses_gateway_timeout_reason(self):
+        class _TimeoutDashboardState(_FakeDashboardState):
+            def apply_control_threadsafe(self, payload):
+                self.control_payloads.append(payload)
+                return {"ok": False, "status": 504, "message": "Dashboard control request timed out."}
+
+        dashboard_state = _TimeoutDashboardState()
+        server = LiveApiServer(dashboard_state=dashboard_state, app_version="1.2.3")
+        http_server = await asyncio.start_server(server._handle_client, "127.0.0.1", 0)
+        sock = http_server.sockets[0]
+        host, port = sock.getsockname()[:2]
+        try:
+            reader, writer = await asyncio.open_connection(host, port)
+            body = json.dumps({"action": "session_export"}).encode("utf-8")
+            request = (
+                b"POST /api/control HTTP/1.1\r\n"
+                b"Host: localhost\r\n"
+                b"Content-Type: application/json\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode("utf-8")
+                + body
+            )
+            writer.write(request)
+            await writer.drain()
+            response = await reader.read()
+            writer.close()
+            await writer.wait_closed()
+        finally:
+            http_server.close()
+            await http_server.wait_closed()
+
+        head, response_body = response.split(b"\r\n\r\n", 1)
+        self.assertIn("504 Gateway Timeout", head.decode("utf-8", errors="ignore"))
+        payload = json.loads(response_body.decode("utf-8", errors="ignore"))
+        self.assertFalse(payload["ok"])
 
 
 if __name__ == "__main__":

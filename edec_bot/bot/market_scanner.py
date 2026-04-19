@@ -166,16 +166,7 @@ class MarketScanner:
             if isinstance(fee_schedule, str):
                 fee_schedule = json.loads(fee_schedule)
             fee_rate = fee_schedule.get("rate", 0.072)
-            volume_raw = (
-                market.get("volumeClob")
-                or market.get("volumeNum")
-                or market.get("volume")
-                or event.get("volume")
-            )
-            try:
-                volume = float(volume_raw) if volume_raw is not None else None
-            except (TypeError, ValueError):
-                volume = None
+            volume = self._extract_volume(market, event)
 
             end_str = market.get("endDate", event.get("endDate", ""))
             start_str = market.get("eventStartTime", market.get("startDate", ""))
@@ -199,14 +190,55 @@ class MarketScanner:
             logger.error(f"[{coin.upper()}] Parse error: {e}")
             return None
 
+    @staticmethod
+    def _extract_volume(market: dict, event: dict) -> float | None:
+        volume_raw = (
+            market.get("volumeClob")
+            or market.get("volumeNum")
+            or market.get("volume")
+            or event.get("volume")
+        )
+        try:
+            return float(volume_raw) if volume_raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    async def _refresh_market_metadata(self, coin: str, market: MarketInfo) -> None:
+        """Refresh lightweight market metadata that should feel live in the dashboard."""
+        try:
+            url = f"{self.config.polymarket.gamma_base_url}/events"
+            resp = await self._http.get(url, params={"slug": market.slug, "limit": 1})
+            if resp.status_code != 200:
+                return
+            events = resp.json()
+            if not events:
+                return
+            event = events[0] or {}
+            markets = event.get("markets", [])
+            if not markets:
+                return
+            current_market = markets[0]
+            latest_volume = self._extract_volume(current_market, event)
+            if latest_volume is not None:
+                market.volume = latest_volume
+            market.accepting_orders = bool(current_market.get("acceptingOrders", market.accepting_orders))
+        except Exception as e:
+            logger.debug(f"[{coin.upper()}] Market metadata refresh error: {e}")
+
     async def _poll_books_until_end(self, coin: str, market: MarketInfo):
         """Subscribe to WebSocket book updates until the market window closes.
         Falls back to HTTP polling until the WebSocket delivers the first snapshot."""
         token_ids = [market.up_token_id, market.down_token_id]
         await self._ws_feed.subscribe(token_ids)
         logger.info(f"[{coin.upper()}] WS subscribed for {market.slug}")
+        next_market_refresh_at = time.monotonic() + 1.0
 
         while self._running:
+            now_mono = time.monotonic()
+            if now_mono >= next_market_refresh_at:
+                await self._refresh_market_metadata(coin, market)
+                next_market_refresh_at = now_mono + 1.0
+
             now = datetime.now(timezone.utc)
             if now >= market.end_time:
                 logger.info(f"[{coin.upper()}] Market {market.slug} ended — queued for outcome check")

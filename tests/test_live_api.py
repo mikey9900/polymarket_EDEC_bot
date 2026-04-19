@@ -54,6 +54,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertNotIn('class="grip"', html)
         self.assertNotIn('header.draggable = true', html)
         self.assertNotIn('const STORAGE_KEY = "edec_card_order_v1";', html)
+        self.assertNotIn('.tape .seg .traded', html)
         self.assertIn('return `<span class="chart-res-dot ${cls}"></span>`;', html)
         self.assertNotIn('data-field="strike-mini"', html)
         self.assertNotIn('data-field="strike-label"', html)

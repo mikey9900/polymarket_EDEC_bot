@@ -612,11 +612,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .session-inline {
     display: flex; align-items: center; justify-content: center;
-    gap: 6px; flex-wrap: wrap;
+    gap: 7px; flex-wrap: wrap;
   }
   .session-inline .item {
-    display: inline-flex; align-items: center; gap: 4px;
-    padding: 2px 7px;
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 3px 8px;
     border: 1px solid #24315f;
     border-radius: 999px;
     background: rgba(7, 11, 28, 0.82);
@@ -644,12 +644,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .session-inline .lbl {
     color: var(--text-dim);
-    font-size: 8px;
-    letter-spacing: 1px;
+    font-size: 9px;
+    letter-spacing: 1.1px;
     font-family: "Press Start 2P", "VT323", monospace;
   }
   .session-inline .val {
-    font-size: 12px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
 
   /* ============================================================
@@ -807,27 +808,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .pnl-neg { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); }
   .muted { color: var(--text-dim); font-style: italic; }
 
-  /* Recent resolutions tape */
-  .tape {
-    display: flex; gap: 6px; align-items: center;
-    flex-wrap: wrap;
-  }
-  .tape .seg {
-    border: 1px solid var(--chrome-lo);
-    border-radius: 3px;
-    padding: 3px 6px;
-    background: #07091a;
-    box-shadow: inset 0 0 8px rgba(0,0,0,0.5);
-    font-size: 14px;
-    display: flex; align-items: center; gap: 6px;
-  }
-  .tape .seg.win-up   { border-color: var(--neon-lime); }
-  .tape .seg.win-down { border-color: var(--neon-red); }
-  .tape .arrow.up   { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); font-size: 16px; }
-  .tape .arrow.down { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); font-size: 16px; }
-  .tape .seg .traded { color: var(--neon-cyan); font-size: 12px; }
-  .tape .seg .nope   { color: var(--text-dim); font-size: 12px; }
-
   /* Session readout */
   .session {
     display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
@@ -968,9 +948,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 13px; }
     .timer { font-size: 15px; min-width: 36px; }
-    .session-inline { gap: 4px; }
-    .session-inline .item { padding: 2px 5px; }
-    .session-inline .val { font-size: 11px; }
+    .session-inline { gap: 5px; }
+    .session-inline .item { gap: 4px; padding: 3px 6px; }
+    .session-inline .lbl { font-size: 8px; }
+    .session-inline .val { font-size: 12px; }
   }
 
   /* Mobile */
@@ -1003,9 +984,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .predbar .label-up, .predbar .label-down { font-size: 10px; top: 0; }
     .row { flex-direction: column; gap: 2px; font-size: 14px; }
     .strategy-tag { font-size: 10px; }
-    .session-inline { gap: 4px; }
-    .session-inline .lbl { font-size: 7px; }
-    .session-inline .val { font-size: 10px; }
+    .session-inline { gap: 5px; }
+    .session-inline .item { gap: 4px; padding: 3px 6px; }
+    .session-inline .lbl { font-size: 8px; }
+    .session-inline .val { font-size: 11px; }
     .session { gap: 8px; font-size: 14px; }
     .session .item .lbl { font-size: 9px; }
     .chart-slot { height: 84px; }
@@ -1340,7 +1322,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
       return;
     }
     // Oldest-left so the newest result stays on the right edge.
-    const reversed = resolutions.slice().reverse();
+    const reversed = resolutions.slice(0, 4).reverse();
     const html = reversed.map(r => {
       const upper = (r.winner || "").toUpperCase();
       const cls = upper === "UP" || upper === "YES" ? "yes" : "no";

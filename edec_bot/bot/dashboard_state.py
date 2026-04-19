@@ -307,6 +307,7 @@ class DashboardStateService:
 
         series = list(self._coin_price_series.get(coin, ()))
         price_series = [{"t": t, "p": p} for t, p in series]
+        resolution_payload = [{"winner": str(r.get("winner") or "")} for r in (resolutions or [])[:4]]
 
         return {
             "coin": coin,
@@ -316,7 +317,7 @@ class DashboardStateService:
             "bot_signals": recent_signals,
             "open_trades": open_trades_payload,
             "session": session,
-            "recent_resolutions": resolutions,
+            "recent_resolutions": resolution_payload,
             "price_series": price_series,
             "chart_color": chart_color,
         }

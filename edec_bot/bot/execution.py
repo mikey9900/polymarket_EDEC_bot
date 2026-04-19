@@ -351,6 +351,14 @@ class ExecutionEngine:
             return False
         return ExecutionEngine._response_status(response) in ("matched", "filled")
 
+    @staticmethod
+    def _exclude_market_slug(mapping: dict, market_slug: str, *, attr: str = "market") -> dict:
+        return {
+            key: value
+            for key, value in mapping.items()
+            if getattr(getattr(value, attr), "slug", None) != market_slug
+        }
+
     def resolve_market_positions(self, market_slug: str, winner: str) -> float:
         """Resolve risk state and clear any in-memory positions for a settled market."""
         matching = [p for p in self.risk_manager.open_positions if p.signal.market.slug == market_slug]
@@ -361,7 +369,7 @@ class ExecutionEngine:
             result.realized_pnl = actual_profit
             strategy_type = result.strategy_type or result.signal.strategy_type
             exit_price = 1.0 if strategy_type == "dual_leg" or actual_profit >= 0 else 0.0
-            if result.trade_id:
+            if result.trade_id and getattr(self.tracker, "close_live_trade", None):
                 self.tracker.close_live_trade(
                     result.trade_id,
                     status="resolved_win" if actual_profit >= 0 else "resolved_loss",
@@ -389,28 +397,11 @@ class ExecutionEngine:
                     cancel_repost_count=result.cancel_repost_count or None,
                 )
             self.risk_manager.close_position(result, actual_profit)
-        self._open_positions = {
-            order_id: position
-            for order_id, position in self._open_positions.items()
-            if position.market.slug != market_slug
-        }
-        self._pending_single_entries = {
-            order_id: position
-            for order_id, position in self._pending_single_entries.items()
-            if position.market.slug != market_slug
-        }
-        self._open_swing_positions = {
-            coin: position
-            for coin, position in self._open_swing_positions.items()
-            if position.market.slug != market_slug
-        }
-        self._pending_swing_entries = {
-            coin: position
-            for coin, position in self._pending_swing_entries.items()
-            if position.market.slug != market_slug
-        }
+        self._open_positions = self._exclude_market_slug(self._open_positions, market_slug)
+        self._pending_single_entries = self._exclude_market_slug(self._pending_single_entries, market_slug)
+        self._open_swing_positions = self._exclude_market_slug(self._open_swing_positions, market_slug)
+        self._pending_swing_entries = self._exclude_market_slug(self._pending_swing_entries, market_slug)
         return pnl
 
     def get_open_positions(self) -> dict[str, SingleLegPosition]:
         return dict(self._open_positions)
-

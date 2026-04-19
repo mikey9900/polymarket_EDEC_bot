@@ -153,10 +153,11 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             result.shares_filled = actual_shares
             result.total_cost = signal.entry_price * actual_shares
             result.fee_total = engine._per_share_fee(signal.entry_price, market.fee_rate) * actual_shares
-            result.entry_filled_at = datetime.now(timezone.utc).isoformat()
+            fill_time = datetime.now(timezone.utc)
+            result.entry_filled_at = fill_time.isoformat()
             result.entry_time_to_fill_s = max(
                 0.0,
-                (datetime.now(timezone.utc) - entry_submitted_at).total_seconds(),
+                (fill_time - entry_submitted_at).total_seconds(),
             )
             result.entry_fill_price = engine._filled_price(buy_resp, signal.entry_price)
             result.entry_slippage = result.entry_fill_price - signal.entry_price

@@ -158,18 +158,6 @@ class TelegramBot:
     async def _reply_tracked(self, message, text: str, parse_mode: str | None = None):
         self._track(await message.reply_text(text, parse_mode=parse_mode))
 
-    def _ack_query(self, query, text: str | None = None, show_alert: bool = False) -> None:
-        """Fire-and-forget callback-query answer.
-
-        Dismisses the Telegram loading spinner on the client immediately without
-        blocking the button handler on a network round-trip.
-        """
-        if text:
-            coro = query.answer(text, show_alert=show_alert)
-        else:
-            coro = query.answer()
-        self._spawn_background_task(coro, label="ack-query")
-
     async def start(self):
         """Initialize and start the Telegram bot."""
         if not self.config.telegram_bot_token:

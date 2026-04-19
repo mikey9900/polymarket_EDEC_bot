@@ -44,7 +44,13 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('data-field="pred-copy"', html)
         self.assertIn('chart-feeds', html)
         self.assertIn('chart-resolutions', html)
+        self.assertIn('return `<span class="chart-res-dot ${cls}"></span>`;', html)
         self.assertNotIn('data-field="strike-mini"', html)
+        self.assertIn('🤖 BOT STRATEGIES</h4>', html)
+        self.assertNotIn('🔮 MARKET LINE', html)
+        self.assertNotIn('📈 LIVE CHART', html)
+        self.assertNotIn('🤖 BOT STRATEGIES (LIVE)', html)
+        self.assertNotIn('title="${upper || "UNKNOWN"} | ${pnl}"', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

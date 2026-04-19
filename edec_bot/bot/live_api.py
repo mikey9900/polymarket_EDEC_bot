@@ -538,8 +538,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 10px;
-    padding: 8px 12px;
+    gap: 8px;
+    padding: 7px 10px;
     background: linear-gradient(180deg, #1a2247 0%, #0d1532 100%);
     border-bottom: 1px solid var(--chrome-lo);
     cursor: grab;
@@ -589,7 +589,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .session-inline .item {
     display: inline-flex; align-items: center; gap: 4px;
-    padding: 2px 6px;
+    padding: 1px 6px;
     border: 1px solid #24315f;
     border-radius: 999px;
     background: rgba(7, 11, 28, 0.82);
@@ -611,8 +611,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .card-body {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-gap: 10px;
-    padding: 10px 12px 12px 12px;
+    grid-gap: 8px;
+    padding: 8px 10px 10px 10px;
   }
   .card-body .span2 { grid-column: 1 / -1; }
 
@@ -620,11 +620,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
     background: rgba(10, 15, 38, 0.6);
     border: 1px solid #1f2a55;
     border-radius: 5px;
-    padding: 8px 10px;
+    padding: 7px 8px;
     box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.4);
   }
   .panel h4 {
-    margin: 0 0 8px 0;
+    margin: 0 0 6px 0;
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 9px;
     color: var(--neon-magenta);
@@ -681,7 +681,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .strike-row .lbl { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
   .market-strip {
     display: flex; align-items: baseline; justify-content: space-between;
-    gap: 10px; flex-wrap: wrap;
+    gap: 8px; flex-wrap: wrap;
   }
   .pred-copy {
     color: var(--text-dim);
@@ -695,13 +695,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   /* Prediction bar */
   .predbar {
-    height: 18px;
+    height: 16px;
     background: #07091a;
     border: 1px solid var(--chrome-lo);
     border-radius: 3px;
     position: relative;
     overflow: hidden;
-    margin-top: 6px;
+    margin-top: 5px;
   }
   .predbar .up {
     position: absolute; left: 0; top: 0; bottom: 0;
@@ -725,7 +725,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .predbar .label-down { right: 6px; }
 
   /* Signal/trade list rows */
-  .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 16px; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; font-size: 15px; }
   .row + .row { border-top: 1px dashed #1c2548; }
   .row .a { color: var(--text); }
   .row .b { color: var(--text-dim); }
@@ -791,7 +791,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   /* Live chart slot (Step 3) */
   .chart-slot {
     position: relative;
-    height: 128px;
+    height: 118px;
     border: 1px solid #2a3a78;
     border-radius: 4px;
     overflow: hidden;
@@ -908,7 +908,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
-    .chart-slot { height: 112px; }
+    .chart-slot { height: 104px; }
     .live-price { font-size: 20px; }
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 14px; }
@@ -952,7 +952,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .session-inline .val { font-size: 10px; }
     .session { gap: 8px; font-size: 14px; }
     .session .item .lbl { font-size: 9px; }
-    .chart-slot { height: 92px; }
+    .chart-slot { height: 84px; }
     .chart-empty { font-size: 8px; letter-spacing: 1px; }
     .chart-meta { font-size: 7px; gap: 8px; }
     .chart-feed { font-size: 6px; padding: 2px 4px; }
@@ -965,7 +965,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .coin-name { font-size: 10px; }
     .card-header .right { font-size: 12px; }
     .timer { font-size: 15px; }
-    .chart-slot { height: 86px; }
+    .chart-slot { height: 78px; }
   }
 </style>
 </head>
@@ -1172,7 +1172,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
       </div>
       <div class="card-body">
         <div class="panel span2">
-          <h4>🔮 MARKET LINE</h4>
           <div class="market-strip">
             <div class="strike-row compact">
               <span class="big" data-field="strike">—</span>
@@ -1189,7 +1188,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
         </div>
 
         <div class="panel">
-          <h4>🤖 BOT STRATEGIES (LIVE)</h4>
+          <h4>🤖 BOT STRATEGIES</h4>
           <div data-field="signals"><div class="muted">no live signals</div></div>
         </div>
         <div class="panel">
@@ -1198,7 +1197,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
         </div>
 
         <div class="panel span2">
-          <h4>📈 LIVE CHART</h4>
           <div class="chart-slot" data-field="chart"></div>
         </div>
       </div>
@@ -1329,10 +1327,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const html = reversed.map(r => {
       const upper = (r.winner || "").toUpperCase();
       const cls = upper === "UP" || upper === "YES" ? "yes" : "no";
-      const pnl = r.did_we_trade && r.trade_pnl != null
-        ? `${r.trade_pnl >= 0 ? "+" : ""}$${r.trade_pnl.toFixed(2)}`
-        : "no trade";
-      return `<span class="chart-res-dot ${cls}" title="${upper || "UNKNOWN"} | ${pnl}"></span>`;
+      return `<span class="chart-res-dot ${cls}"></span>`;
     }).join("");
     cachedSet(host, html, html);
   }

@@ -547,17 +547,22 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .card-header:active { cursor: grabbing; }
   .card-header .left {
-    display: flex; align-items: center; gap: 10px; min-width: 0;
+    display: flex; align-items: center; gap: 8px; min-width: 0;
     flex-wrap: nowrap;
     overflow: hidden;
   }
   .ticker-lock {
     display: inline-grid;
-    grid-template-columns: auto 112px;
+    grid-template-columns: auto 96px;
     align-items: center;
-    gap: 10px;
+    gap: 6px;
     min-width: 0;
     flex: 0 0 auto;
+    padding: 2px 8px 2px 9px;
+    border: 1px solid #2a3a78;
+    border-radius: 6px;
+    background: linear-gradient(180deg, rgba(0,240,255,0.10), rgba(8, 14, 24, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(0,240,255,0.08);
   }
   .card-header .mid { min-width: 0; }
   .grip {
@@ -572,7 +577,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 12px;
     color: var(--neon-cyan);
     text-shadow: 0 0 5px var(--neon-cyan), 0 0 12px rgba(0,240,255,0.4);
-    letter-spacing: 2px;
+    letter-spacing: 1px;
     white-space: nowrap;
     flex: 0 0 auto;
   }
@@ -580,8 +585,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 22px;
     color: var(--text);
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
-    width: 112px;
-    min-width: 112px;
+    width: 96px;
+    min-width: 96px;
     text-align: right;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -956,8 +961,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
     .chart-slot { height: 104px; }
-    .ticker-lock { grid-template-columns: auto 104px; }
-    .live-price { font-size: 20px; width: 104px; min-width: 104px; }
+    .ticker-lock { grid-template-columns: auto 92px; gap: 5px; }
+    .live-price { font-size: 20px; width: 92px; min-width: 92px; }
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 14px; }
     .timer { font-size: 16px; }
@@ -1010,8 +1015,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   @media (max-width: 430px) {
     .card-body { grid-template-columns: 1fr; }
-    .ticker-lock { grid-template-columns: auto 96px; gap: 8px; }
-    .live-price { font-size: 18px; width: 96px; min-width: 96px; }
+    .ticker-lock { grid-template-columns: auto 84px; gap: 4px; padding: 2px 6px 2px 7px; }
+    .live-price { font-size: 18px; width: 84px; min-width: 84px; }
     .coin-name { font-size: 10px; }
     .card-header .right { font-size: 12px; }
     .timer { font-size: 15px; }

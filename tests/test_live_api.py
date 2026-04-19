@@ -64,7 +64,8 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('class="item open"', html)
         self.assertIn('class="item pnl"', html)
         self.assertIn('font-variant-numeric: tabular-nums;', html)
-        self.assertIn('width: 112px;', html)
+        self.assertIn('width: 96px;', html)
+        self.assertIn('border-radius: 6px;', html)
         self.assertIn('white-space: nowrap;', html)
 
 

@@ -88,6 +88,25 @@ class LiveApiServer:
         async with self._server:
             await self._server.serve_forever()
 
+    @staticmethod
+    async def _read_chunked_body(reader: asyncio.StreamReader) -> bytes:
+        chunks: list[bytes] = []
+        while True:
+            size_line = await reader.readuntil(b"\r\n")
+            size_token = size_line.decode("utf-8", errors="ignore").split(";", 1)[0].strip()
+            if not size_token:
+                continue
+            chunk_size = int(size_token, 16)
+            if chunk_size == 0:
+                while True:
+                    trailer_line = await reader.readuntil(b"\r\n")
+                    if trailer_line == b"\r\n":
+                        break
+                break
+            chunks.append(await reader.readexactly(chunk_size))
+            await reader.readexactly(2)
+        return b"".join(chunks)
+
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             req = await reader.readuntil(b"\r\n\r\n")
@@ -103,9 +122,12 @@ class LiveApiServer:
                 name, value = line.split(":", 1)
                 headers[name.strip().lower()] = value.strip()
             content_length = int(headers.get("content-length", "0") or 0)
+            transfer_encoding = headers.get("transfer-encoding", "").lower()
             body = b""
             if content_length > 0:
                 body = await reader.readexactly(content_length)
+            elif "chunked" in transfer_encoding:
+                body = await self._read_chunked_body(reader)
 
             if method not in ("GET", "POST"):
                 await self._send(writer, 405, {"error": "method_not_allowed"})
@@ -221,7 +243,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     background: var(--bg-0);
     color: var(--text);
     font-family: "VT323", "Courier New", monospace;
-    font-size: 20px;
+    font-size: 18px;
     line-height: 1.2;
     overflow-x: hidden;
   }
@@ -257,7 +279,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 14px 22px;
+    gap: 12px;
+    padding: 10px 16px;
     background: linear-gradient(180deg, #1a2342 0%, #0a1024 100%);
     border-bottom: 2px solid var(--chrome-hi);
     box-shadow:
@@ -267,10 +290,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .brand {
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 16px;
+    font-size: 14px;
     color: var(--neon-cyan);
     text-shadow: 0 0 6px var(--neon-cyan), 0 0 14px rgba(0,240,255,0.5);
-    letter-spacing: 2px;
+    letter-spacing: 1.5px;
   }
   .brand .pulse {
     display: inline-block;
@@ -282,17 +305,17 @@ _DASHBOARD_HTML = r"""<!doctype html>
     animation: blink 1.4s infinite;
     vertical-align: middle;
   }
-  .topstats { display: flex; gap: 22px; align-items: center; }
+  .topstats { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
   .topstats .pill {
-    padding: 4px 10px;
+    padding: 3px 8px;
     border: 1px solid var(--chrome-hi);
     border-radius: 4px;
     background: #11193a;
     box-shadow: inset 0 1px 0 #2c3865, 0 0 6px rgba(0,240,255,0.2);
-    font-size: 18px;
+    font-size: 16px;
     color: var(--text);
   }
-  .topstats .pill .lbl { color: var(--text-dim); font-size: 14px; margin-right: 6px; letter-spacing: 1px; }
+  .topstats .pill .lbl { color: var(--text-dim); font-size: 12px; margin-right: 5px; letter-spacing: 1px; }
   .topstats .pill .val.green  { color: var(--neon-lime);  text-shadow: 0 0 5px var(--neon-lime); }
   .topstats .pill .val.red    { color: var(--neon-red);   text-shadow: 0 0 5px var(--neon-red); }
   .topstats .pill .val.cyan   { color: var(--neon-cyan);  text-shadow: 0 0 5px var(--neon-cyan); }
@@ -333,8 +356,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
      ============================================================ */
   .control-deck {
     max-width: 1400px;
-    margin: 16px auto 0 auto;
-    padding: 0 18px;
+    margin: 12px auto 0 auto;
+    padding: 0 12px;
   }
   .control-shell {
     background: linear-gradient(180deg, #0f1736 0%, #070c1f 100%);
@@ -345,12 +368,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
       inset 0 -2px 0 #000,
       0 0 18px rgba(0, 240, 255, 0.10),
       0 4px 0 #000;
-    padding: 14px 16px;
+    padding: 10px 12px;
   }
   .control-shell h3 {
-    margin: 0 0 12px 0;
+    margin: 0 0 10px 0;
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 11px;
+    font-size: 10px;
     color: var(--neon-magenta);
     text-shadow: 0 0 4px var(--neon-magenta);
     letter-spacing: 1.5px;
@@ -358,59 +381,59 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .control-grid {
     display: grid;
     grid-template-columns: 1.1fr 1.6fr 1.2fr;
-    gap: 14px;
+    gap: 10px;
   }
   .control-block {
     background: rgba(10, 15, 38, 0.68);
     border: 1px solid #1f2a55;
     border-radius: 5px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.4);
   }
   .control-block .head {
     display: block;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 11px;
     letter-spacing: 1px;
     font-family: "Press Start 2P", "VT323", monospace;
   }
   .control-row {
     display: flex;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
     align-items: center;
   }
   .control-readout {
     display: flex;
-    gap: 10px;
+    gap: 6px;
     flex-wrap: wrap;
-    margin-top: 10px;
+    margin-top: 8px;
   }
   .readout-pill {
-    padding: 4px 8px;
+    padding: 4px 7px;
     border: 1px solid var(--chrome-hi);
     border-radius: 4px;
     background: #11193a;
     box-shadow: inset 0 1px 0 #2c3865, 0 0 6px rgba(0,240,255,0.2);
     color: var(--text);
-    font-size: 16px;
+    font-size: 14px;
   }
   .readout-pill .lbl {
     color: var(--text-dim);
-    font-size: 12px;
-    margin-right: 6px;
+    font-size: 10px;
+    margin-right: 4px;
     letter-spacing: 1px;
   }
   .ctl-btn {
     appearance: none;
     border: 1px solid var(--chrome-hi);
     border-radius: 4px;
-    padding: 6px 10px;
+    padding: 5px 8px;
     background: linear-gradient(180deg, #1a2347 0%, #0d1530 100%);
     color: var(--text);
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 11px;
+    font-size: 10px;
     letter-spacing: 1px;
     cursor: pointer;
     box-shadow: inset 0 1px 0 #2c3865, 0 2px 0 #000, 0 0 8px rgba(0,240,255,0.15);
@@ -437,12 +460,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .ctl-status {
     margin-top: 12px;
-    min-height: 22px;
+    min-height: 20px;
     padding: 6px 8px;
     border: 1px dashed #2a3a78;
     border-radius: 4px;
     color: var(--text-dim);
-    font-size: 18px;
+    font-size: 16px;
     letter-spacing: 1px;
     background: rgba(6, 10, 30, 0.7);
   }
@@ -465,8 +488,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   main.stack {
     display: flex;
     flex-direction: column;
-    gap: 18px;
-    padding: 18px;
+    gap: 12px;
+    padding: 12px;
     max-width: 1400px;
     margin: 0 auto;
   }
@@ -515,7 +538,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 10px 16px;
+    padding: 8px 12px;
     background: linear-gradient(180deg, #1a2247 0%, #0d1532 100%);
     border-bottom: 1px solid var(--chrome-lo);
     cursor: grab;
@@ -523,7 +546,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .card-header:active { cursor: grabbing; }
   .card-header .left {
-    display: flex; align-items: center; gap: 12px;
+    display: flex; align-items: center; gap: 10px; min-width: 0;
   }
   .grip {
     color: var(--text-dim);
@@ -534,13 +557,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .coin-name {
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 14px;
+    font-size: 12px;
     color: var(--neon-cyan);
     text-shadow: 0 0 5px var(--neon-cyan), 0 0 12px rgba(0,240,255,0.4);
     letter-spacing: 2px;
   }
   .live-price {
-    font-size: 26px;
+    font-size: 22px;
     color: var(--text);
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
   }
@@ -548,14 +571,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .live-price.red   { color: var(--neon-red);  text-shadow: 0 0 6px var(--neon-red); }
 
   .card-header .right {
-    display: flex; align-items: center; gap: 14px;
+    display: flex; align-items: center; gap: 10px;
     color: var(--text-dim);
-    font-size: 18px;
+    font-size: 16px;
   }
   .timer {
     color: var(--neon-amber);
     text-shadow: 0 0 4px var(--neon-amber);
-    font-size: 22px;
+    font-size: 18px;
   }
 
   /* ============================================================
@@ -564,8 +587,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .card-body {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    grid-gap: 14px;
-    padding: 14px 16px 18px 16px;
+    grid-gap: 10px;
+    padding: 10px 12px 12px 12px;
   }
   .card-body .span2 { grid-column: 1 / -1; }
 
@@ -573,26 +596,26 @@ _DASHBOARD_HTML = r"""<!doctype html>
     background: rgba(10, 15, 38, 0.6);
     border: 1px solid #1f2a55;
     border-radius: 5px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.4);
   }
   .panel h4 {
     margin: 0 0 8px 0;
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 10px;
+    font-size: 9px;
     color: var(--neon-magenta);
     text-shadow: 0 0 4px var(--neon-magenta);
     letter-spacing: 1.5px;
   }
 
   /* LED row */
-  .leds { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+  .leds { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .led {
     display: flex; flex-direction: column; align-items: center; gap: 3px;
-    min-width: 44px;
+    min-width: 36px;
   }
   .led .dot {
-    width: 14px; height: 14px;
+    width: 12px; height: 12px;
     border-radius: 50%;
     background: #20263d;
     border: 1px solid #000;
@@ -611,7 +634,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     box-shadow: 0 0 6px var(--neon-amber);
   }
   .led .lbl {
-    font-size: 12px; color: var(--text-dim); letter-spacing: 1px;
+    font-size: 10px; color: var(--text-dim); letter-spacing: 1px;
     font-family: "Press Start 2P", "VT323", monospace;
   }
   .led.on .lbl { color: var(--text); }
@@ -619,18 +642,18 @@ _DASHBOARD_HTML = r"""<!doctype html>
   /* Big readouts */
   .strike-row {
     display: flex; align-items: baseline; justify-content: space-between;
-    font-size: 22px;
+    font-size: 18px;
   }
   .strike-row .big {
     color: var(--neon-amber);
-    font-size: 28px;
+    font-size: 22px;
     text-shadow: 0 0 6px var(--neon-amber);
   }
-  .strike-row .lbl { color: var(--text-dim); font-size: 14px; letter-spacing: 1px; }
+  .strike-row .lbl { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
 
   /* Prediction bar */
   .predbar {
-    height: 22px;
+    height: 18px;
     background: #07091a;
     border: 1px solid var(--chrome-lo);
     border-radius: 3px;
@@ -650,7 +673,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .predbar .label-up, .predbar .label-down {
     position: absolute; top: 1px;
-    font-size: 16px;
+    font-size: 12px;
     color: #000;
     text-shadow: 0 0 2px #fff;
     padding: 0 6px;
@@ -660,7 +683,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .predbar .label-down { right: 6px; }
 
   /* Signal/trade list rows */
-  .row { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; font-size: 16px; }
   .row + .row { border-top: 1px dashed #1c2548; }
   .row .a { color: var(--text); }
   .row .b { color: var(--text-dim); }
@@ -670,7 +693,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     border-radius: 3px;
     background: #1a234a;
     color: var(--neon-cyan);
-    font-size: 14px;
+    font-size: 11px;
     letter-spacing: 1px;
     text-shadow: 0 0 3px var(--neon-cyan);
     border: 1px solid #2a3a78;
@@ -679,7 +702,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .side-down { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); }
   .score {
     display: inline-block;
-    min-width: 46px;
+    min-width: 40px;
     text-align: right;
     color: var(--neon-amber);
     text-shadow: 0 0 4px var(--neon-amber);
@@ -690,32 +713,32 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   /* Recent resolutions tape */
   .tape {
-    display: flex; gap: 8px; align-items: center;
+    display: flex; gap: 6px; align-items: center;
     flex-wrap: wrap;
   }
   .tape .seg {
     border: 1px solid var(--chrome-lo);
     border-radius: 3px;
-    padding: 4px 8px;
+    padding: 3px 6px;
     background: #07091a;
     box-shadow: inset 0 0 8px rgba(0,0,0,0.5);
-    font-size: 16px;
+    font-size: 14px;
     display: flex; align-items: center; gap: 6px;
   }
   .tape .seg.win-up   { border-color: var(--neon-lime); }
   .tape .seg.win-down { border-color: var(--neon-red); }
-  .tape .arrow.up   { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); font-size: 18px; }
-  .tape .arrow.down { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); font-size: 18px; }
+  .tape .arrow.up   { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); font-size: 16px; }
+  .tape .arrow.down { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); font-size: 16px; }
   .tape .seg .traded { color: var(--neon-cyan); font-size: 12px; }
   .tape .seg .nope   { color: var(--text-dim); font-size: 12px; }
 
   /* Session readout */
   .session {
-    display: flex; gap: 18px; flex-wrap: wrap; align-items: center;
-    font-size: 20px;
+    display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+    font-size: 16px;
   }
   .session .item .lbl {
-    color: var(--text-dim); font-size: 12px; letter-spacing: 1px;
+    color: var(--text-dim); font-size: 10px; letter-spacing: 1px;
     font-family: "Press Start 2P", "VT323", monospace;
     display: block;
   }
@@ -726,7 +749,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   /* Live chart slot (Step 3) */
   .chart-slot {
     position: relative;
-    height: 170px;
+    height: 128px;
     border: 1px solid #2a3a78;
     border-radius: 4px;
     overflow: hidden;
@@ -774,18 +797,62 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .nodata {
     text-align: center;
     color: var(--text-dim);
-    padding: 40px;
+    padding: 28px;
     font-style: italic;
-    font-size: 22px;
+    font-size: 18px;
+  }
+
+  @media (max-width: 860px) {
+    .control-grid { grid-template-columns: 1fr; }
+    .chart-slot { height: 112px; }
+    .live-price { font-size: 20px; }
+    .coin-name { font-size: 11px; }
+    .card-header .right { font-size: 14px; }
+    .timer { font-size: 16px; }
   }
 
   /* Mobile */
   @media (max-width: 720px) {
-    .control-grid { grid-template-columns: 1fr; }
+    header.topbar { align-items: flex-start; flex-direction: column; }
+    .brand { font-size: 12px; }
+    .topstats { width: 100%; gap: 8px; justify-content: flex-start; }
+    .topstats .pill { font-size: 14px; }
+    .topstats .pill .lbl { font-size: 10px; }
+    .uplink { font-size: 12px; }
+    .control-deck { padding: 0 10px; }
+    .control-shell { padding: 8px 10px; }
+    .control-block { padding: 7px 8px; }
+    .control-readout { gap: 4px; }
+    .readout-pill { font-size: 12px; }
+    .readout-pill .lbl { font-size: 9px; }
+    .ctl-btn { font-size: 9px; padding: 4px 6px; }
+    .ctl-status { font-size: 14px; }
+    main.stack { padding: 10px; gap: 10px; }
+    .card-header { padding: 7px 10px; }
+    .card-body { grid-template-columns: minmax(0,1fr) minmax(0,1fr); grid-gap: 8px; padding: 8px 10px 10px 10px; }
+    .panel { padding: 7px 8px; }
+    .panel h4 { font-size: 8px; margin-bottom: 6px; }
+    .strike-row { font-size: 14px; }
+    .strike-row .big { font-size: 18px; }
+    .strike-row .lbl { font-size: 10px; }
+    .predbar { height: 16px; }
+    .predbar .label-up, .predbar .label-down { font-size: 10px; top: 0; }
+    .row { flex-direction: column; gap: 2px; font-size: 14px; }
+    .strategy-tag { font-size: 10px; }
+    .session { gap: 8px; font-size: 14px; }
+    .session .item .lbl { font-size: 9px; }
+    .chart-slot { height: 92px; }
+    .chart-empty { font-size: 8px; letter-spacing: 1px; }
+    .chart-meta { font-size: 7px; gap: 8px; }
+  }
+
+  @media (max-width: 430px) {
     .card-body { grid-template-columns: 1fr; }
-    .card-header .right { font-size: 14px; }
-    .live-price { font-size: 22px; }
-    .topstats { gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    .live-price { font-size: 18px; }
+    .coin-name { font-size: 10px; }
+    .card-header .right { font-size: 12px; }
+    .timer { font-size: 15px; }
+    .chart-slot { height: 86px; }
   }
 </style>
 </head>
@@ -809,9 +876,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
         <div class="control-block">
           <span class="head">BOT CONTROL</span>
           <div class="control-row">
-            <button id="btn-start" class="ctl-btn" data-action="start">START</button>
-            <button id="btn-stop" class="ctl-btn" data-action="stop">STOP</button>
-            <button id="btn-kill" class="ctl-btn warn" data-action="kill">KILL</button>
+            <button id="btn-start" type="button" class="ctl-btn" data-action="start">START</button>
+            <button id="btn-stop" type="button" class="ctl-btn" data-action="stop">STOP</button>
+            <button id="btn-kill" type="button" class="ctl-btn warn" data-action="kill">KILL</button>
           </div>
           <div class="control-readout">
             <div class="readout-pill"><span class="lbl">STATE</span><span id="ctrl-state">-</span></div>
@@ -822,23 +889,23 @@ _DASHBOARD_HTML = r"""<!doctype html>
         <div class="control-block">
           <span class="head">MODE SELECT</span>
           <div class="control-row">
-            <button class="ctl-btn" data-action="mode" data-value="both">ALL</button>
-            <button class="ctl-btn" data-action="mode" data-value="dual">DUAL</button>
-            <button class="ctl-btn" data-action="mode" data-value="single">SINGLE</button>
-            <button class="ctl-btn" data-action="mode" data-value="lead">LEAD</button>
-            <button class="ctl-btn" data-action="mode" data-value="swing">SWING</button>
-            <button class="ctl-btn" data-action="mode" data-value="off">OFF</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="both">ALL</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="dual">DUAL</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="single">SINGLE</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="lead">LEAD</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="swing">SWING</button>
+            <button type="button" class="ctl-btn" data-action="mode" data-value="off">OFF</button>
           </div>
         </div>
         <div class="control-block">
           <span class="head">BUDGET PER TRADE</span>
           <div class="control-row">
-            <button class="ctl-btn" data-action="budget" data-value="1">$1</button>
-            <button class="ctl-btn" data-action="budget" data-value="2">$2</button>
-            <button class="ctl-btn" data-action="budget" data-value="5">$5</button>
-            <button class="ctl-btn" data-action="budget" data-value="10">$10</button>
-            <button class="ctl-btn" data-action="budget" data-value="15">$15</button>
-            <button class="ctl-btn" data-action="budget" data-value="20">$20</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="1">$1</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="2">$2</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="5">$5</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="10">$10</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="15">$15</button>
+            <button type="button" class="ctl-btn" data-action="budget" data-value="20">$20</button>
           </div>
         </div>
       </div>
@@ -1041,6 +1108,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   let controlBusy = false;
   async function sendControl(action, value) {
+    action = (action || "").trim();
+    if (!action) {
+      setControlStatus("CONTROL MAPPING ERROR.", "err");
+      return;
+    }
     if (controlBusy) return;
     if (action === "kill" && !window.confirm("Activate kill switch and stop scanning?")) {
       return;
@@ -1049,7 +1121,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     document.querySelectorAll(".ctl-btn").forEach((btn) => setDisabled(btn, true));
     setControlStatus("SENDING CONTROL...", "busy");
     try {
-      const payload = value == null ? { action } : { action, value };
+      const payload = { action };
+      if (value != null && value !== "") payload.value = value;
       const res = await fetch("api/control", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1073,8 +1146,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   function bindControls() {
     document.querySelectorAll(".ctl-btn[data-action]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        sendControl(btn.dataset.action, btn.dataset.value);
+      btn.addEventListener("click", (event) => {
+        event.preventDefault();
+        const target = event.currentTarget;
+        sendControl(
+          target.getAttribute("data-action"),
+          target.getAttribute("data-value")
+        );
       });
     });
   }

@@ -39,6 +39,7 @@ class LiveApiServerTests(unittest.TestCase):
 
         self.assertIn("v9.9.9", html)
         self.assertNotIn("__APP_VERSION__", html)
+        self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):
@@ -104,6 +105,28 @@ class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("400 Bad Request", head)
         payload = json.loads(response_body)
         self.assertFalse(payload["ok"])
+
+    async def test_post_control_accepts_chunked_body(self):
+        body = b'{"action":"budget","value":"15"}'
+        chunked_body = (
+            f"{len(body):X}\r\n".encode("utf-8")
+            + body
+            + b"\r\n0\r\n\r\n"
+        )
+        request = (
+            b"POST /api/control HTTP/1.1\r\n"
+            b"Host: localhost\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n"
+            + chunked_body
+        )
+
+        head, response_body = await self._round_trip(request)
+
+        self.assertIn("200 OK", head)
+        self.assertEqual(self.dashboard_state.control_payloads, [{"action": "budget", "value": "15"}])
+        payload = json.loads(response_body)
+        self.assertTrue(payload["ok"])
 
 
 if __name__ == "__main__":

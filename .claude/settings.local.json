@@ -38,7 +38,9 @@
       "Bash(python -m pytest tests/ -q -k \"tracker or paper or report or outcome or coin\")",
       "Bash(python -m pytest tests/ -q)",
       "Bash(python -m pytest -x --tb=short)",
-      "Bash(python -c \"from edec_bot.bot import live_api; print\\('OK', len\\(live_api._DASHBOARD_HTML\\), 'bytes'\\)\")"
+      "Bash(python -c \"from edec_bot.bot import live_api; print\\('OK', len\\(live_api._DASHBOARD_HTML\\), 'bytes'\\)\")",
+      "Bash(grep -n -A 25 \"def get_recent_signals_by_coin\\\\|def get_session_stats_by_coin\\\\|def get_coin_recent_resolutions\" edec_bot/bot/tracker_support/*.py)",
+      "Bash(grep -rn -E \"CREATE \\(INDEX|TABLE\\)\" edec_bot/bot/tracker_support/*.py edec_bot/bot/tracker.py)"
     ]
   }
 }

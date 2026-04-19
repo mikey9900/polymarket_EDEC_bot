@@ -564,6 +564,28 @@ _DASHBOARD_HTML = r"""<!doctype html>
     background: linear-gradient(180deg, rgba(0,240,255,0.10), rgba(8, 14, 24, 0.92));
     box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(0,240,255,0.08);
   }
+  .session-lock {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    padding: 2px 8px;
+    border: 1px solid #6a2c74;
+    border-radius: 6px;
+    background: linear-gradient(180deg, rgba(255,0,255,0.08), rgba(10, 12, 26, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255,0,255,0.07);
+  }
+  .timer-lock {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 0;
+    padding: 2px 8px;
+    border: 1px solid #7a5e18;
+    border-radius: 6px;
+    background: linear-gradient(180deg, rgba(255,184,0,0.12), rgba(22, 14, 4, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255,184,0,0.08);
+  }
   .card-header .mid { min-width: 0; }
   .grip {
     color: var(--text-dim);
@@ -605,7 +627,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 18px;
     display: inline-flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: center;
     min-width: 46px;
   }
   .session-inline {
@@ -732,10 +754,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .strike-row .delta.up { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
   .strike-row .delta.down { color: var(--neon-red); text-shadow: 0 0 4px var(--neon-red); }
   .strike-row .delta.flat { color: var(--text-dim); }
-  .strike-row .pct {
+  .strike-row .vol {
     font-size: 14px;
-    color: var(--text);
-    text-shadow: 0 0 4px rgba(207,230,255,0.45);
+    color: var(--neon-cyan);
+    text-shadow: 0 0 4px rgba(0,240,255,0.35);
   }
   .market-strip {
     display: flex; align-items: center; justify-content: space-between;
@@ -994,7 +1016,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .panel h4 { font-size: 8px; margin-bottom: 6px; }
     .strike-row { font-size: 14px; }
     .strike-row .big { font-size: 18px; }
-    .strike-row .delta, .strike-row .pct { font-size: 11px; }
+    .strike-row .delta, .strike-row .vol { font-size: 11px; }
     .market-strip { gap: 8px; }
     .predbar { height: 16px; }
     .predbar { min-width: 142px; max-width: none; }
@@ -1103,6 +1125,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
   const fmtPct = (x) => (x == null ? "—" : (x*100).toFixed(0) + "%");
   const fmtUsd = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + "$" + x.toFixed(2));
   const fmtSignedPrice = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + "$" + fmtPrice(Math.abs(x)));
+  const fmtVolumeCompact = (x) => {
+    if (x == null || !Number.isFinite(x)) return "—";
+    const abs = Math.abs(x);
+    if (abs >= 1000000) return (x / 1000000).toFixed(1) + "m";
+    return (x / 1000).toFixed(1) + "k";
+  };
   const fmtSecs = (s) => {
     if (s == null) return "—";
     s = Math.max(0, Math.round(s));
@@ -1224,10 +1252,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
           </div>
         </div>
         <div class="mid">
-          <div class="session-inline" data-field="session-inline"></div>
+          <div class="session-lock">
+            <div class="session-inline" data-field="session-inline"></div>
+          </div>
         </div>
         <div class="right">
-          <span class="timer"><span data-field="timer">—</span></span>
+          <div class="timer-lock">
+            <span class="timer"><span data-field="timer">—</span></span>
+          </div>
         </div>
       </div>
       <div class="card-body">
@@ -1236,7 +1268,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
             <div class="strike-row compact">
               <span class="big" data-field="strike">—</span>
               <span class="delta flat" data-field="strike-delta">—</span>
-              <span class="pct" data-field="strike-pct">—</span>
+              <span class="vol" data-field="market-volume">—</span>
             </div>
             <div class="predbar">
               <div class="up"   data-field="predbar-up"   style="width:0%"></div>
@@ -1580,18 +1612,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
       get("timer").textContent = fmtSecs(m.time_remaining_s);
       get("strike").textContent = m.strike != null ? "$" + fmtPrice(m.strike) : "—";
       const deltaEl = get("strike-delta");
-      const pctEl = get("strike-pct");
+      const volEl = get("market-volume");
       if (m.strike != null && payload.live_price != null) {
         const delta = payload.live_price - m.strike;
-        const pct = m.strike !== 0 ? (delta / m.strike) : null;
         deltaEl.textContent = fmtSignedPrice(delta);
         deltaEl.className = "delta " + (delta > 0 ? "up" : (delta < 0 ? "down" : "flat"));
-        pctEl.textContent = pct == null ? "—" : `(${delta >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%)`;
       } else {
         deltaEl.textContent = "—";
         deltaEl.className = "delta flat";
-        pctEl.textContent = "—";
       }
+      volEl.textContent = fmtVolumeCompact(m.volume);
 
       const mp = m.market_prediction;
       if (mp) {
@@ -1612,7 +1642,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
       get("strike").textContent = "—";
       get("strike-delta").textContent = "—";
       get("strike-delta").className = "delta flat";
-      get("strike-pct").textContent = "—";
+      get("market-volume").textContent = "—";
       get("predbar-up").style.width = "0%";
       get("predbar-down").style.width = "0%";
       get("predbar-up-lbl").textContent = "YES —";

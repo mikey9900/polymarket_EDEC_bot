@@ -45,6 +45,7 @@ class MarketInfo:
     neg_risk: bool
     accepting_orders: bool = True
     question: str = ""
+    volume: Optional[float] = None
     reference_price: Optional[float] = None
     reference_label: str = ""
 

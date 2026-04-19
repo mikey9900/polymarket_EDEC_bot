@@ -166,6 +166,16 @@ class MarketScanner:
             if isinstance(fee_schedule, str):
                 fee_schedule = json.loads(fee_schedule)
             fee_rate = fee_schedule.get("rate", 0.072)
+            volume_raw = (
+                market.get("volumeClob")
+                or market.get("volumeNum")
+                or market.get("volume")
+                or event.get("volume")
+            )
+            try:
+                volume = float(volume_raw) if volume_raw is not None else None
+            except (TypeError, ValueError):
+                volume = None
 
             end_str = market.get("endDate", event.get("endDate", ""))
             start_str = market.get("eventStartTime", market.get("startDate", ""))
@@ -183,6 +193,7 @@ class MarketScanner:
                 tick_size=self.config.polymarket.tick_size,
                 neg_risk=market.get("negRisk", False),
                 accepting_orders=market.get("acceptingOrders", True),
+                volume=volume,
             )
         except Exception as e:
             logger.error(f"[{coin.upper()}] Parse error: {e}")

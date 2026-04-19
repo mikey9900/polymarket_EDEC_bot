@@ -388,13 +388,11 @@ class DashboardStateService:
             elif live_price is not None:
                 self._market_strikes[coin] = (market.slug, float(live_price))
                 strike = float(live_price)
-        strike_label = market.reference_label or ("open" if strike is not None else "")
-
         return {
             "slug": market.slug,
             "question": market.question,
             "strike": strike,
-            "strike_label": strike_label,
+            "volume": float(market.volume) if market.volume is not None else None,
             "start_time": market.start_time.isoformat() if market.start_time else None,
             "end_time": market.end_time.isoformat() if market.end_time else None,
             "time_remaining_s": time_remaining_s,

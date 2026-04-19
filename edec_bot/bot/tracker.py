@@ -1,6 +1,7 @@
 """Decision tracker — logs ALL strategy evaluations and outcomes to SQLite."""
 
 import sqlite3
+import threading
 from pathlib import Path
 
 from bot.models import Decision, TradeResult
@@ -16,7 +17,11 @@ class DecisionTracker:
     def __init__(self, db_path: str = "data/decisions.db"):
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
         self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
+        # check_same_thread=False lets background workers (dashboard slow-tier
+        # refresh, telegram dashboard build) run heavy reads off the loop.
+        # Writers serialize via _io_lock to avoid corrupting cursor state.
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._io_lock = threading.RLock()
         self._runtime_context: dict[str, object] = {}
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(tracker_schema.SCHEMA)

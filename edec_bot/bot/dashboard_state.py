@@ -90,16 +90,15 @@ class DashboardStateService:
         next_history_at = 0.0
         loop = asyncio.get_running_loop()
         # Prime slow cache immediately so the first snapshot has data.
-        # NOTE: tracker.conn is created with check_same_thread=True, so the slow
-        # refresh has to run on the loop thread. Keep the slow tier rare (500ms+)
-        # to limit how much it can starve WS heartbeats.
-        self._refresh_slow_cache()
+        # tracker.conn is now check_same_thread=False, so the slow-tier reads
+        # run in a worker thread to keep WS heartbeats from starving.
+        await loop.run_in_executor(None, self._refresh_slow_cache)
         self._next_slow_refresh_at = loop.time() + self.slow_refresh_interval_s
         while self._running:
             try:
                 now_loop = loop.time()
                 if now_loop >= self._next_slow_refresh_at:
-                    self._refresh_slow_cache()
+                    await loop.run_in_executor(None, self._refresh_slow_cache)
                     self._next_slow_refresh_at = now_loop + self.slow_refresh_interval_s
                 sample_history = now_loop >= next_history_at
                 if sample_history:
@@ -127,31 +126,36 @@ class DashboardStateService:
                 await asyncio.sleep(self.update_interval_s)
 
     def _refresh_slow_cache(self) -> None:
-        """Pull DB-backed data once, store in cache. Runs on the event loop thread."""
-        try:
-            recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
-        except Exception as exc:
-            logger.debug("recent_signals query failed: %s", exc)
-            recent_signals = self._slow_cache.get("recent_signals", {})
-        try:
-            session_by_coin = self.tracker.get_session_stats_by_coin()
-        except Exception as exc:
-            logger.debug("session_by_coin query failed: %s", exc)
-            session_by_coin = self._slow_cache.get("session_by_coin", {})
-        resolutions_by_coin: dict[str, list[dict]] = {}
-        for coin in self.config.coins:
+        """Pull DB-backed data once, store in cache. Runs in a worker thread.
+
+        Holds tracker._io_lock so it can't collide with main-thread writes on
+        the shared sqlite connection.
+        """
+        with self.tracker._io_lock:
             try:
-                resolutions_by_coin[coin] = self.tracker.get_coin_recent_resolutions(coin, limit=4)
+                recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
             except Exception as exc:
-                logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
-                resolutions_by_coin[coin] = self._slow_cache.get(
-                    "recent_resolutions_by_coin", {}
-                ).get(coin, [])
-        try:
-            paper_capital = self.tracker.get_paper_capital()
-        except Exception as exc:
-            logger.debug("paper_capital query failed: %s", exc)
-            paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
+                logger.debug("recent_signals query failed: %s", exc)
+                recent_signals = self._slow_cache.get("recent_signals", {})
+            try:
+                session_by_coin = self.tracker.get_session_stats_by_coin()
+            except Exception as exc:
+                logger.debug("session_by_coin query failed: %s", exc)
+                session_by_coin = self._slow_cache.get("session_by_coin", {})
+            resolutions_by_coin: dict[str, list[dict]] = {}
+            for coin in self.config.coins:
+                try:
+                    resolutions_by_coin[coin] = self.tracker.get_coin_recent_resolutions(coin, limit=4)
+                except Exception as exc:
+                    logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
+                    resolutions_by_coin[coin] = self._slow_cache.get(
+                        "recent_resolutions_by_coin", {}
+                    ).get(coin, [])
+            try:
+                paper_capital = self.tracker.get_paper_capital()
+            except Exception as exc:
+                logger.debug("paper_capital query failed: %s", exc)
+                paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
         self._slow_cache = {
             "recent_signals": recent_signals,
             "session_by_coin": session_by_coin,

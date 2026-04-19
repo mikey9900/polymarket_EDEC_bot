@@ -244,10 +244,15 @@ class TelegramBot:
         return self._build_dashboard_text(), self._main_keyboard()
 
     async def _build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
-        # Keep dashboard reads on the main thread: the tracker owns a long-lived
-        # SQLite connection, and moving these reads to a worker thread trips
-        # `sqlite3.ProgrammingError` before the dashboard can render.
-        return self._build_dashboard_payload_sync()
+        # Run the SQLite-heavy build in a worker thread so it can't block WS
+        # heartbeats. tracker.conn is now check_same_thread=False; tracker._io_lock
+        # serializes against main-thread writes.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._locked_build_dashboard_payload)
+
+    def _locked_build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        with self.tracker._io_lock:
+            return self._build_dashboard_payload_sync()
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"

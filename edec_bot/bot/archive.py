@@ -11,6 +11,7 @@ import logging
 import os
 import shutil
 import sqlite3
+from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,9 @@ from urllib import error as urlerror
 from urllib.parse import urlencode
 
 from openpyxl import Workbook
+from openpyxl.chart import BarChart, DoughnutChart, LineChart, Reference
+from openpyxl.chart.label import DataLabelList
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from bot.export import _auto_width, _freeze, _style_header
@@ -26,6 +30,72 @@ from bot.export import _auto_width, _freeze, _style_header
 logger = logging.getLogger(__name__)
 
 _OPTIONAL_LATEST_KEYS = {"latest_signals_csv_gz"}
+
+_SESSION_TRADE_COMPACT_NAMES = {
+    "trade_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+    "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+    "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+    "window_id": "wid", "coin": "c", "strategy_type": "st", "signal_context": "ctx",
+    "signal_overlap_count": "ov", "side": "sd", "entry_price": "ep", "entry_bid": "eb",
+    "entry_ask": "ea", "entry_spread": "es", "target_price": "tp", "shares": "sh",
+    "shares_requested": "srq", "shares_filled": "sfl", "blocked_min_5_shares": "b5",
+    "cost": "cs", "fee_total": "fee", "status": "status", "exit_price": "xp",
+    "pnl": "pnl", "exit_reason": "er", "exit_timestamp": "xt", "time_remaining_s": "tx",
+    "bid_at_exit": "xb", "ask_at_exit": "xa", "exit_spread": "xs", "market_start_time": "ms",
+    "market_end_time": "me", "entry_depth_side_usd": "eds", "opposite_depth_usd": "ods",
+    "depth_ratio": "drt", "max_bid_seen": "maxb", "min_bid_seen": "minb",
+    "time_to_max_bid_s": "ttmax", "time_to_min_bid_s": "ttmin", "first_profit_time_s": "tfp",
+    "signal_score": "sg", "score_velocity": "sgv", "score_entry": "sge",
+    "score_depth": "sgd", "score_spread": "sgs", "score_time": "sgt",
+    "score_balance": "sgb", "target_delta": "td", "hard_stop_delta": "hsd",
+    "scalp_hit": "sc", "high_confidence_hit": "hc", "filter_passed": "fp",
+    "filter_failed": "ff", "decision_reason": "why", "coin_velocity_30s": "v30",
+    "coin_velocity_60s": "v60", "up_depth_usd": "du", "down_depth_usd": "dd",
+    "decision_time_remaining_s": "te", "mfe": "mfe", "mae": "mae",
+    "peak_net_pnl": "pnp", "trough_net_pnl": "tnp", "stall_exit_triggered": "sx",
+    "hold_to_resolution": "hr", "loss_cut_threshold_pct": "lct",
+    "loss_pct_at_exit": "lpx", "favorable_excursion": "fex", "ever_profitable": "evp",
+    "source_prices_json": "spj", "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+    "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
+    "resolution_winner": "rw", "resolution_side_match": "rsm",
+    "resolution_value": "rv", "resolution_pnl": "rpn", "would_have_won": "whw",
+    "would_have_beaten_exit": "wbe", "missed_upside_after_exit": "mux",
+    "time_to_resolution_s": "ttr", "recovered_after_exit": "rae",
+}
+
+_SESSION_SIGNAL_COMPACT_NAMES = {
+    "decision_id": "id", "timestamp": "ts", "run_id": "rid", "app_version": "av",
+    "strategy_version": "sv", "config_hash": "ch", "mode": "md", "dry_run": "dr",
+    "order_size_usd": "os", "paper_capital_total": "cap", "market_slug": "mkt",
+    "window_id": "wid", "coin": "c", "strategy_type": "st", "action": "act",
+    "suppressed_reason": "sup", "reason": "why", "signal_context": "ctx",
+    "signal_overlap_count": "ov", "entry_price": "ep", "target_price": "tp",
+    "expected_profit_per_share": "eps", "signal_score": "sg", "score_velocity": "sgv",
+    "score_entry": "sge", "score_depth": "sgd", "score_spread": "sgs",
+    "score_time": "sgt", "score_balance": "sgb", "time_remaining_s": "te",
+    "coin_velocity_30s": "v30", "coin_velocity_60s": "v60", "entry_bid": "eb",
+    "entry_ask": "ea", "entry_spread": "es", "entry_depth_side_usd": "eds",
+    "opposite_depth_usd": "ods", "depth_ratio": "drt", "resignal_cooldown_s": "rcd",
+    "min_price_improvement": "mpi", "last_signal_age_s": "lsa",
+    "filter_passed": "fp", "filter_failed": "ff", "source_prices_json": "spj",
+    "source_ages_json": "saj", "source_dispersion_pct": "sdp",
+    "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
+}
+
+_SESSION_TITLE_FILL = PatternFill(start_color="101D42", end_color="101D42", fill_type="solid")
+_SESSION_ACCENT_FILL = PatternFill(start_color="162B64", end_color="162B64", fill_type="solid")
+_SESSION_PANEL_FILL = PatternFill(start_color="EEF5FF", end_color="EEF5FF", fill_type="solid")
+_SESSION_SUBHEADER_FILL = PatternFill(start_color="DCEBFF", end_color="DCEBFF", fill_type="solid")
+_SESSION_POSITIVE_FILL = PatternFill(start_color="D9F7E8", end_color="D9F7E8", fill_type="solid")
+_SESSION_NEGATIVE_FILL = PatternFill(start_color="FDE2E2", end_color="FDE2E2", fill_type="solid")
+_SESSION_WARNING_FILL = PatternFill(start_color="FFF0D6", end_color="FFF0D6", fill_type="solid")
+_SESSION_NEUTRAL_FILL = PatternFill(start_color="F4F7FB", end_color="F4F7FB", fill_type="solid")
+_SESSION_BORDER = Border(
+    left=Side(style="thin", color="C7D5F0"),
+    right=Side(style="thin", color="C7D5F0"),
+    top=Side(style="thin", color="C7D5F0"),
+    bottom=Side(style="thin", color="C7D5F0"),
+)
 
 
 def _utc_now() -> datetime:
@@ -445,6 +515,512 @@ def _read_gzip_csv_rows(path: str) -> tuple[list[str], list[tuple[Any, ...]]]:
     return columns, rows
 
 
+def _session_column_meta(
+    columns: list[str],
+    compact_names: dict[str, str],
+) -> list[tuple[str, str, str]]:
+    reverse = {compact: verbose for verbose, compact in compact_names.items()}
+    return [
+        (str(column), reverse.get(str(column), str(column)), _verbose_header_title(reverse.get(str(column), str(column))))
+        for column in columns
+    ]
+
+
+def _verbose_header_title(name: str) -> str:
+    if name.endswith("_s"):
+        return f"{_verbose_header_title(name[:-2])} (sec)"
+    if name.endswith("_pct"):
+        return f"{_verbose_header_title(name[:-4])} (%)"
+    specials = {
+        "id": "ID",
+        "pnl": "P&L",
+        "usd": "USD",
+        "utc": "UTC",
+        "json": "JSON",
+        "btc": "BTC",
+        "csv": "CSV",
+        "gz": "GZ",
+        "api": "API",
+        "avg": "Avg",
+        "max": "Max",
+        "min": "Min",
+    }
+    words: list[str] = []
+    for part in name.split("_"):
+        lower = part.lower()
+        words.append(specials.get(lower, part.capitalize()))
+    title = " ".join(words)
+    return (
+        title.replace("Trade Id", "Trade ID")
+        .replace("Decision Id", "Decision ID")
+        .replace("Run Id", "Run ID")
+        .replace("Window Id", "Window ID")
+        .replace("App Version", "App Version")
+        .replace("Strategy Type", "Strategy")
+    )
+
+
+def _coerce_excel_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        if any(ch in text for ch in (".", "e", "E")):
+            return float(text)
+        return int(text)
+    except ValueError:
+        return text
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _session_lookup(columns: list[str], compact_names: dict[str, str]) -> dict[str, int]:
+    lookup: dict[str, int] = {}
+    for idx, (_, verbose, _) in enumerate(_session_column_meta(columns, compact_names)):
+        raw = str(columns[idx])
+        lookup[raw] = idx
+        lookup[verbose] = idx
+    return lookup
+
+
+def _session_row_value(row: tuple[Any, ...], lookup: dict[str, int], *keys: str) -> Any:
+    for key in keys:
+        idx = lookup.get(key)
+        if idx is None or idx >= len(row):
+            continue
+        value = row[idx]
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _session_cell_number_format(verbose_name: str) -> str | None:
+    currency_names = {
+        "paper_capital_total", "order_size_usd", "cost", "fee_total", "pnl",
+        "entry_depth_side_usd", "opposite_depth_usd", "up_depth_usd", "down_depth_usd",
+        "resolution_pnl",
+    }
+    price_names = {
+        "entry_price", "entry_bid", "entry_ask", "target_price", "exit_price",
+        "bid_at_exit", "ask_at_exit", "max_bid_seen", "min_bid_seen", "resolution_value",
+    }
+    share_names = {"shares", "shares_requested", "shares_filled"}
+    if verbose_name in currency_names or verbose_name.endswith("_usd"):
+        return '$#,##0.00;[Red]-$#,##0.00'
+    if verbose_name in price_names:
+        return '0.0000'
+    if verbose_name in share_names:
+        return '0.0000'
+    if verbose_name.endswith("_s") or "score" in verbose_name or "ratio" in verbose_name or "velocity" in verbose_name:
+        return '0.00'
+    if verbose_name.endswith("_pct") or verbose_name.endswith("_delta"):
+        return '0.00'
+    return None
+
+
+def _apply_session_value_style(cell: Any, verbose_name: str) -> None:
+    value = cell.value
+    if verbose_name == "pnl":
+        numeric = _safe_float(value)
+        if numeric is not None:
+            if numeric > 0:
+                cell.fill = _SESSION_POSITIVE_FILL
+                cell.font = Font(color="0E7C45", bold=True)
+            elif numeric < 0:
+                cell.fill = _SESSION_NEGATIVE_FILL
+                cell.font = Font(color="B42318", bold=True)
+            else:
+                cell.fill = _SESSION_NEUTRAL_FILL
+    if verbose_name == "action":
+        palette = {
+            "TRADE": ("D9F7E8", "0E7C45"),
+            "DRY_RUN_SIGNAL": ("E0F2FE", "1D4ED8"),
+            "SUPPRESSED": ("FFF0D6", "B54708"),
+        }
+        colors = palette.get(str(value or "").upper())
+        if colors:
+            cell.fill = PatternFill(start_color=colors[0], end_color=colors[0], fill_type="solid")
+            cell.font = Font(color=colors[1], bold=True)
+    if verbose_name == "side":
+        palette = {
+            "UP": ("D9F7E8", "0E7C45"),
+            "YES": ("D9F7E8", "0E7C45"),
+            "DOWN": ("FDE2E2", "B42318"),
+            "NO": ("FDE2E2", "B42318"),
+        }
+        colors = palette.get(str(value or "").upper())
+        if colors:
+            cell.fill = PatternFill(start_color=colors[0], end_color=colors[0], fill_type="solid")
+            cell.font = Font(color=colors[1], bold=True)
+
+
+def _build_session_data_sheet(
+    wb: Workbook,
+    sheet_name: str,
+    columns: list[str],
+    rows: list[tuple[Any, ...]],
+    compact_names: dict[str, str],
+) -> None:
+    ws = wb.create_sheet(sheet_name)
+    ws.sheet_view.zoomScale = 90
+    ws.sheet_properties.tabColor = "1D4ED8"
+    if not columns:
+        ws.append(["No session data"])
+        _style_header(ws, 1)
+        _freeze(ws)
+        _auto_width(ws)
+        return
+
+    meta = _session_column_meta(columns, compact_names)
+    ws.append([pretty for _, _, pretty in meta])
+    for cell in ws[1]:
+        cell.fill = _SESSION_ACCENT_FILL
+        cell.font = Font(color="FFFFFF", bold=True)
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = _SESSION_BORDER
+    ws.row_dimensions[1].height = 28
+    _freeze(ws)
+
+    for row in rows:
+        ws.append([_coerce_excel_value(value) for value in row])
+        current_row = ws.max_row
+        for col_idx, (_, verbose_name, _) in enumerate(meta, start=1):
+            cell = ws.cell(row=current_row, column=col_idx)
+            cell.alignment = Alignment(vertical="top")
+            cell.border = _SESSION_BORDER
+            number_format = _session_cell_number_format(verbose_name)
+            if number_format:
+                cell.number_format = number_format
+            _apply_session_value_style(cell, verbose_name)
+        if current_row % 2 == 0:
+            for col_idx in range(1, len(meta) + 1):
+                cell = ws.cell(row=current_row, column=col_idx)
+                if cell.fill.patternType is None:
+                    cell.fill = _SESSION_NEUTRAL_FILL
+
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(meta))}{max(ws.max_row, 1)}"
+    ws.row_dimensions[2].height = 20
+    _auto_width(ws, cap=30)
+
+
+def _build_session_metrics(
+    trade_columns: list[str],
+    trade_rows: list[tuple[Any, ...]],
+    signal_columns: list[str],
+    signal_rows: list[tuple[Any, ...]],
+) -> dict[str, Any]:
+    trade_lookup = _session_lookup(trade_columns, _SESSION_TRADE_COMPACT_NAMES)
+    signal_lookup = _session_lookup(signal_columns, _SESSION_SIGNAL_COMPACT_NAMES)
+
+    total_pnl = 0.0
+    wins = 0
+    losses = 0
+    open_trades = 0
+    breakeven = 0
+    best_trade: tuple[str, float] | None = None
+    worst_trade: tuple[str, float] | None = None
+    pnl_by_coin: defaultdict[str, float] = defaultdict(float)
+    trade_counts_by_coin: Counter[str] = Counter()
+    cumulative_pnl: list[tuple[int, float]] = []
+    running_pnl = 0.0
+
+    for index, row in enumerate(trade_rows, start=1):
+        pnl_value = _safe_float(_session_row_value(row, trade_lookup, "pnl"))
+        status_value = str(_session_row_value(row, trade_lookup, "status") or "").upper()
+        exit_timestamp = _session_row_value(row, trade_lookup, "exit_timestamp")
+        trade_id = str(_session_row_value(row, trade_lookup, "trade_id", "id") or index)
+        coin = str(_session_row_value(row, trade_lookup, "coin", "c") or "N/A").upper()
+
+        if pnl_value is not None:
+            total_pnl += pnl_value
+            running_pnl += pnl_value
+        cumulative_pnl.append((index, running_pnl))
+        trade_counts_by_coin[coin] += 1
+        pnl_by_coin[coin] += pnl_value or 0.0
+
+        if status_value in {"OPEN", "PENDING"} or (not exit_timestamp and pnl_value in (None, 0.0)):
+            open_trades += 1
+            continue
+        if pnl_value is None or pnl_value == 0:
+            breakeven += 1
+            continue
+        if pnl_value > 0:
+            wins += 1
+        else:
+            losses += 1
+        if best_trade is None or pnl_value > best_trade[1]:
+            best_trade = (trade_id, pnl_value)
+        if worst_trade is None or pnl_value < worst_trade[1]:
+            worst_trade = (trade_id, pnl_value)
+
+    action_counts: Counter[str] = Counter()
+    for row in signal_rows:
+        action = str(_session_row_value(row, signal_lookup, "action", "act") or "UNKNOWN").upper()
+        action_counts[action] += 1
+
+    closed_trades = wins + losses + breakeven
+    win_rate = (wins / closed_trades * 100.0) if closed_trades else 0.0
+    avg_pnl = (total_pnl / len(trade_rows)) if trade_rows else 0.0
+    best_coin = max(pnl_by_coin.items(), key=lambda item: item[1], default=("N/A", 0.0))
+
+    return {
+        "total_pnl": total_pnl,
+        "wins": wins,
+        "losses": losses,
+        "open_trades": open_trades,
+        "breakeven": breakeven,
+        "closed_trades": closed_trades,
+        "win_rate": win_rate,
+        "avg_pnl": avg_pnl,
+        "best_trade": best_trade,
+        "worst_trade": worst_trade,
+        "best_coin": best_coin,
+        "coin_count": len([coin for coin in trade_counts_by_coin if coin and coin != "N/A"]),
+        "trade_count": len(trade_rows),
+        "signal_count": len(signal_rows),
+        "pnl_by_coin": sorted(pnl_by_coin.items(), key=lambda item: item[1], reverse=True),
+        "trade_counts_by_coin": sorted(trade_counts_by_coin.items(), key=lambda item: item[1], reverse=True),
+        "action_counts": sorted(action_counts.items(), key=lambda item: (-item[1], item[0])),
+        "cumulative_pnl": cumulative_pnl or [(1, 0.0)],
+    }
+
+
+def _write_session_card(
+    ws: Any,
+    start_col: int,
+    start_row: int,
+    end_col: int,
+    end_row: int,
+    title: str,
+    value: str,
+    fill: PatternFill,
+) -> None:
+    ws.merge_cells(start_row=start_row, start_column=start_col, end_row=end_row, end_column=end_col)
+    cell = ws.cell(row=start_row, column=start_col)
+    cell.value = f"{title}\n{value}"
+    cell.fill = fill
+    cell.font = Font(color="0F172A", bold=True, size=14)
+    cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    cell.border = _SESSION_BORDER
+    for row in ws.iter_rows(min_row=start_row, max_row=end_row, min_col=start_col, max_col=end_col):
+        for item in row:
+            item.border = _SESSION_BORDER
+
+
+def _write_session_table(
+    ws: Any,
+    *,
+    title: str,
+    start_row: int,
+    start_col: int,
+    items: list[tuple[str, Any]],
+) -> None:
+    end_col = start_col + 2
+    ws.merge_cells(start_row=start_row, start_column=start_col, end_row=start_row, end_column=end_col)
+    header = ws.cell(row=start_row, column=start_col)
+    header.value = title
+    header.fill = _SESSION_TITLE_FILL
+    header.font = Font(color="FFFFFF", bold=True, size=12)
+    header.alignment = Alignment(horizontal="left", vertical="center")
+    header.border = _SESSION_BORDER
+    for idx, (label, value) in enumerate(items, start=1):
+        row = start_row + idx
+        label_cell = ws.cell(row=row, column=start_col, value=label)
+        label_cell.fill = _SESSION_SUBHEADER_FILL
+        label_cell.font = Font(bold=True, color="0F172A")
+        label_cell.alignment = Alignment(horizontal="left", vertical="center")
+        label_cell.border = _SESSION_BORDER
+        value_cell = ws.cell(row=row, column=start_col + 1, value=value)
+        value_cell.alignment = Alignment(horizontal="left", vertical="center")
+        value_cell.border = _SESSION_BORDER
+        value_cell.fill = _SESSION_PANEL_FILL
+        value_cell.number_format = '$#,##0.00;[Red]-$#,##0.00' if isinstance(value, (int, float)) and "P&L" in label else "General"
+
+
+def _build_session_chart_data_sheet(wb: Workbook, metrics: dict[str, Any]) -> Any:
+    ws = wb.create_sheet("Chart Data")
+    ws.sheet_state = "hidden"
+
+    outcomes = [
+        ("Wins", metrics["wins"]),
+        ("Losses", metrics["losses"]),
+        ("Open", metrics["open_trades"]),
+        ("Breakeven", metrics["breakeven"]),
+    ]
+    ws["A1"] = "Trade Outcome"
+    ws["B1"] = "Count"
+    for row_idx, (label, value) in enumerate(outcomes, start=2):
+        ws.cell(row=row_idx, column=1, value=label)
+        ws.cell(row=row_idx, column=2, value=value)
+
+    signal_actions = metrics["action_counts"] or [("NO_SIGNALS", 0)]
+    ws["D1"] = "Signal Action"
+    ws["E1"] = "Count"
+    for row_idx, (label, value) in enumerate(signal_actions, start=2):
+        ws.cell(row=row_idx, column=4, value=label)
+        ws.cell(row=row_idx, column=5, value=value)
+
+    coin_pnl = metrics["pnl_by_coin"][:8] or [("N/A", 0.0)]
+    ws["G1"] = "Coin"
+    ws["H1"] = "P&L"
+    for row_idx, (label, value) in enumerate(coin_pnl, start=2):
+        ws.cell(row=row_idx, column=7, value=label)
+        ws.cell(row=row_idx, column=8, value=value)
+
+    cumulative_pnl = metrics["cumulative_pnl"] or [(1, 0.0)]
+    ws["J1"] = "Trade Number"
+    ws["K1"] = "Cumulative P&L"
+    for row_idx, (trade_no, value) in enumerate(cumulative_pnl, start=2):
+        ws.cell(row=row_idx, column=10, value=trade_no)
+        ws.cell(row=row_idx, column=11, value=value)
+
+    return ws
+
+
+def _add_session_charts(summary: Any, chart_data: Any, metrics: dict[str, Any]) -> None:
+    outcome_chart = DoughnutChart()
+    outcome_chart.title = "Trade Outcomes"
+    outcome_chart.style = 10
+    outcome_chart.holeSize = 55
+    outcome_chart.height = 7
+    outcome_chart.width = 8.5
+    outcome_data = Reference(chart_data, min_col=2, min_row=1, max_row=5)
+    outcome_labels = Reference(chart_data, min_col=1, min_row=2, max_row=5)
+    outcome_chart.add_data(outcome_data, titles_from_data=True)
+    outcome_chart.set_categories(outcome_labels)
+    outcome_chart.varyColors = True
+    outcome_chart.dataLabels = DataLabelList()
+    outcome_chart.dataLabels.showVal = True
+    outcome_chart.dataLabels.showPercent = True
+    summary.add_chart(outcome_chart, "A28")
+
+    signal_end_row = max(2, len(metrics["action_counts"]) + 1)
+    signal_chart = BarChart()
+    signal_chart.type = "bar"
+    signal_chart.style = 11
+    signal_chart.title = "Signal Actions"
+    signal_chart.height = 7
+    signal_chart.width = 8.5
+    signal_chart.y_axis.title = "Action"
+    signal_chart.x_axis.title = "Count"
+    signal_data = Reference(chart_data, min_col=5, min_row=1, max_row=signal_end_row)
+    signal_labels = Reference(chart_data, min_col=4, min_row=2, max_row=signal_end_row)
+    signal_chart.add_data(signal_data, titles_from_data=True)
+    signal_chart.set_categories(signal_labels)
+    signal_chart.legend = None
+    summary.add_chart(signal_chart, "F28")
+
+    coin_end_row = max(2, min(9, len(metrics["pnl_by_coin"]) + 1))
+    coin_chart = BarChart()
+    coin_chart.style = 12
+    coin_chart.title = "P&L by Coin"
+    coin_chart.height = 7
+    coin_chart.width = 8.5
+    coin_chart.y_axis.title = "P&L"
+    coin_data = Reference(chart_data, min_col=8, min_row=1, max_row=coin_end_row)
+    coin_labels = Reference(chart_data, min_col=7, min_row=2, max_row=coin_end_row)
+    coin_chart.add_data(coin_data, titles_from_data=True)
+    coin_chart.set_categories(coin_labels)
+    coin_chart.legend = None
+    summary.add_chart(coin_chart, "A44")
+
+    cumulative_end_row = max(2, len(metrics["cumulative_pnl"]) + 1)
+    cumulative_chart = LineChart()
+    cumulative_chart.style = 13
+    cumulative_chart.title = "Cumulative Session P&L"
+    cumulative_chart.height = 7
+    cumulative_chart.width = 8.5
+    cumulative_chart.y_axis.title = "P&L"
+    cumulative_chart.x_axis.title = "Trade #"
+    cumulative_data = Reference(chart_data, min_col=11, min_row=1, max_row=cumulative_end_row)
+    cumulative_labels = Reference(chart_data, min_col=10, min_row=2, max_row=cumulative_end_row)
+    cumulative_chart.add_data(cumulative_data, titles_from_data=True)
+    cumulative_chart.set_categories(cumulative_labels)
+    summary.add_chart(cumulative_chart, "F44")
+
+
+def _build_session_summary_sheet(
+    summary: Any,
+    *,
+    label: str,
+    now_utc: datetime,
+    reset_at: str,
+    trades_path: str,
+    signals_path: str,
+    excel_filename: str,
+    metrics: dict[str, Any],
+) -> None:
+    summary.sheet_view.zoomScale = 90
+    summary.sheet_properties.tabColor = "8B5CF6"
+    for col, width in {"A": 19, "B": 16, "C": 19, "D": 16, "E": 19, "F": 16, "G": 19, "H": 16}.items():
+        summary.column_dimensions[col].width = width
+
+    summary.merge_cells("A1:H2")
+    title_cell = summary["A1"]
+    title_cell.value = f"{label} Session Performance Report"
+    title_cell.fill = _SESSION_TITLE_FILL
+    title_cell.font = Font(color="FFFFFF", bold=True, size=18)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    title_cell.border = _SESSION_BORDER
+
+    summary.merge_cells("A3:H3")
+    subtitle = summary["A3"]
+    subtitle.value = (
+        f"Readable session export generated {now_utc.strftime('%Y-%m-%d %H:%M:%S UTC')} "
+        f"for the session beginning {reset_at}"
+    )
+    subtitle.fill = _SESSION_PANEL_FILL
+    subtitle.font = Font(color="1E293B", italic=True)
+    subtitle.alignment = Alignment(horizontal="center", vertical="center")
+    subtitle.border = _SESSION_BORDER
+
+    _write_session_card(summary, 1, 5, 2, 7, "Total P&L", f"${metrics['total_pnl']:,.2f}", _SESSION_POSITIVE_FILL if metrics["total_pnl"] >= 0 else _SESSION_NEGATIVE_FILL)
+    _write_session_card(summary, 3, 5, 4, 7, "Win Rate", f"{metrics['win_rate']:.1f}%", _SESSION_SUBHEADER_FILL)
+    _write_session_card(summary, 5, 5, 6, 7, "Trades", str(metrics["trade_count"]), _SESSION_PANEL_FILL)
+    _write_session_card(summary, 7, 5, 8, 7, "Signals", str(metrics["signal_count"]), _SESSION_PANEL_FILL)
+    _write_session_card(summary, 1, 9, 2, 11, "Wins", str(metrics["wins"]), _SESSION_POSITIVE_FILL)
+    _write_session_card(summary, 3, 9, 4, 11, "Losses", str(metrics["losses"]), _SESSION_NEGATIVE_FILL)
+    _write_session_card(summary, 5, 9, 6, 11, "Open", str(metrics["open_trades"]), _SESSION_WARNING_FILL)
+    _write_session_card(summary, 7, 9, 8, 11, "Avg Trade P&L", f"${metrics['avg_pnl']:,.2f}", _SESSION_PANEL_FILL)
+
+    details = [
+        ("Session Start (UTC)", reset_at),
+        ("Exported At (UTC)", now_utc.isoformat()),
+        ("Coins Traded", metrics["coin_count"]),
+        ("Best Coin", f"{metrics['best_coin'][0]} (${metrics['best_coin'][1]:,.2f})"),
+        ("Best Trade", "N/A" if metrics["best_trade"] is None else f"Trade {metrics['best_trade'][0]} (${metrics['best_trade'][1]:,.2f})"),
+        ("Worst Trade", "N/A" if metrics["worst_trade"] is None else f"Trade {metrics['worst_trade'][0]} (${metrics['worst_trade'][1]:,.2f})"),
+    ]
+    files = [
+        ("Excel Workbook", excel_filename),
+        ("Trades Archive", Path(trades_path).name),
+        ("Signals Archive", Path(signals_path).name),
+        ("Breakeven Trades", metrics["breakeven"]),
+    ]
+    signals = [(action.replace("_", " ").title(), count) for action, count in metrics["action_counts"][:6]]
+    if not signals:
+        signals = [("No Signals", 0)]
+
+    _write_session_table(summary, title="Session Snapshot", start_row=14, start_col=1, items=details)
+    _write_session_table(summary, title="Files Included", start_row=14, start_col=5, items=files)
+    _write_session_table(summary, title="Signal Breakdown", start_row=22, start_col=5, items=signals)
+    summary.freeze_panes = "A5"
+
+
 def _build_session_excel_export(
     *,
     output_dir: str,
@@ -464,27 +1040,24 @@ def _build_session_excel_export(
     wb = Workbook()
     summary = wb.active
     summary.title = "Summary"
-    summary.append(["Field", "Value"])
-    _style_header(summary, 2)
-    _freeze(summary)
-    summary_rows = [
-        ("Label", label),
-        ("Exported At UTC", now_utc.isoformat()),
-        ("Session Since UTC", reset_at),
-        ("Session Trades Rows", trade_count),
-        ("Session Signals Rows", signal_count),
-        ("Trades CSV.GZ", Path(trades_path).name),
-        ("Signals CSV.GZ", Path(signals_path).name),
-    ]
-    for row in summary_rows:
-        summary.append(list(row))
-    summary.auto_filter.ref = "A1:B1"
-    _auto_width(summary)
 
     trade_columns, trade_rows = _read_gzip_csv_rows(trades_path)
     signal_columns, signal_rows = _read_gzip_csv_rows(signals_path)
-    _sheet_from_rows(wb, "Session Trades", trade_columns, trade_rows)
-    _sheet_from_rows(wb, "Session Signals", signal_columns, signal_rows)
+    metrics = _build_session_metrics(trade_columns, trade_rows, signal_columns, signal_rows)
+    _build_session_summary_sheet(
+        summary,
+        label=label,
+        now_utc=now_utc,
+        reset_at=reset_at,
+        trades_path=trades_path,
+        signals_path=signals_path,
+        excel_filename=excel_filename,
+        metrics=metrics,
+    )
+    chart_data = _build_session_chart_data_sheet(wb, metrics)
+    _add_session_charts(summary, chart_data, metrics)
+    _build_session_data_sheet(wb, "Session Trades", trade_columns, trade_rows, _SESSION_TRADE_COMPACT_NAMES)
+    _build_session_data_sheet(wb, "Session Signals", signal_columns, signal_rows, _SESSION_SIGNAL_COMPACT_NAMES)
 
     wb.save(excel_path)
     return str(excel_path)

@@ -52,13 +52,16 @@ class SessionExcelExportTests(unittest.TestCase):
             )
 
             self.assertTrue(Path(excel_path).exists())
-            wb = load_workbook(excel_path, read_only=True)
-            self.assertEqual(wb.sheetnames, ["Summary", "Session Trades", "Session Signals"])
+            wb = load_workbook(excel_path)
+            self.assertEqual(wb.sheetnames, ["Summary", "Chart Data", "Session Trades", "Session Signals"])
             summary = wb["Summary"]
-            self.assertEqual(summary["A2"].value, "Label")
-            self.assertEqual(summary["B2"].value, "EDEC-BOT")
-            self.assertEqual(wb["Session Trades"]["A2"].value, "1")
-            self.assertEqual(wb["Session Signals"]["C2"].value, "TRADE")
+            self.assertEqual(summary["A1"].value, "EDEC-BOT Session Performance Report")
+            self.assertIn("session beginning 2026-04-19T15:00:00", summary["A3"].value)
+            self.assertEqual(len(summary._charts), 4)
+            self.assertEqual(wb["Chart Data"].sheet_state, "hidden")
+            self.assertEqual(wb["Session Trades"]["A1"].value, "Trade ID")
+            self.assertEqual(wb["Session Trades"]["A2"].value, 1)
+            self.assertEqual(wb["Session Signals"]["C1"].value, "Action")
             wb.close()
 
 

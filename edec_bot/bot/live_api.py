@@ -303,8 +303,20 @@ _DASHBOARD_HTML = r"""<!doctype html>
     animation: blink 1.4s infinite;
     vertical-align: middle;
   }
-  .topstats { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-  .topstats .pill {
+  .topbar-meta {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-end;
+  }
+  .topbar-meta .pill { display: none; }
+  .session-summary-strip {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    margin-top: 10px;
+  }
+  .session-pill {
     padding: 3px 8px;
     border: 1px solid var(--chrome-hi);
     border-radius: 4px;
@@ -312,12 +324,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
     box-shadow: inset 0 1px 0 #2c3865, 0 0 6px rgba(0,240,255,0.2);
     font-size: 16px;
     color: var(--text);
+    min-width: 0;
   }
-  .topstats .pill .lbl { color: var(--text-dim); font-size: 12px; margin-right: 5px; letter-spacing: 1px; }
-  .topstats .pill .val.green  { color: var(--neon-lime);  text-shadow: 0 0 5px var(--neon-lime); }
-  .topstats .pill .val.red    { color: var(--neon-red);   text-shadow: 0 0 5px var(--neon-red); }
-  .topstats .pill .val.cyan   { color: var(--neon-cyan);  text-shadow: 0 0 5px var(--neon-cyan); }
-  .topstats .pill .val.amber  { color: var(--neon-amber); text-shadow: 0 0 5px var(--neon-amber); }
+  .session-pill .lbl { color: #d6e3ff; font-size: 12px; margin-right: 5px; letter-spacing: 1px; }
+  .session-pill .val.green  { color: #7dff7a; text-shadow: 0 0 5px rgba(125,255,122,0.75); }
+  .session-pill .val.red    { color: #ff8f8f; text-shadow: 0 0 5px rgba(255,143,143,0.75); }
+  .session-pill .val.cyan   { color: #86f7ff; text-shadow: 0 0 5px rgba(134,247,255,0.75); }
+  .session-pill .val.amber  { color: #ffd37a; text-shadow: 0 0 5px rgba(255,211,122,0.75); }
 
   @keyframes blink {
     0%, 60% { opacity: 1; }
@@ -372,8 +385,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     margin: 0 0 10px 0;
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 10px;
-    color: var(--neon-magenta);
-    text-shadow: 0 0 4px var(--neon-magenta);
+    color: #ffe3a6;
+    text-shadow: 0 0 4px rgba(255,176,0,0.65), 0 0 10px rgba(0,240,255,0.15);
     letter-spacing: 1.5px;
   }
   .control-grid {
@@ -391,10 +404,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .control-block .head {
     display: block;
     margin-bottom: 8px;
-    color: var(--text-dim);
+    color: #d6e3ff;
     font-size: 11px;
     letter-spacing: 1px;
     font-family: "Press Start 2P", "VT323", monospace;
+    text-shadow: 0 0 4px rgba(134,247,255,0.18);
   }
   .control-row {
     display: flex;
@@ -418,7 +432,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 14px;
   }
   .readout-pill .lbl {
-    color: var(--text-dim);
+    color: #d6e3ff;
     font-size: 10px;
     margin-right: 4px;
     letter-spacing: 1px;
@@ -677,8 +691,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     margin: 0 0 6px 0;
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 9px;
-    color: var(--neon-magenta);
-    text-shadow: 0 0 4px var(--neon-magenta);
+    color: #ffe3a6;
+    text-shadow: 0 0 4px rgba(255,176,0,0.65), 0 0 10px rgba(0,240,255,0.12);
     letter-spacing: 1.5px;
   }
 
@@ -904,9 +918,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width: 720px) {
     header.topbar { align-items: flex-start; flex-direction: column; }
     .brand { font-size: 12px; }
-    .topstats { width: 100%; gap: 8px; justify-content: flex-start; }
-    .topstats .pill { font-size: 14px; }
-    .topstats .pill .lbl { font-size: 10px; }
+    .topbar-meta { width: 100%; justify-content: flex-start; }
+    .session-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+    .session-pill { font-size: 14px; }
+    .session-pill .lbl { font-size: 10px; }
     .uplink { font-size: 12px; }
     .control-deck { padding: 0 10px; }
     .control-shell { padding: 8px 10px; }
@@ -941,6 +956,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
 
   @media (max-width: 430px) {
+    .session-summary-strip { grid-template-columns: 1fr; }
     .card-body { grid-template-columns: 1fr; }
     .ticker-lock { grid-template-columns: auto 84px; gap: 3px; padding: 2px 6px 2px 7px; }
     .live-price { font-size: 18px; width: 84px; min-width: 84px; }
@@ -956,12 +972,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
 <body>
   <header class="topbar">
     <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v__APP_VERSION__</span></div>
-    <div class="topstats">
-      <div class="pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
-      <div class="pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>
-      <div class="pill"><span class="lbl">P&amp;L</span><span id="t-pnl" class="val green">—</span></div>
-      <div class="pill"><span class="lbl">BAL</span><span id="t-bal" class="val cyan">—</span></div>
-      <div class="pill"><span class="lbl">UTC</span><span id="t-ts"  class="val cyan">—</span></div>
+    <div class="topbar-meta">
+      <div class="pill"><span class="lbl">MODE</span><span id="t-mode-top" class="val cyan">—</span></div>
+      <div class="pill"><span class="lbl">DRY</span><span id="t-dry-top"  class="val amber">—</span></div>
+      <div class="pill"><span class="lbl">P&amp;L</span><span id="t-pnl-top" class="val green">—</span></div>
+      <div class="pill"><span class="lbl">BAL</span><span id="t-bal-top" class="val cyan">—</span></div>
+      <div class="pill"><span class="lbl">UTC</span><span id="t-ts-top"  class="val cyan">—</span></div>
       <div id="uplink" class="uplink uplink-ok"><span class="udot"></span><span id="uplink-lbl">LINK</span><span id="uplink-age" class="uage">0ms</span></div>
     </div>
   </header>
@@ -1016,6 +1032,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
         </div>
       </div>
       <div id="ctrl-status" class="ctl-status">CONTROL LINK STANDBY</div>
+      <div class="session-summary-strip">
+        <div class="session-pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
+        <div class="session-pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>
+        <div class="session-pill"><span class="lbl">P&amp;L</span><span id="t-pnl" class="val green">—</span></div>
+        <div class="session-pill"><span class="lbl">BAL</span><span id="t-bal" class="val cyan">—</span></div>
+        <div class="session-pill"><span class="lbl">UTC</span><span id="t-ts"  class="val cyan">—</span></div>
+      </div>
     </div>
   </section>
 

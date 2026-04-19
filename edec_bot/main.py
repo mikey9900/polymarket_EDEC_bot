@@ -360,7 +360,7 @@ async def main():
     dashboard_update_ms = _as_int(os.getenv("EDEC_DASHBOARD_UPDATE_MS"), 100)
     dashboard_history_sample_ms = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_SAMPLE_MS"), 500)
     dashboard_history_points = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_POINTS"), 600)
-    dashboard_slow_refresh_ms = _as_int(os.getenv("EDEC_DASHBOARD_SLOW_REFRESH_MS"), 500)
+    dashboard_slow_refresh_ms = _as_int(os.getenv("EDEC_DASHBOARD_SLOW_REFRESH_MS"), 5000)
 
     def do_archive() -> dict:
         return run_daily_archive(

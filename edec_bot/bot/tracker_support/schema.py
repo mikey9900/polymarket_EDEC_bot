@@ -274,12 +274,16 @@ INDEX_SCHEMA = """
 CREATE INDEX IF NOT EXISTS idx_decisions_market ON decisions(market_slug);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
 CREATE INDEX IF NOT EXISTS idx_decisions_run ON decisions(run_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_coin_ts ON decisions(coin, timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_market ON trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_trades_decision ON trades(decision_id);
 CREATE INDEX IF NOT EXISTS idx_outcomes_market ON outcomes(market_slug);
+CREATE INDEX IF NOT EXISTS idx_outcomes_resolved ON outcomes(resolved_at);
 CREATE INDEX IF NOT EXISTS idx_paper_market ON paper_trades(market_slug);
 CREATE INDEX IF NOT EXISTS idx_paper_run ON paper_trades(run_id);
 CREATE INDEX IF NOT EXISTS idx_paper_decision ON paper_trades(decision_id);
+CREATE INDEX IF NOT EXISTS idx_paper_timestamp ON paper_trades(timestamp);
+CREATE INDEX IF NOT EXISTS idx_paper_coin_ts ON paper_trades(coin, timestamp);
 """
 
 

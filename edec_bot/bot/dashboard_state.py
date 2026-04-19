@@ -33,7 +33,7 @@ class DashboardStateService:
         history_sample_interval_s: float = 0.5,
         history_points: int = 600,
         price_series_points: int = 240,
-        slow_refresh_interval_s: float = 0.5,
+        slow_refresh_interval_s: float = 5.0,
     ):
         self.config = config
         self.tracker = tracker

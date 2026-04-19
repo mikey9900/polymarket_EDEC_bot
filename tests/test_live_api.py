@@ -67,6 +67,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('width: 96px;', html)
         self.assertIn('border-radius: 6px;', html)
         self.assertNotIn('🪙', html)
+        self.assertIn('text-align: left;', html)
         self.assertIn('white-space: nowrap;', html)
 
 

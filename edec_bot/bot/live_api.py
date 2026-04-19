@@ -555,7 +555,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: inline-grid;
     grid-template-columns: auto 96px;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     min-width: 0;
     flex: 0 0 auto;
     padding: 2px 8px 2px 9px;
@@ -587,7 +587,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
     width: 96px;
     min-width: 96px;
-    text-align: right;
+    text-align: left;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     flex: 0 0 auto;
@@ -961,7 +961,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
     .chart-slot { height: 104px; }
-    .ticker-lock { grid-template-columns: auto 92px; gap: 5px; }
+    .ticker-lock { grid-template-columns: auto 92px; gap: 4px; }
     .live-price { font-size: 20px; width: 92px; min-width: 92px; }
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 14px; }
@@ -1015,7 +1015,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   @media (max-width: 430px) {
     .card-body { grid-template-columns: 1fr; }
-    .ticker-lock { grid-template-columns: auto 84px; gap: 4px; padding: 2px 6px 2px 7px; }
+    .ticker-lock { grid-template-columns: auto 84px; gap: 3px; padding: 2px 6px 2px 7px; }
     .live-price { font-size: 18px; width: 84px; min-width: 84px; }
     .coin-name { font-size: 10px; }
     .card-header .right { font-size: 12px; }

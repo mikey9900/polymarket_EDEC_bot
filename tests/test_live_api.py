@@ -44,6 +44,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertNotIn('data-field="pred-copy"', html)
         self.assertIn('data-field="strike-delta"', html)
         self.assertIn('data-field="strike-pct"', html)
+        self.assertIn('class="ticker-lock"', html)
         self.assertIn('chart-feeds', html)
         self.assertIn('chart-resolutions', html)
         self.assertIn('return `<span class="chart-res-dot ${cls}"></span>`;', html)
@@ -57,7 +58,13 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('const fmtSignedPrice = (x) =>', html)
         self.assertNotIn('priceEl.classList.toggle("green"', html)
         self.assertNotIn('priceEl.classList.toggle("red"', html)
+        self.assertNotIn('⏱', html)
+        self.assertIn('class="item wins"', html)
+        self.assertIn('class="item losses"', html)
+        self.assertIn('class="item open"', html)
+        self.assertIn('class="item pnl"', html)
         self.assertIn('font-variant-numeric: tabular-nums;', html)
+        self.assertIn('width: 112px;', html)
         self.assertIn('white-space: nowrap;', html)
 
 

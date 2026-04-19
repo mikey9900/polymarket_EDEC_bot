@@ -551,6 +551,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
     flex-wrap: nowrap;
     overflow: hidden;
   }
+  .ticker-lock {
+    display: inline-grid;
+    grid-template-columns: auto 112px;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
   .card-header .mid { min-width: 0; }
   .grip {
     color: var(--text-dim);
@@ -572,7 +580,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 22px;
     color: var(--text);
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
-    min-width: 88px;
+    width: 112px;
+    min-width: 112px;
     text-align: right;
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
@@ -589,6 +598,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     color: var(--neon-amber);
     text-shadow: 0 0 4px var(--neon-amber);
     font-size: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 46px;
   }
   .session-inline {
     display: flex; align-items: center; justify-content: center;
@@ -596,11 +609,31 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .session-inline .item {
     display: inline-flex; align-items: center; gap: 4px;
-    padding: 1px 6px;
+    padding: 2px 7px;
     border: 1px solid #24315f;
     border-radius: 999px;
     background: rgba(7, 11, 28, 0.82);
     box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.35);
+  }
+  .session-inline .item.wins {
+    border-color: #1f6a36;
+    background: linear-gradient(180deg, rgba(57,255,20,0.20), rgba(7, 18, 15, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(57,255,20,0.12);
+  }
+  .session-inline .item.losses {
+    border-color: #7a2222;
+    background: linear-gradient(180deg, rgba(255,59,59,0.18), rgba(24, 8, 10, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255,59,59,0.10);
+  }
+  .session-inline .item.open {
+    border-color: #7a5e18;
+    background: linear-gradient(180deg, rgba(255,184,0,0.18), rgba(24, 17, 6, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255,184,0,0.10);
+  }
+  .session-inline .item.pnl {
+    border-color: #225a86;
+    background: linear-gradient(180deg, rgba(0,240,255,0.14), rgba(8, 14, 24, 0.92));
+    box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(0,240,255,0.10);
   }
   .session-inline .lbl {
     color: var(--text-dim);
@@ -923,7 +956,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
     .chart-slot { height: 104px; }
-    .live-price { font-size: 20px; }
+    .ticker-lock { grid-template-columns: auto 104px; }
+    .live-price { font-size: 20px; width: 104px; min-width: 104px; }
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 14px; }
     .timer { font-size: 16px; }
@@ -976,7 +1010,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   @media (max-width: 430px) {
     .card-body { grid-template-columns: 1fr; }
-    .live-price { font-size: 18px; }
+    .ticker-lock { grid-template-columns: auto 96px; gap: 8px; }
+    .live-price { font-size: 18px; width: 96px; min-width: 96px; }
     .coin-name { font-size: 10px; }
     .card-header .right { font-size: 12px; }
     .timer { font-size: 15px; }
@@ -1178,14 +1213,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
       <div class="card-header">
         <div class="left">
           <span class="grip">⋮⋮</span>
+          <div class="ticker-lock">
           <span class="coin-name">🪙 ${coin.toUpperCase()}</span>
           <span class="live-price" data-field="price">—</span>
+          </div>
         </div>
         <div class="mid">
           <div class="session-inline" data-field="session-inline"></div>
         </div>
         <div class="right">
-          <span class="timer">⏱ <span data-field="timer">—</span></span>
+          <span class="timer"><span data-field="timer">—</span></span>
         </div>
       </div>
       <div class="card-body">
@@ -1518,10 +1555,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const pnlCls = s.pnl >= 0 ? "w" : "l";
     const key = JSON.stringify([s.wins, s.losses, s.open, Number(s.pnl || 0).toFixed(2)]);
     cachedSet(host, key, `
-      <span class="item"><span class="lbl">W</span><span class="val w">${s.wins}</span></span>
-      <span class="item"><span class="lbl">L</span><span class="val l">${s.losses}</span></span>
-      <span class="item"><span class="lbl">O</span><span class="val o">${s.open}</span></span>
-      <span class="item"><span class="lbl">P</span><span class="val ${pnlCls}">${fmtUsd(s.pnl)}</span></span>
+      <span class="item wins"><span class="lbl">W</span><span class="val w">${s.wins}</span></span>
+      <span class="item losses"><span class="lbl">L</span><span class="val l">${s.losses}</span></span>
+      <span class="item open"><span class="lbl">O</span><span class="val o">${s.open}</span></span>
+      <span class="item pnl"><span class="lbl">P</span><span class="val ${pnlCls}">${fmtUsd(s.pnl)}</span></span>
     `);
   }
 

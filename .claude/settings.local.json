@@ -27,7 +27,16 @@
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
       "Bash(git push:*)",
-      "Bash(python -m py_compile bot/telegram_bot.py bot/telegram_buttons.py)"
+      "Bash(python -m py_compile bot/telegram_bot.py bot/telegram_buttons.py)",
+      "Bash(python -m pytest tests/ -x -q)",
+      "Bash(python -m pip install pytest -q)",
+      "Bash(python -m pytest tests/ -x -q --ignore=tests/test_dropbox_path_candidates.py)",
+      "Bash(python -m pytest tests/ -q -k \"tracker or dashboard or paper\" --ignore=tests/test_dropbox_path_candidates.py --ignore=tests/test_execution_delegation.py)",
+      "Bash(python -m pip install httpx python-telegram-bot openpyxl pyyaml -q)",
+      "Bash(python -m pytest tests/ -q -k \"tracker or paper or report or outcome\")",
+      "Bash(python -m pip install websockets -q)",
+      "Bash(python -m pytest tests/ -q -k \"tracker or paper or report or outcome or coin\")",
+      "Bash(python -m pytest tests/ -q)"
     ]
   }
 }

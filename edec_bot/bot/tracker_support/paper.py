@@ -473,3 +473,32 @@ def get_paper_stats(tracker: Any) -> dict:
         "avg_buy_price": avg_buy or 0.0,
         "avg_sell_price": avg_sell or 0.0,
     }
+
+
+def get_session_stats_by_coin(tracker: Any) -> dict:
+    """Return per-coin {wins, losses, open, pnl} from paper_trades since last reset."""
+    reset_at = tracker.conn.execute(
+        "SELECT reset_at FROM paper_capital WHERE id = 1"
+    ).fetchone()
+    reset_at = reset_at[0] if reset_at and reset_at[0] else "1970-01-01"
+
+    rows = tracker.conn.execute(
+        """SELECT coin,
+                  SUM(CASE WHEN status='closed_win'  THEN 1 ELSE 0 END) AS wins,
+                  SUM(CASE WHEN status='closed_loss' THEN 1 ELSE 0 END) AS losses,
+                  SUM(CASE WHEN status='open'        THEN 1 ELSE 0 END) AS open_pos,
+                  COALESCE(SUM(pnl), 0.0) AS pnl
+           FROM paper_trades
+           WHERE timestamp >= ?
+           GROUP BY coin""",
+        (reset_at,),
+    ).fetchall()
+    return {
+        row[0]: {
+            "wins": int(row[1] or 0),
+            "losses": int(row[2] or 0),
+            "open": int(row[3] or 0),
+            "pnl": float(row[4] or 0.0),
+        }
+        for row in rows
+    }

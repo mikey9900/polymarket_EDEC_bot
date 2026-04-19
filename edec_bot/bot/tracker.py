@@ -355,6 +355,15 @@ class DecisionTracker:
     def get_coin_recent_outcome_details(self, coin: str, limit: int = 6) -> list[dict]:
         return tracker_reports.get_coin_recent_outcome_details(self, coin, limit)
 
+    def get_coin_recent_resolutions(self, coin: str, limit: int = 4) -> list[dict]:
+        return tracker_reports.get_coin_recent_resolutions(self, coin, limit)
+
+    def get_recent_signals_by_coin(self, max_age_s: float = 30.0) -> dict:
+        return tracker_reports.get_recent_signals_by_coin(self, max_age_s)
+
+    def get_session_stats_by_coin(self) -> dict:
+        return tracker_paper.get_session_stats_by_coin(self)
+
     def close(self):
         self.conn.close()
 

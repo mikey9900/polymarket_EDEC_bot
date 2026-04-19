@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger("edec.dashboard_state")
+
+
+# Feed names we display LEDs for. Order matters → drives the LED row left→right.
+EXPECTED_FEEDS = ("binance", "coinbase", "coingecko", "polymarket_rtds")
 
 
 class DashboardStateService:
@@ -27,6 +32,7 @@ class DashboardStateService:
         update_interval_s: float = 0.25,
         history_sample_interval_s: float = 1.0,
         history_points: int = 600,
+        price_series_points: int = 120,
     ):
         self.config = config
         self.tracker = tracker
@@ -38,12 +44,15 @@ class DashboardStateService:
         self.update_interval_s = max(0.1, float(update_interval_s))
         self.history_sample_interval_s = max(self.update_interval_s, float(history_sample_interval_s))
         self.history_points = max(10, int(history_points))
+        self.price_series_points = max(20, int(price_series_points))
 
         self._lock = asyncio.Lock()
         self._loop_task: asyncio.Task | None = None
         self._running = False
         self._state: dict[str, Any] = {}
         self._history: deque[dict[str, Any]] = deque(maxlen=self.history_points)
+        # Per-coin rolling underlying-price series: {coin: deque[(t_unix, price)]}
+        self._coin_price_series: dict[str, deque[tuple[float, float]]] = {}
 
     async def start(self) -> None:
         if self._running:
@@ -63,13 +72,18 @@ class DashboardStateService:
         loop = asyncio.get_running_loop()
         while self._running:
             try:
+                now_loop = loop.time()
+                sample_history = now_loop >= next_history_at
+                if sample_history:
+                    self._sample_price_series()
                 snapshot = self._build_snapshot()
-                now = loop.time()
                 async with self._lock:
                     self._state = snapshot
-                    if now >= next_history_at:
-                        self._history.append(snapshot)
-                        next_history_at = now + self.history_sample_interval_s
+                    if sample_history:
+                        # Don't store the full per-coin price series in history (it'd balloon).
+                        # Keep just the lighter top-level fields.
+                        self._history.append(self._compact_for_history(snapshot))
+                        next_history_at = now_loop + self.history_sample_interval_s
                 await asyncio.sleep(self.update_interval_s)
             except asyncio.CancelledError:
                 break
@@ -77,24 +91,248 @@ class DashboardStateService:
                 logger.debug("Dashboard snapshot update failed: %s", exc)
                 await asyncio.sleep(self.update_interval_s)
 
-    def _build_snapshot(self) -> dict[str, Any]:
-        paper_total, paper_balance = self.tracker.get_paper_capital()
-        price_summary: dict[str, float | None] = {}
+    # ------------------------------------------------------------------
+    # Snapshot assembly
+    # ------------------------------------------------------------------
+
+    def _sample_price_series(self) -> None:
+        """Append latest aggregated price for each coin into the rolling series."""
+        now = time.time()
         for coin in self.config.coins:
             agg = self.aggregator.get_aggregated_price(coin)
-            price_summary[coin] = None if agg is None else float(agg.price)
+            if agg is None:
+                continue
+            series = self._coin_price_series.setdefault(
+                coin, deque(maxlen=self.price_series_points)
+            )
+            series.append((now, float(agg.price)))
+
+    def _build_snapshot(self) -> dict[str, Any]:
+        paper_total, paper_balance = self.tracker.get_paper_capital()
+
+        # One-shot DB queries reused across coins
+        try:
+            recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
+        except Exception as exc:
+            logger.debug("recent_signals query failed: %s", exc)
+            recent_signals = {}
+        try:
+            session_by_coin = self.tracker.get_session_stats_by_coin()
+        except Exception as exc:
+            logger.debug("session_by_coin query failed: %s", exc)
+            session_by_coin = {}
+
+        open_singles = list(self.executor.get_open_positions().values())
+        open_swings = list(getattr(self.executor, "_open_swing_positions", {}).values())
+
+        coins_payload: dict[str, Any] = {}
+        for coin in self.config.coins:
+            coins_payload[coin] = self._build_coin_payload(
+                coin,
+                recent_signals=recent_signals.get(coin, []),
+                session=session_by_coin.get(coin, {"wins": 0, "losses": 0, "open": 0, "pnl": 0.0}),
+                open_singles=open_singles,
+                open_swings=open_swings,
+            )
 
         return {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "dry_run": bool(self.config.execution.dry_run),
             "mode": getattr(self.strategy_engine, "mode", "unknown"),
-            "coins": list(self.config.coins),
-            "paper": {
-                "total": float(paper_total),
-                "balance": float(paper_balance),
+            "coins_order": list(self.config.coins),
+            "coins": coins_payload,
+            "summary": {
+                "paper": {
+                    "total": float(paper_total),
+                    "balance": float(paper_balance),
+                    "pnl": float(paper_balance) - float(paper_total),
+                },
             },
-            "prices": price_summary,
         }
+
+    def _build_coin_payload(
+        self,
+        coin: str,
+        *,
+        recent_signals: list[dict],
+        session: dict,
+        open_singles: list,
+        open_swings: list,
+    ) -> dict[str, Any]:
+        agg = self.aggregator.get_aggregated_price(coin)
+        live_price = float(agg.price) if agg is not None else None
+
+        sources_payload = self._build_sources_payload(coin, agg)
+        market_payload = self._build_market_payload(coin, live_price)
+        open_trades_payload = self._build_open_trades_payload(coin, open_singles, open_swings)
+
+        try:
+            resolutions = self.tracker.get_coin_recent_resolutions(coin, limit=4)
+        except Exception as exc:
+            logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
+            resolutions = []
+
+        # Chart color: green if above strike, red if below, neutral otherwise
+        strike = market_payload.get("strike") if market_payload else None
+        if live_price is not None and strike is not None:
+            chart_color = "green" if live_price >= strike else "red"
+        else:
+            chart_color = "neutral"
+
+        series = list(self._coin_price_series.get(coin, ()))
+        price_series = [{"t": t, "p": p} for t, p in series]
+
+        return {
+            "coin": coin,
+            "live_price": live_price,
+            "sources": sources_payload,
+            "market": market_payload,
+            "bot_signals": recent_signals,
+            "open_trades": open_trades_payload,
+            "session": session,
+            "recent_resolutions": resolutions,
+            "price_series": price_series,
+            "chart_color": chart_color,
+        }
+
+    def _build_sources_payload(self, coin: str, agg) -> dict[str, Any]:
+        active_sources = agg.sources if agg is not None else {}
+        active_ages = agg.source_ages_s if agg is not None else {}
+        feeds = []
+        for name in EXPECTED_FEEDS:
+            if name in active_sources:
+                feeds.append({
+                    "name": name,
+                    "active": True,
+                    "age_s": float(active_ages.get(name, 0.0)),
+                    "price": float(active_sources[name]),
+                })
+            else:
+                feeds.append({
+                    "name": name,
+                    "active": False,
+                    "age_s": None,
+                    "price": None,
+                })
+        return {
+            "count": int(agg.source_count) if agg is not None else 0,
+            "expected": len(EXPECTED_FEEDS),
+            "feeds": feeds,
+        }
+
+    def _build_market_payload(self, coin: str, live_price: float | None) -> dict[str, Any] | None:
+        market = self.scanner.get_market(coin)
+        if market is None:
+            return None
+        up_book, down_book = self.scanner.get_books(coin)
+
+        now = datetime.now(timezone.utc)
+        try:
+            time_remaining_s = max(0.0, (market.end_time - now).total_seconds())
+        except Exception:
+            time_remaining_s = None
+
+        up_bid = float(up_book.best_bid) if up_book else None
+        up_ask = float(up_book.best_ask) if up_book else None
+        down_bid = float(down_book.best_bid) if down_book else None
+        down_ask = float(down_book.best_ask) if down_book else None
+
+        # Market-implied probabilities = mid of YES/NO books. Sum ≈ 1.0.
+        market_prediction = None
+        if up_bid is not None and up_ask is not None and down_bid is not None and down_ask is not None:
+            up_prob = (up_bid + up_ask) / 2.0
+            down_prob = (down_bid + down_ask) / 2.0
+            market_prediction = {
+                "up_prob": round(up_prob, 4),
+                "down_prob": round(down_prob, 4),
+            }
+
+        strike = float(market.reference_price) if market.reference_price is not None else None
+
+        return {
+            "slug": market.slug,
+            "question": market.question,
+            "strike": strike,
+            "strike_label": market.reference_label or "",
+            "start_time": market.start_time.isoformat() if market.start_time else None,
+            "end_time": market.end_time.isoformat() if market.end_time else None,
+            "time_remaining_s": time_remaining_s,
+            "up_bid": up_bid,
+            "up_ask": up_ask,
+            "down_bid": down_bid,
+            "down_ask": down_ask,
+            "market_prediction": market_prediction,
+        }
+
+    def _build_open_trades_payload(self, coin: str, open_singles: list, open_swings: list) -> list[dict]:
+        out: list[dict] = []
+        # Single-leg / lead-lag / etc. positions
+        for pos in open_singles:
+            if getattr(pos.market, "coin", None) != coin:
+                continue
+            current_bid = self._current_bid_for_position(pos.market.coin, pos.side)
+            entry = float(pos.entry_price)
+            shares = float(pos.shares)
+            unrealized = (current_bid - entry) * shares if current_bid is not None else None
+            out.append({
+                "strategy": getattr(pos, "strategy_type", "single_leg"),
+                "side": pos.side,
+                "entry_price": entry,
+                "target_price": float(pos.target_price) if pos.target_price is not None else None,
+                "shares": shares,
+                "current_bid": current_bid,
+                "unrealized_pnl": unrealized,
+                "hold_to_resolution": bool(getattr(pos, "hold_to_resolution", False)),
+            })
+        # Swing positions (first leg)
+        for pos in open_swings:
+            if getattr(pos.market, "coin", None) != coin:
+                continue
+            current_bid = self._current_bid_for_position(pos.market.coin, pos.first_side)
+            entry = float(pos.first_entry_price)
+            shares = float(pos.first_shares)
+            unrealized = (current_bid - entry) * shares if current_bid is not None else None
+            out.append({
+                "strategy": "swing_leg",
+                "side": pos.first_side,
+                "entry_price": entry,
+                "target_price": None,
+                "shares": shares,
+                "current_bid": current_bid,
+                "unrealized_pnl": unrealized,
+                "hold_to_resolution": bool(getattr(pos, "hold_to_resolution", False)),
+            })
+        return out
+
+    def _current_bid_for_position(self, coin: str, side: str) -> float | None:
+        up_book, down_book = self.scanner.get_books(coin)
+        book = up_book if (side or "").upper() == "UP" else down_book
+        if book is None:
+            return None
+        try:
+            return float(book.best_bid)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _compact_for_history(snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Strip heavy per-coin series before pushing into the history deque."""
+        light_coins = {}
+        for coin, payload in snapshot.get("coins", {}).items():
+            light_coins[coin] = {
+                "live_price": payload.get("live_price"),
+                "session": payload.get("session"),
+                "chart_color": payload.get("chart_color"),
+            }
+        return {
+            "timestamp_utc": snapshot.get("timestamp_utc"),
+            "summary": snapshot.get("summary"),
+            "coins": light_coins,
+        }
+
+    # ------------------------------------------------------------------
+    # Public accessors
+    # ------------------------------------------------------------------
 
     async def get_state(self) -> dict[str, Any]:
         async with self._lock:

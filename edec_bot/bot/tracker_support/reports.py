@@ -157,3 +157,96 @@ def get_coin_recent_outcome_details(tracker: Any, coin: str, limit: int = 6) -> 
         }
         for row in rows
     ]
+
+
+def get_coin_recent_resolutions(tracker: Any, coin: str, limit: int = 4) -> list[dict]:
+    """Last N resolutions for a coin annotated with whether we traded + total P&L.
+
+    Combines outcomes with paper_trades and live trades on the same market_slug.
+    """
+    rows = tracker.conn.execute(
+        """SELECT o.market_slug, o.resolved_at, o.winner,
+                  o.btc_open_price, o.btc_close_price,
+                  COALESCE((SELECT COUNT(*)        FROM paper_trades pt
+                            WHERE pt.market_slug = o.market_slug AND pt.coin = ?), 0)
+                + COALESCE((SELECT COUNT(*)        FROM trades t
+                            WHERE t.market_slug = o.market_slug AND t.coin = ?), 0) AS trade_count,
+                  COALESCE((SELECT SUM(pnl)        FROM paper_trades pt
+                            WHERE pt.market_slug = o.market_slug AND pt.coin = ?), 0.0)
+                + COALESCE((SELECT SUM(pnl)        FROM trades t
+                            WHERE t.market_slug = o.market_slug AND t.coin = ?), 0.0) AS trade_pnl
+           FROM outcomes o
+           JOIN decisions d ON d.market_slug = o.market_slug
+           WHERE d.coin = ?
+           GROUP BY o.market_slug
+           ORDER BY o.resolved_at DESC
+           LIMIT ?""",
+        (coin, coin, coin, coin, coin, limit),
+    ).fetchall()
+    return [
+        {
+            "market_slug": row[0],
+            "resolved_at": row[1],
+            "winner": row[2],
+            "open": row[3],
+            "close": row[4],
+            "did_we_trade": int(row[5] or 0) > 0,
+            "trade_pnl": float(row[6] or 0.0),
+        }
+        for row in rows
+    ]
+
+
+def get_recent_signals_by_coin(tracker: Any, max_age_s: float = 30.0) -> dict:
+    """Most recent decision per (coin, strategy_type) within max_age_s, with score>0.
+
+    Returns: {coin: [{strategy, score, side, entry_price, target_price, age_s}, ...]}
+    Used by the live dashboard to show the bot's currently-firing strategies.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_s)).isoformat()
+    rows = tracker.conn.execute(
+        """SELECT coin, strategy_type, signal_score,
+                  entry_price, target_price, action, timestamp,
+                  up_best_ask, down_best_ask
+           FROM decisions
+           WHERE timestamp >= ?
+             AND signal_score IS NOT NULL
+             AND signal_score > 0
+           ORDER BY timestamp DESC""",
+        (cutoff,),
+    ).fetchall()
+
+    now = datetime.now(timezone.utc)
+    grouped: dict = {}
+    seen: set = set()
+    for row in rows:
+        coin, strategy, score, entry, target, action, ts, up_ask, down_ask = row
+        key = (coin, strategy)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            age_s = max(0.0, (now - datetime.fromisoformat(ts)).total_seconds())
+        except (TypeError, ValueError):
+            age_s = 0.0
+        # Infer side from cheaper ask (lower ask = side bot is buying)
+        side = ""
+        if entry is not None and up_ask is not None and down_ask is not None:
+            if abs(float(entry) - float(up_ask)) <= abs(float(entry) - float(down_ask)):
+                side = "UP"
+            else:
+                side = "DOWN"
+        grouped.setdefault(coin, []).append({
+            "strategy": strategy,
+            "score": float(score or 0.0),
+            "side": side,
+            "entry_price": float(entry) if entry is not None else None,
+            "target_price": float(target) if target is not None else None,
+            "action": action,
+            "age_s": age_s,
+        })
+    for sigs in grouped.values():
+        sigs.sort(key=lambda s: s["score"], reverse=True)
+    return grouped

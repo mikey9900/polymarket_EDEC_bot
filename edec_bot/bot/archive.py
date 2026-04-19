@@ -57,6 +57,14 @@ def _build_dropbox_auth(
     return None
 
 
+def _skipped_upload_result(reason: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "skipped",
+        "error": reason,
+    }
+
+
 def _resolve_dropbox_access_token(dropbox_auth: dict[str, Any]) -> str:
     cached_token = dropbox_auth.get("_cached_access_token")
     cached_expires_at = dropbox_auth.get("_cached_expires_at")
@@ -1846,6 +1854,7 @@ def run_daily_archive(
 
     if dropbox_auth:
         root = _normalize_dropbox_root(dropbox_root)
+        has_excel_export = bool(excel_path and Path(excel_path).exists())
         dbx_paths = {
             "daily_recent_trades_csv_gz": f"{root}/daily-archives/{Path(recent_path).name}",
             "daily_recent_signals_csv_gz": f"{root}/daily-archives/{Path(recent_signals_path).name}",
@@ -1853,7 +1862,7 @@ def run_daily_archive(
             "latest_signals_csv_gz": f"{root}/latest/{Path(latest_signals).name}",
             "latest_index_json": f"{root}/latest/{index_path.name}",
         }
-        if excel_path and Path(excel_path).exists():
+        if has_excel_export:
             dbx_paths["daily_last24h_xlsx"] = f"{root}/daily-reports/{Path(excel_path).name}"
             dbx_paths["latest_last24h_xlsx"] = f"{root}/latest/{Path(latest_excel).name}"
         upload_results = {
@@ -1862,9 +1871,6 @@ def run_daily_archive(
             ),
             "daily_recent_signals_csv_gz": _dropbox_upload_file(
                 recent_signals_path, dbx_paths["daily_recent_signals_csv_gz"], dropbox_auth
-            ),
-            "latest_last24h_xlsx": _dropbox_upload_file(
-                latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_auth
             ),
             "latest_trades_csv_gz": _dropbox_upload_file(
                 latest_trades, dbx_paths["latest_trades_csv_gz"], dropbox_auth
@@ -1876,7 +1882,7 @@ def run_daily_archive(
                 str(index_path), dbx_paths["latest_index_json"], dropbox_auth
             ),
         }
-        if excel_path and Path(excel_path).exists():
+        if has_excel_export:
             upload_results["daily_last24h_xlsx"] = _dropbox_upload_file(
                 excel_path, dbx_paths["daily_last24h_xlsx"], dropbox_auth
             )
@@ -1884,16 +1890,9 @@ def run_daily_archive(
                 latest_excel, dbx_paths["latest_last24h_xlsx"], dropbox_auth
             )
         else:
-            upload_results["daily_last24h_xlsx"] = {
-                "ok": False,
-                "status": "skipped",
-                "error": "Excel export unavailable in this run",
-            }
-            upload_results["latest_last24h_xlsx"] = {
-                "ok": False,
-                "status": "skipped",
-                "error": "Excel export unavailable in this run",
-            }
+            skip_reason = "Excel export unavailable in this run"
+            upload_results["daily_last24h_xlsx"] = _skipped_upload_result(skip_reason)
+            upload_results["latest_last24h_xlsx"] = _skipped_upload_result(skip_reason)
         index["dropbox_files"] = dbx_paths
         index["dropbox_uploads"] = upload_results
         index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")

@@ -12,16 +12,25 @@ import logging
 import threading
 from datetime import datetime, timezone
 
+from version import __version__
+
 logger = logging.getLogger("edec.live_api")
 
 
 class LiveApiServer:
     """Small asyncio HTTP server (no extra dependency) for ingress compatibility."""
 
-    def __init__(self, dashboard_state, host: str = "0.0.0.0", port: int = 8099):
+    def __init__(
+        self,
+        dashboard_state,
+        host: str = "0.0.0.0",
+        port: int = 8099,
+        app_version: str = __version__,
+    ):
         self.dashboard_state = dashboard_state
         self.host = host
         self.port = int(port)
+        self.app_version = str(app_version)
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._server: asyncio.AbstractServer | None = None
@@ -82,25 +91,51 @@ class LiveApiServer:
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             req = await reader.readuntil(b"\r\n\r\n")
-            first_line = req.decode("utf-8", errors="ignore").splitlines()[0] if req else ""
-            method, path, _ = (first_line.split(" ", 2) + ["", "", ""])[:3]
-            if method != "GET":
+            request_text = req.decode("utf-8", errors="ignore")
+            lines = request_text.splitlines()
+            first_line = lines[0] if lines else ""
+            method, raw_path, _ = (first_line.split(" ", 2) + ["", "", ""])[:3]
+            path = raw_path.split("?", 1)[0]
+            headers: dict[str, str] = {}
+            for line in lines[1:]:
+                if not line or ":" not in line:
+                    continue
+                name, value = line.split(":", 1)
+                headers[name.strip().lower()] = value.strip()
+            content_length = int(headers.get("content-length", "0") or 0)
+            body = b""
+            if content_length > 0:
+                body = await reader.readexactly(content_length)
+
+            if method not in ("GET", "POST"):
                 await self._send(writer, 405, {"error": "method_not_allowed"})
                 return
 
-            if path in ("/", "/index.html"):
+            if method == "GET" and path in ("/", "/index.html"):
                 html = self._index_html()
                 await self._send(writer, 200, html, content_type="text/html; charset=utf-8")
                 return
-            if path == "/health":
+            if method == "GET" and path == "/health":
                 await self._send(writer, 200, {"status": "ok", "timestamp_utc": datetime.now(timezone.utc).isoformat()})
                 return
-            if path == "/api/state":
+            if method == "GET" and path == "/api/state":
                 # Thread-safe snapshot — no await on bot loop.
                 await self._send(writer, 200, self.dashboard_state.get_state_threadsafe())
                 return
-            if path == "/api/history":
+            if method == "GET" and path == "/api/history":
                 await self._send(writer, 200, self.dashboard_state.get_history_threadsafe())
+                return
+            if method == "POST" and path == "/api/control":
+                try:
+                    payload = json.loads(body.decode("utf-8") or "{}")
+                except json.JSONDecodeError:
+                    await self._send(writer, 400, {"ok": False, "message": "Invalid JSON body."})
+                    return
+                if not isinstance(payload, dict):
+                    await self._send(writer, 400, {"ok": False, "message": "Control payload must be an object."})
+                    return
+                result = self.dashboard_state.apply_control_threadsafe(payload)
+                await self._send(writer, int(result.get("status", 200)), result)
                 return
 
             await self._send(writer, 404, {"error": "not_found", "path": path})
@@ -126,10 +161,12 @@ class LiveApiServer:
             payload = bytes(body)
 
         reason = {
+            400: "Bad Request",
             200: "OK",
             404: "Not Found",
             405: "Method Not Allowed",
             500: "Internal Server Error",
+            503: "Service Unavailable",
         }.get(status, "OK")
         headers = [
             f"HTTP/1.1 {status} {reason}",
@@ -142,9 +179,8 @@ class LiveApiServer:
         writer.write("\r\n".join(headers).encode("utf-8") + payload)
         await writer.drain()
 
-    @staticmethod
-    def _index_html() -> str:
-        return _DASHBOARD_HTML
+    def _index_html(self) -> str:
+        return _DASHBOARD_HTML.replace("__APP_VERSION__", self.app_version)
 
 
 _DASHBOARD_HTML = r"""<!doctype html>
@@ -291,6 +327,137 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .uplink-stale .udot { background: var(--neon-amber); box-shadow: 0 0 8px var(--neon-amber); }
   .uplink-dead  { color: var(--neon-red);   border-color: rgba(255,30,80,0.7);  background: #320812; animation: blink 0.5s infinite; }
   .uplink-dead .udot  { background: var(--neon-red);   box-shadow: 0 0 10px var(--neon-red); }
+
+  /* ============================================================
+     Control deck
+     ============================================================ */
+  .control-deck {
+    max-width: 1400px;
+    margin: 16px auto 0 auto;
+    padding: 0 18px;
+  }
+  .control-shell {
+    background: linear-gradient(180deg, #0f1736 0%, #070c1f 100%);
+    border: 2px solid var(--chrome-hi);
+    border-radius: 8px;
+    box-shadow:
+      inset 0 1px 0 #2c3865,
+      inset 0 -2px 0 #000,
+      0 0 18px rgba(0, 240, 255, 0.10),
+      0 4px 0 #000;
+    padding: 14px 16px;
+  }
+  .control-shell h3 {
+    margin: 0 0 12px 0;
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 11px;
+    color: var(--neon-magenta);
+    text-shadow: 0 0 4px var(--neon-magenta);
+    letter-spacing: 1.5px;
+  }
+  .control-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1.6fr 1.2fr;
+    gap: 14px;
+  }
+  .control-block {
+    background: rgba(10, 15, 38, 0.68);
+    border: 1px solid #1f2a55;
+    border-radius: 5px;
+    padding: 10px 12px;
+    box-shadow: inset 0 0 14px rgba(0, 0, 0, 0.4);
+  }
+  .control-block .head {
+    display: block;
+    margin-bottom: 10px;
+    color: var(--text-dim);
+    font-size: 13px;
+    letter-spacing: 1px;
+    font-family: "Press Start 2P", "VT323", monospace;
+  }
+  .control-row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .control-readout {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
+  .readout-pill {
+    padding: 4px 8px;
+    border: 1px solid var(--chrome-hi);
+    border-radius: 4px;
+    background: #11193a;
+    box-shadow: inset 0 1px 0 #2c3865, 0 0 6px rgba(0,240,255,0.2);
+    color: var(--text);
+    font-size: 16px;
+  }
+  .readout-pill .lbl {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-right: 6px;
+    letter-spacing: 1px;
+  }
+  .ctl-btn {
+    appearance: none;
+    border: 1px solid var(--chrome-hi);
+    border-radius: 4px;
+    padding: 6px 10px;
+    background: linear-gradient(180deg, #1a2347 0%, #0d1530 100%);
+    color: var(--text);
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    cursor: pointer;
+    box-shadow: inset 0 1px 0 #2c3865, 0 2px 0 #000, 0 0 8px rgba(0,240,255,0.15);
+    transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+  }
+  .ctl-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: inset 0 1px 0 #2c3865, 0 3px 0 #000, 0 0 12px rgba(0,240,255,0.3);
+  }
+  .ctl-btn:disabled {
+    opacity: 0.45;
+    cursor: wait;
+  }
+  .ctl-btn.active {
+    color: var(--neon-cyan);
+    border-color: rgba(0, 240, 255, 0.7);
+    box-shadow: inset 0 1px 0 #2c3865, 0 2px 0 #000, 0 0 14px rgba(0,240,255,0.45);
+  }
+  .ctl-btn.warn.active,
+  .ctl-btn.warn:hover:not(:disabled) {
+    color: var(--neon-red);
+    border-color: rgba(255, 59, 59, 0.8);
+    box-shadow: inset 0 1px 0 #5f2430, 0 2px 0 #000, 0 0 14px rgba(255,59,59,0.45);
+  }
+  .ctl-status {
+    margin-top: 12px;
+    min-height: 22px;
+    padding: 6px 8px;
+    border: 1px dashed #2a3a78;
+    border-radius: 4px;
+    color: var(--text-dim);
+    font-size: 18px;
+    letter-spacing: 1px;
+    background: rgba(6, 10, 30, 0.7);
+  }
+  .ctl-status.ok {
+    color: var(--neon-lime);
+    text-shadow: 0 0 4px var(--neon-lime);
+  }
+  .ctl-status.err {
+    color: var(--neon-red);
+    text-shadow: 0 0 4px var(--neon-red);
+  }
+  .ctl-status.busy {
+    color: var(--neon-amber);
+    text-shadow: 0 0 4px var(--neon-amber);
+  }
 
   /* ============================================================
      Container
@@ -614,15 +781,17 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   /* Mobile */
   @media (max-width: 720px) {
+    .control-grid { grid-template-columns: 1fr; }
     .card-body { grid-template-columns: 1fr; }
     .card-header .right { font-size: 14px; }
     .live-price { font-size: 22px; }
+    .topstats { gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
   }
 </style>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.33</span></div>
+    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v__APP_VERSION__</span></div>
     <div class="topstats">
       <div class="pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
       <div class="pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>
@@ -632,6 +801,50 @@ _DASHBOARD_HTML = r"""<!doctype html>
       <div id="uplink" class="uplink uplink-ok"><span class="udot"></span><span id="uplink-lbl">LINK</span><span id="uplink-age" class="uage">0ms</span></div>
     </div>
   </header>
+
+  <section class="control-deck">
+    <div class="control-shell">
+      <h3>CONTROL DECK</h3>
+      <div class="control-grid">
+        <div class="control-block">
+          <span class="head">BOT CONTROL</span>
+          <div class="control-row">
+            <button id="btn-start" class="ctl-btn" data-action="start">START</button>
+            <button id="btn-stop" class="ctl-btn" data-action="stop">STOP</button>
+            <button id="btn-kill" class="ctl-btn warn" data-action="kill">KILL</button>
+          </div>
+          <div class="control-readout">
+            <div class="readout-pill"><span class="lbl">STATE</span><span id="ctrl-state">-</span></div>
+            <div class="readout-pill"><span class="lbl">MODE</span><span id="ctrl-mode">-</span></div>
+            <div class="readout-pill"><span class="lbl">BUDGET</span><span id="ctrl-budget">-</span></div>
+          </div>
+        </div>
+        <div class="control-block">
+          <span class="head">MODE SELECT</span>
+          <div class="control-row">
+            <button class="ctl-btn" data-action="mode" data-value="both">ALL</button>
+            <button class="ctl-btn" data-action="mode" data-value="dual">DUAL</button>
+            <button class="ctl-btn" data-action="mode" data-value="single">SINGLE</button>
+            <button class="ctl-btn" data-action="mode" data-value="lead">LEAD</button>
+            <button class="ctl-btn" data-action="mode" data-value="swing">SWING</button>
+            <button class="ctl-btn" data-action="mode" data-value="off">OFF</button>
+          </div>
+        </div>
+        <div class="control-block">
+          <span class="head">BUDGET PER TRADE</span>
+          <div class="control-row">
+            <button class="ctl-btn" data-action="budget" data-value="1">$1</button>
+            <button class="ctl-btn" data-action="budget" data-value="2">$2</button>
+            <button class="ctl-btn" data-action="budget" data-value="5">$5</button>
+            <button class="ctl-btn" data-action="budget" data-value="10">$10</button>
+            <button class="ctl-btn" data-action="budget" data-value="15">$15</button>
+            <button class="ctl-btn" data-action="budget" data-value="20">$20</button>
+          </div>
+        </div>
+      </div>
+      <div id="ctrl-status" class="ctl-status">CONTROL LINK STANDBY</div>
+    </div>
+  </section>
 
   <main id="stack" class="stack">
     <div id="loading" class="nodata">⏳ ESTABLISHING UPLINK…</div>
@@ -645,6 +858,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   const DEAD_AFTER_MS = 5000;      // hard "uplink lost" threshold
   const STORAGE_KEY = "edec_card_order_v1";
   const FEED_LABELS = { binance: "BNC", coinbase: "CB ", coingecko: "CG ", polymarket_rtds: "RTDS" };
+  const MODE_NAMES = { both: "ALL", dual: "DUAL", single: "SINGLE", lead: "LEAD", swing: "SWING", off: "OFF" };
 
   // ----- Helpers -----
   const $ = (id) => document.getElementById(id);
@@ -689,6 +903,18 @@ _DASHBOARD_HTML = r"""<!doctype html>
     if (el[k] === v) return;
     el[k] = v;
     el.classList.toggle(cls, v);
+  }
+  function setDisabled(el, value) {
+    const v = !!value;
+    if (el.__lastDisabled === v) return;
+    el.__lastDisabled = v;
+    el.disabled = v;
+  }
+  function setControlStatus(text, cls) {
+    const host = $("ctrl-status");
+    if (!host) return;
+    setText(host, text);
+    host.className = "ctl-status" + (cls ? " " + cls : "");
   }
 
   // ----- Card order persistence (per-device via localStorage) -----
@@ -811,6 +1037,46 @@ _DASHBOARD_HTML = r"""<!doctype html>
     `;
     bindDrag(card);
     return card;
+  }
+
+  let controlBusy = false;
+  async function sendControl(action, value) {
+    if (controlBusy) return;
+    if (action === "kill" && !window.confirm("Activate kill switch and stop scanning?")) {
+      return;
+    }
+    controlBusy = true;
+    document.querySelectorAll(".ctl-btn").forEach((btn) => setDisabled(btn, true));
+    setControlStatus("SENDING CONTROL...", "busy");
+    try {
+      const payload = value == null ? { action } : { action, value };
+      const res = await fetch("api/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({ ok: false, message: "Control response was not valid JSON." }));
+      if (data && data.state) {
+        applyState(data.state);
+        lastFrameAt = performance.now();
+      }
+      setControlStatus(
+        data && data.message ? data.message : (res.ok ? "CONTROL UPDATED." : "CONTROL FAILED."),
+        res.ok && data && data.ok ? "ok" : "err"
+      );
+    } catch (err) {
+      setControlStatus("CONTROL REQUEST FAILED.", "err");
+    } finally {
+      controlBusy = false;
+      document.querySelectorAll(".ctl-btn").forEach((btn) => setDisabled(btn, false));
+    }
+  }
+  function bindControls() {
+    document.querySelectorAll(".ctl-btn[data-action]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        sendControl(btn.dataset.action, btn.dataset.value);
+      });
+    });
   }
 
   function renderLeds(host, sources) {
@@ -1123,11 +1389,35 @@ _DASHBOARD_HTML = r"""<!doctype html>
     $("t-ts").textContent = ts ? ts.slice(11,19) : "—";
   }
 
+  function renderControls(state) {
+    const controls = state.controls || {};
+    const stateName = String(controls.state || "unknown").toUpperCase();
+    setText($("ctrl-state"), stateName);
+    setText($("ctrl-mode"), MODE_NAMES[controls.mode] || String(controls.mode || "—").toUpperCase());
+    if (controls.order_size_usd == null) {
+      setText($("ctrl-budget"), "—");
+    } else {
+      setText($("ctrl-budget"), "$" + Number(controls.order_size_usd).toFixed(0));
+    }
+    document.querySelectorAll('.ctl-btn[data-action="mode"]').forEach((btn) => {
+      setClassList(btn, "active", btn.dataset.value === controls.mode);
+    });
+    document.querySelectorAll('.ctl-btn[data-action="budget"]').forEach((btn) => {
+      const active = controls.order_size_usd != null && Math.abs(Number(btn.dataset.value) - Number(controls.order_size_usd)) < 0.001;
+      setClassList(btn, "active", active);
+    });
+    setClassList($("btn-start"), "active", controls.state === "running");
+    setClassList($("btn-stop"), "active", controls.state === "paused");
+    setClassList($("btn-kill"), "active", controls.state === "killed");
+  }
+
   function applyState(state) {
-    if (!state || !state.coins) return;
+    if (!state) return;
     const loading = $("loading");
     if (loading) loading.remove();
     renderTopbar(state);
+    renderControls(state);
+    if (!state.coins) return;
 
     const stack = $("stack");
     const order = effectiveOrder(state.coins_order || Object.keys(state.coins));
@@ -1186,6 +1476,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     setText(age, isFinite(dt) ? Math.round(dt) + "ms" : "—");
   }
   poll();
+  bindControls();
   setInterval(poll, POLL_MS);
   setInterval(tickUplink, 200);
 })();

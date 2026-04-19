@@ -17,6 +17,8 @@ logger = logging.getLogger("edec.dashboard_state")
 
 # Feed names we display LEDs for. Order matters → drives the LED row left→right.
 EXPECTED_FEEDS = ("binance", "coinbase", "coingecko", "polymarket_rtds")
+CONTROL_MODE_ORDER = ("both", "dual", "single", "lead", "swing", "off")
+CONTROL_BUDGET_OPTIONS = (1, 2, 5, 10, 15, 20)
 
 
 class DashboardStateService:
@@ -61,6 +63,7 @@ class DashboardStateService:
         self.slow_refresh_interval_s = max(self.update_interval_s, float(slow_refresh_interval_s))
 
         self._lock = asyncio.Lock()
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
         # Cross-thread accessor for the dashboard server (which runs in its own
         # thread + event loop so it stays responsive when the bot's loop hitches).
         self._thread_lock = threading.Lock()
@@ -90,6 +93,7 @@ class DashboardStateService:
     async def start(self) -> None:
         if self._running:
             return
+        self._owner_loop = asyncio.get_running_loop()
         self._running = True
         self._loop_task = asyncio.create_task(self._run())
         self._slow_loop_task = asyncio.create_task(self._slow_loop())
@@ -105,6 +109,17 @@ class DashboardStateService:
         )
         self._loop_task = None
         self._slow_loop_task = None
+        self._owner_loop = None
+
+    async def _store_snapshot(self, snapshot: dict[str, Any], *, sample_history: bool) -> None:
+        async with self._lock:
+            self._state = snapshot
+            if sample_history:
+                self._history.append(self._compact_for_history(snapshot))
+        with self._thread_lock:
+            self._thread_state = snapshot
+            if sample_history:
+                self._thread_history = list(self._history)
 
     async def _slow_loop(self) -> None:
         """Refresh the DB-backed slow tier on its own cadence.
@@ -139,20 +154,9 @@ class DashboardStateService:
                 if sample_history:
                     self._sample_price_series()
                 snapshot = self._build_snapshot()
-                async with self._lock:
-                    self._state = snapshot
-                    if sample_history:
-                        # Don't store the full per-coin price series in history (it'd balloon).
-                        # Keep just the lighter top-level fields.
-                        self._history.append(self._compact_for_history(snapshot))
-                        next_history_at = now_loop + self.history_sample_interval_s
-                # Publish to the thread-safe accessor so the dashboard server
-                # (running in its own thread) can read without going through
-                # this loop. Lock is briefly held — pointer-swap only.
-                with self._thread_lock:
-                    self._thread_state = snapshot
-                    if sample_history:
-                        self._thread_history = list(self._history)
+                await self._store_snapshot(snapshot, sample_history=sample_history)
+                if sample_history:
+                    next_history_at = now_loop + self.history_sample_interval_s
                 await asyncio.sleep(self.update_interval_s)
             except asyncio.CancelledError:
                 break
@@ -238,6 +242,7 @@ class DashboardStateService:
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "dry_run": bool(self.config.execution.dry_run),
             "mode": getattr(self.strategy_engine, "mode", "unknown"),
+            "controls": self._build_controls_payload(),
             "coins_order": list(self.config.coins),
             "coins": coins_payload,
             "summary": {
@@ -247,6 +252,33 @@ class DashboardStateService:
                     "pnl": float(paper_balance) - float(paper_total),
                 },
             },
+        }
+
+    def _build_controls_payload(self) -> dict[str, Any]:
+        risk_status = self.risk_manager.get_status() if self.risk_manager else {}
+        kill_switch = bool(risk_status.get("kill_switch", False))
+        paused = bool(risk_status.get("paused", False))
+        scanning = bool(getattr(self.strategy_engine, "is_active", False))
+        if kill_switch:
+            state = "killed"
+        elif paused or not scanning:
+            state = "paused"
+        else:
+            state = "running"
+        order_size = (
+            float(self.executor.order_size_usd)
+            if self.executor is not None
+            else float(self.config.execution.order_size_usd)
+        )
+        return {
+            "state": state,
+            "kill_switch": kill_switch,
+            "paused": paused,
+            "scanning": scanning,
+            "mode": getattr(self.strategy_engine, "mode", "unknown"),
+            "order_size_usd": order_size,
+            "available_modes": list(CONTROL_MODE_ORDER),
+            "budget_options": list(CONTROL_BUDGET_OPTIONS),
         }
 
     def _build_coin_payload(
@@ -462,3 +494,73 @@ class DashboardStateService:
     def get_history_threadsafe(self) -> list[dict[str, Any]]:
         with self._thread_lock:
             return self._thread_history
+
+    def _apply_control(self, action: str, value: Any = None) -> dict[str, Any]:
+        action = str(action or "").strip().lower()
+        if action == "start":
+            if self.strategy_engine:
+                self.strategy_engine.start_scanning()
+            if self.risk_manager:
+                self.risk_manager.resume()
+                self.risk_manager.deactivate_kill_switch()
+            return {"ok": True, "status": 200, "message": "Scanning started."}
+        if action == "stop":
+            if self.strategy_engine:
+                self.strategy_engine.stop_scanning()
+            if self.risk_manager:
+                self.risk_manager.pause()
+            return {"ok": True, "status": 200, "message": "Trading paused."}
+        if action == "kill":
+            if self.strategy_engine:
+                self.strategy_engine.stop_scanning()
+            if self.risk_manager:
+                self.risk_manager.activate_kill_switch("Manual kill via HA dashboard")
+            return {"ok": True, "status": 200, "message": "Kill switch activated."}
+        if action == "mode":
+            mode = str(value or "").strip().lower()
+            if mode not in CONTROL_MODE_ORDER:
+                return {"ok": False, "status": 400, "message": f"Unknown mode: {mode or 'empty'}"}
+            if not self.strategy_engine or not self.strategy_engine.set_mode(mode):
+                return {"ok": False, "status": 400, "message": "Strategy engine unavailable."}
+            return {"ok": True, "status": 200, "message": f"Mode set to {mode.upper()}."}
+        if action == "budget":
+            try:
+                amount = float(value)
+            except (TypeError, ValueError):
+                return {"ok": False, "status": 400, "message": "Budget must be a number."}
+            if amount <= 0:
+                return {"ok": False, "status": 400, "message": "Budget must be positive."}
+            if not self.executor:
+                return {"ok": False, "status": 400, "message": "Execution engine unavailable."}
+            self.executor.set_order_size(amount)
+            return {"ok": True, "status": 200, "message": f"Budget set to ${amount:.0f} per trade."}
+        return {"ok": False, "status": 400, "message": f"Unknown action: {action or 'empty'}"}
+
+    async def _apply_control_async(self, action: str, value: Any = None) -> dict[str, Any]:
+        result = self._apply_control(action, value)
+        snapshot = self._build_snapshot()
+        await self._store_snapshot(snapshot, sample_history=False)
+        result["state"] = snapshot
+        return result
+
+    def apply_control_threadsafe(self, payload: dict[str, Any]) -> dict[str, Any]:
+        loop = self._owner_loop
+        if loop is None or not loop.is_running():
+            return {
+                "ok": False,
+                "status": 503,
+                "message": "Dashboard control loop is unavailable.",
+            }
+        future = asyncio.run_coroutine_threadsafe(
+            self._apply_control_async(payload.get("action", ""), payload.get("value")),
+            loop,
+        )
+        try:
+            return future.result(timeout=5.0)
+        except Exception as exc:
+            logger.debug("Dashboard control request failed: %s", exc)
+            return {
+                "ok": False,
+                "status": 500,
+                "message": "Dashboard control request failed.",
+            }

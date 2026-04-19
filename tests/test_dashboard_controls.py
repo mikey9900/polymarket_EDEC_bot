@@ -1,0 +1,178 @@
+import sys
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "edec_bot"))
+
+from bot.dashboard_state import DashboardStateService
+
+
+class _FakeTracker:
+    db_path = None
+
+    def get_paper_capital(self):
+        return (100.0, 115.0)
+
+
+class _FakeRiskManager:
+    def __init__(self):
+        self.kill_switch = False
+        self.paused = False
+        self.resume_calls = 0
+        self.pause_calls = 0
+        self.deactivate_calls = 0
+        self.kill_calls = []
+
+    def get_status(self):
+        return {
+            "kill_switch": self.kill_switch,
+            "paused": self.paused,
+            "daily_pnl": 0.0,
+            "session_pnl": 0.0,
+            "open_positions": 0,
+            "trades_this_hour": 0,
+        }
+
+    def resume(self):
+        self.paused = False
+        self.resume_calls += 1
+
+    def pause(self):
+        self.paused = True
+        self.pause_calls += 1
+
+    def deactivate_kill_switch(self):
+        self.kill_switch = False
+        self.deactivate_calls += 1
+
+    def activate_kill_switch(self, reason: str):
+        self.kill_switch = True
+        self.kill_calls.append(reason)
+
+
+class _FakeStrategyEngine:
+    def __init__(self):
+        self.mode = "both"
+        self.is_active = True
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    def start_scanning(self):
+        self.start_calls += 1
+        if self.mode == "off":
+            self.mode = "both"
+        self.is_active = True
+
+    def stop_scanning(self):
+        self.stop_calls += 1
+        self.is_active = False
+
+    def set_mode(self, mode: str) -> bool:
+        self.mode = mode
+        self.is_active = mode != "off"
+        return True
+
+
+class _FakeExecutor:
+    def __init__(self):
+        self.order_size_usd = 10.0
+
+    def set_order_size(self, usd: float):
+        self.order_size_usd = usd
+
+    def get_open_positions(self):
+        return {}
+
+
+class _FakeScanner:
+    def get_market(self, _coin: str):
+        return None
+
+    def get_books(self, _coin: str):
+        return (None, None)
+
+
+class _FakeAggregator:
+    def get_aggregated_price(self, _coin: str):
+        return None
+
+
+class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
+    def _build_service(self) -> DashboardStateService:
+        config = SimpleNamespace(
+            coins=["btc"],
+            execution=SimpleNamespace(dry_run=True, order_size_usd=10.0),
+        )
+        service = DashboardStateService(
+            config=config,
+            tracker=_FakeTracker(),
+            risk_manager=_FakeRiskManager(),
+            scanner=_FakeScanner(),
+            strategy_engine=_FakeStrategyEngine(),
+            executor=_FakeExecutor(),
+            aggregator=_FakeAggregator(),
+        )
+        service._slow_cache["paper_capital"] = (100.0, 115.0)
+        return service
+
+    def test_snapshot_includes_control_payload(self):
+        service = self._build_service()
+
+        snapshot = service._build_snapshot()
+
+        self.assertEqual(snapshot["controls"]["state"], "running")
+        self.assertEqual(snapshot["controls"]["mode"], "both")
+        self.assertEqual(snapshot["controls"]["order_size_usd"], 10.0)
+        self.assertEqual(snapshot["summary"]["paper"]["pnl"], 15.0)
+
+    async def test_apply_control_async_updates_mode_and_budget(self):
+        service = self._build_service()
+
+        mode_result = await service._apply_control_async("mode", "lead")
+        budget_result = await service._apply_control_async("budget", 15)
+
+        self.assertTrue(mode_result["ok"])
+        self.assertEqual(mode_result["state"]["controls"]["mode"], "lead")
+        self.assertTrue(budget_result["ok"])
+        self.assertEqual(budget_result["state"]["controls"]["order_size_usd"], 15.0)
+
+    def test_apply_control_handles_start_stop_and_kill(self):
+        service = self._build_service()
+        risk = service.risk_manager
+        strategy = service.strategy_engine
+
+        stop_result = service._apply_control("stop")
+        self.assertTrue(stop_result["ok"])
+        self.assertTrue(risk.paused)
+        self.assertFalse(strategy.is_active)
+
+        start_result = service._apply_control("start")
+        self.assertTrue(start_result["ok"])
+        self.assertFalse(risk.paused)
+        self.assertEqual(risk.resume_calls, 1)
+        self.assertEqual(risk.deactivate_calls, 1)
+        self.assertTrue(strategy.is_active)
+
+        kill_result = service._apply_control("kill")
+        self.assertTrue(kill_result["ok"])
+        self.assertTrue(risk.kill_switch)
+        self.assertEqual(risk.kill_calls, ["Manual kill via HA dashboard"])
+        self.assertFalse(strategy.is_active)
+
+    def test_apply_control_rejects_invalid_values(self):
+        service = self._build_service()
+
+        bad_mode = service._apply_control("mode", "weird")
+        bad_budget = service._apply_control("budget", -1)
+
+        self.assertFalse(bad_mode["ok"])
+        self.assertEqual(bad_mode["status"], 400)
+        self.assertFalse(bad_budget["ok"])
+        self.assertEqual(bad_budget["status"], 400)
+
+
+if __name__ == "__main__":
+    unittest.main()

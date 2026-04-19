@@ -33,7 +33,61 @@ Use recent EDEC session exports to:
 
 ## Primary data source
 
-Preferred source is the EDEC GitHub data repo.
+Preferred source order is:
+
+1. repo-local latest pointers and synced files
+2. repo-local session mirror
+3. Dropbox repo sync
+4. GitHub fetch as a fallback, not the default
+
+Do not start with remote fetch if a fresh local export is already present.
+
+Fastest places to check first:
+
+- `edec_bot/data/exports/EDEC-BOT_latest_index.json`
+- `edec_bot/data/exports/EDEC-BOT_latest_trades.csv.gz`
+- `edec_bot/data/exports/EDEC-BOT_latest_signals.csv.gz`
+- `.tmp_edec_data_repo/session_exports/<newest timestamp>/`
+
+Treat the newest local `index.json` or latest-pointer file as the authority for "most recent".
+Prefer `.csv.gz` directly if present. Do not require a decompressed `.csv` if the gzip file is readable.
+
+If local latest files are stale or missing:
+
+1. try repo-local Dropbox sync
+2. only then try GitHub fetch
+
+If GitHub credentials are missing, do not stop there. Fall back to local mirror or Dropbox sync.
+
+### Repo-local Dropbox sync
+
+From repo root:
+
+```bash
+python edec_bot/sync_dropbox_to_repo_latest.py
+```
+
+Expected synced outputs:
+
+- `dropbox_sync/EDEC-BOT_latest_index.json`
+- `dropbox_sync/EDEC-BOT_latest_trades.csv.gz`
+- `dropbox_sync/EDEC-BOT_latest_trades.csv`
+- `dropbox_sync/EDEC-BOT_latest_last24h.xlsx`
+
+### Repo-local session mirror
+
+If `.tmp_edec_data_repo/session_exports/` exists, inspect the newest timestamped folder first.
+Prefer:
+
+- `*_session_index.json`
+- `*_session_trades.csv.gz`
+- `*_session_signals.csv.gz`
+
+This path is usually faster and more reliable than fetching again.
+
+### GitHub fetch fallback
+
+Only use this if the local latest files and repo-local mirror are missing or stale.
 
 Credential lookup priority:
 
@@ -68,11 +122,18 @@ python edec_bot/fetch_github_data.py --output-dir data/github_exports
 python edec_bot/fetch_github_data.py --github-repo owner/edec-bot-data --github-branch main
 ```
 
+Default download location:
+
+- `data/github_exports/`
+
 Use the newest timestamped export folder and prefer:
 
-- `*_session_trades.csv`
-- `*_session_signals.csv`
-- `index.json`
+- `*_session_trades.csv.gz`
+- `*_session_signals.csv.gz`
+- `*_session_index.json`
+
+Do not assume the fetch step is required every time.
+If `edec_bot/data/exports/`, `dropbox_sync/`, or `.tmp_edec_data_repo/session_exports/` already has a newer export, use that instead.
 
 ## Required telemetry checks
 
@@ -179,6 +240,18 @@ Before editing configs:
 
 ## Quick run
 
+Preferred quick path:
+
+1. check `edec_bot/data/exports/EDEC-BOT_latest_index.json`
+2. if stale/missing, check `.tmp_edec_data_repo/session_exports/`
+3. if stale/missing, run Dropbox sync:
+
+```bash
+python edec_bot/sync_dropbox_to_repo_latest.py
+```
+
+4. if still missing, use GitHub fetch:
+
 ```bash
 python edec_bot/fetch_github_data.py --limit 3
 python -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase_a_single.yaml'))"
@@ -186,7 +259,7 @@ python -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase
 
 Then:
 
-- inspect the newest export folder
+- inspect the newest local export pointer or export folder
 - verify telemetry integrity
 - analyze trades and signals
 - recommend deltas

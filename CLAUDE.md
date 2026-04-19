@@ -1,35 +1,5 @@
 # Project Instructions
 
-## Tuning
-
-- To analyse bot performance and tune parameters, read `TUNING_CLAUDE.md` and follow the steps there.
-- For other AI agents (Codex, GPT, etc.) use `TUNING.md` instead.
-- Data repo exports land in `data/github_exports/` after fetching.
-- Dropbox session exports are locally synced at `C:/Users/micha/Dropbox/EDEC-bot-archive/session-exports/` — check here first before attempting API fetch.
-- The active Phase A config is `edec_bot/config_phase_a_single.yaml` (not `config.yaml`).
-
-## Session Export CSV Fields
-
-Trade rows are timestamped — use `ts` for absolute time, `td` for duration (note: `td` scale may be broken, use `ts` diff instead).
-
-Key feed quality fields logged at entry:
-- `sdp` — source_dispersion_pct: % spread between price feeds (high = stale/divergent feeds)
-- `ssx` — source_staleness_max_s: max age of any feed in seconds
-- `ssa` — source_staleness_avg_s: average feed age
-
-Signal score fields: `sg` (composite), `sgv` (velocity), `sge` (entry), `sgd` (depth), `sgs` (spread), `sgt` (time), `sgb` (book balance).
-
-Resolution/outcome fields: `hr`, `lct`, `lpx`, `fex`, `evp`, `rpn`, `whw`, `wbe` — these are only populated after markets resolve, so exports taken mid-session will show them empty.
-
-## Config Dataclass Fields
-
-When adding new YAML keys, the corresponding field **must** be added to the frozen dataclass in `edec_bot/bot/config.py` first or the bot will crash on load.
-
-Current non-obvious fields on `SingleLegConfig` and `LeadLagConfig` (added 5.1.7):
-- `max_entry_spread` — rejects entries where bid-ask spread exceeds threshold
-- `max_source_dispersion_pct` — rejects when price feeds disagree beyond threshold
-- `max_source_staleness_s` — rejects when freshest feed is older than threshold
-
 ## Git
 
 - Always push to the `main` branch.
@@ -40,3 +10,117 @@ Current non-obvious fields on `SingleLegConfig` and `LeadLagConfig` (added 5.1.7
 - When bumping the patch version, skip any number ending in `0`.
 - Examples: `x.x.9` → `x.x.11` (skip 10), `x.x.19` → `x.x.21` (skip 20).
 - Always bump both `version.py` and `config.json` together.
+
+---
+
+## Tuning & Analysis
+
+- To analyse bot performance and tune parameters, read `TUNING_CLAUDE.md` and follow the steps there.
+- For other AI agents (Codex, GPT, etc.) use `TUNING.md` instead.
+- **`STRATEGY.md` is stale** — last updated at v5.0.22 with old entry logic. Do not use it as a reference for current parameters. Read the active YAML instead.
+
+### Where to find session exports (priority order)
+
+1. **Dropbox (local sync)** — `C:/Users/micha/Dropbox/EDEC-bot-archive/session-exports/` — check here first, no auth needed.
+2. **Data repo** — `data/github_exports/` after fetching via GitHub.
+3. GitHub API / Dropbox API — only fall back to these if the local paths are missing.
+
+The most recent export is the folder with the latest timestamp in its name (`YYYY-MM-DD_HHMMSS`).
+
+### Reading a session export
+
+Each session folder contains one or more CSVs. Rows are individual trades with 90+ columns.
+
+**Timing**
+- `ts` — absolute UTC timestamp of the trade entry. Use `ts` diff between rows to calculate real durations.
+- `td` — trade duration field. **Known bug: scale is broken.** Do not use `td` for duration calculations — always derive from `ts`.
+
+**Entry / book state**
+- `ep` — entry price (ask paid)
+- `eb` — entry bid at time of entry
+- `es` — entry spread (`ep - eb`); higher = wider book, more slippage risk
+- `ea` — entry ask
+- `b5` — best 5-level book depth USD at entry side
+
+**Coin price feed quality** (logged at entry — key for diagnosing bad fills)
+- `sdp` — source_dispersion_pct: % spread between Binance/Coinbase/CoinGecko prices. High values mean feeds disagree; entry is unreliable.
+- `ssx` — source_staleness_max_s: age of the stalest feed in seconds. High = stale data.
+- `ssa` — source_staleness_avg_s: average feed age. Use alongside `ssx`.
+- `v30` — coin velocity over 30s (% move)
+- `v60` — coin velocity over 60s (% move)
+
+**Signal score components** (all informational, logged at entry)
+- `sg` — composite signal score (0–100)
+- `sgv` — velocity score component
+- `sge` — entry price score component
+- `sgd` — depth score component
+- `sgs` — spread score component (higher = tighter spread = better)
+- `sgt` — time remaining score component
+- `sgb` — book balance score component
+
+**Exit / outcome**
+- `xp` — exit price
+- `pnl` — realised P&L in USD
+- `mfe` — max favourable excursion (highest bid seen while in position)
+- `mae` — max adverse excursion (lowest bid seen while in position)
+- `why` — exit reason string (e.g. `scalp_take_profit`, `loss_cut`, `near_close`, `stall_exit`)
+- `xt` — exit timestamp
+
+**Resolution / counterfactual** (only populated after markets resolve — blank on mid-session exports)
+- `hr` — hold-to-resolution outcome
+- `rpn` — resolution P&L if held to end
+- `whw` — would-have-won flag
+- `wbe` — would-have-broken-even flag
+- `lct` — loss cut threshold pct. **Known bug: only written for `single_leg`, not `lead_lag`.**
+- `lpx`, `fex`, `evp` — other resolution learning fields
+
+**Filter rejection**
+- `ff` — filter that caused rejection (e.g. `source_staleness`, `entry_spread`). **Check this first after a config change** to see which filter is firing most. Empty on trades that passed all filters.
+- `sv` — strategy version. **Known bug: always "unknown"** — not populated from STRATEGY.md parser.
+
+---
+
+## Config Architecture
+
+### Active config file
+
+`edec_bot/config_phase_a_single.yaml` is the active Phase A config (single_leg + lead_lag enabled, dual_leg + swing_leg disabled). The root `config.yaml` is the reference/default and is not the one loaded by HA.
+
+### Adding new YAML fields — required steps
+
+Frozen dataclasses are used (`@dataclass(frozen=True)`). Adding a key to the YAML without adding the field to the dataclass causes a `TypeError` on startup.
+
+**Always do these in order:**
+1. Add the field with a default to the dataclass in `edec_bot/bot/config.py`
+2. Add filter logic in the relevant strategy file (`bot/strategies/single_leg.py`, `lead_lag.py`, etc.)
+3. Add the key to the YAML config
+4. Bump the version
+
+### `LeadLagConfig` — extra gotcha
+
+`resolve_lead_lag_params()` in `config.py` builds a dict of effective params after applying per-coin overrides. If you add a new field to `LeadLagConfig` that you want accessible via coin overrides, add it to `resolve_lead_lag_params()` too. If the field has no coin-level override, read from `cfg` directly in `lead_lag.py` — no need to add it to the params dict.
+
+### Current non-default fields (added 5.1.7) on `SingleLegConfig` and `LeadLagConfig`
+
+| Field | Default | Phase A value | Purpose |
+|---|---|---|---|
+| `max_entry_spread` | 0.06 | 0.04 | Reject if bid-ask spread at entry exceeds this |
+| `max_source_dispersion_pct` | 0.50 | 0.25 | Reject if price feeds disagree beyond this % |
+| `max_source_staleness_s` | 4.0 | 1.5 | Reject if any feed is older than this (seconds) |
+
+### `disabled_coins` pattern
+
+In YAML, `disabled_coins` is a list. `load_config()` converts it to a tuple via `tuple(raw[...].get("disabled_coins", []))`. Always use the list form in YAML.
+
+---
+
+## Known Telemetry Bugs / Gaps (as of 5.1.7)
+
+These are unresolved — keep them in mind when analysing CSVs so you don't draw wrong conclusions:
+
+| Field | Bug |
+|---|---|
+| `td` | Trade duration scale is broken. Always use `ts` diff instead. |
+| `sv` | Strategy version always "unknown" — not populated. |
+| `lct` | Loss cut threshold only written for `single_leg`. Empty for `lead_lag`. |
+| `hr`, `rpn`, `whw`, `wbe` | Only populated post-resolution. Mid-session exports will always show these blank. Do not interpret blank as "no data" — wait for post-resolution export before counterfactual analysis. |

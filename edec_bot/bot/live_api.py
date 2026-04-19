@@ -569,8 +569,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     color: var(--text);
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
   }
-  .live-price.green { color: var(--neon-lime); text-shadow: 0 0 6px var(--neon-lime); }
-  .live-price.red   { color: var(--neon-red);  text-shadow: 0 0 6px var(--neon-red); }
 
   .card-header .right {
     display: flex; align-items: center; gap: 10px;
@@ -671,6 +669,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .strike-row.compact {
     justify-content: flex-start;
     gap: 8px;
+    flex-wrap: wrap;
     min-width: 0;
   }
   .strike-row .big {
@@ -679,6 +678,18 @@ _DASHBOARD_HTML = r"""<!doctype html>
     text-shadow: 0 0 6px var(--neon-amber);
   }
   .strike-row .lbl { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
+  .strike-row .delta {
+    font-size: 14px;
+    letter-spacing: 0.5px;
+  }
+  .strike-row .delta.up { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
+  .strike-row .delta.down { color: var(--neon-red); text-shadow: 0 0 4px var(--neon-red); }
+  .strike-row .delta.flat { color: var(--text-dim); }
+  .strike-row .pct {
+    font-size: 14px;
+    color: var(--text);
+    text-shadow: 0 0 4px rgba(207,230,255,0.45);
+  }
   .market-strip {
     display: flex; align-items: baseline; justify-content: space-between;
     gap: 8px; flex-wrap: wrap;
@@ -942,6 +953,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .strike-row { font-size: 14px; }
     .strike-row .big { font-size: 18px; }
     .strike-row .lbl { font-size: 10px; }
+    .strike-row .delta, .strike-row .pct { font-size: 11px; }
     .pred-copy { font-size: 10px; }
     .predbar { height: 16px; }
     .predbar .label-up, .predbar .label-down { font-size: 10px; top: 0; }
@@ -1045,6 +1057,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   const fmtPrice = (p) => p == null ? "—" : (p >= 1000 ? p.toLocaleString(undefined, {maximumFractionDigits: 2}) : p.toFixed(p < 1 ? 4 : 2));
   const fmtPct = (x) => (x == null ? "—" : (x*100).toFixed(0) + "%");
   const fmtUsd = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + "$" + x.toFixed(2));
+  const fmtSignedPrice = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + "$" + fmtPrice(Math.abs(x)));
   const fmtSecs = (s) => {
     if (s == null) return "—";
     s = Math.max(0, Math.round(s));
@@ -1175,6 +1188,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
           <div class="market-strip">
             <div class="strike-row compact">
               <span class="big" data-field="strike">—</span>
+              <span class="delta flat" data-field="strike-delta">—</span>
+              <span class="pct" data-field="strike-pct">—</span>
               <span class="lbl" data-field="strike-label">—</span>
             </div>
             <div class="pred-copy" data-field="pred-copy"><span class="muted">market prediction pending</span></div>
@@ -1515,14 +1530,24 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const get = (k) => card.querySelector(`[data-field="${k}"]`);
     const priceEl = get("price");
     priceEl.textContent = "$" + fmtPrice(payload.live_price);
-    priceEl.classList.toggle("green", payload.chart_color === "green");
-    priceEl.classList.toggle("red",   payload.chart_color === "red");
-
     const m = payload.market;
     if (m) {
       get("timer").textContent = fmtSecs(m.time_remaining_s);
       get("strike").textContent = m.strike != null ? "$" + fmtPrice(m.strike) : "—";
       get("strike-label").textContent = m.strike_label || "open";
+      const deltaEl = get("strike-delta");
+      const pctEl = get("strike-pct");
+      if (m.strike != null && payload.live_price != null) {
+        const delta = payload.live_price - m.strike;
+        const pct = m.strike !== 0 ? (delta / m.strike) : null;
+        deltaEl.textContent = fmtSignedPrice(delta);
+        deltaEl.className = "delta " + (delta > 0 ? "up" : (delta < 0 ? "down" : "flat"));
+        pctEl.textContent = pct == null ? "—" : `(${delta >= 0 ? "+" : ""}${(pct * 100).toFixed(2)}%)`;
+      } else {
+        deltaEl.textContent = "—";
+        deltaEl.className = "delta flat";
+        pctEl.textContent = "—";
+      }
 
       const mp = m.market_prediction;
       if (mp) {
@@ -1548,6 +1573,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
       get("timer").textContent = "—";
       get("strike").textContent = "—";
       get("strike-label").textContent = "no market";
+      get("strike-delta").textContent = "—";
+      get("strike-delta").className = "delta flat";
+      get("strike-pct").textContent = "—";
       get("predbar-up").style.width = "0%";
       get("predbar-down").style.width = "0%";
       get("predbar-up-lbl").textContent = "YES —";

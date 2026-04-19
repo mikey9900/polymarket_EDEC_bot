@@ -42,6 +42,8 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
         self.assertIn('data-field="session-inline"', html)
         self.assertIn('data-field="pred-copy"', html)
+        self.assertIn('data-field="strike-delta"', html)
+        self.assertIn('data-field="strike-pct"', html)
         self.assertIn('chart-feeds', html)
         self.assertIn('chart-resolutions', html)
         self.assertIn('return `<span class="chart-res-dot ${cls}"></span>`;', html)
@@ -51,6 +53,9 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertNotIn('📈 LIVE CHART', html)
         self.assertNotIn('🤖 BOT STRATEGIES (LIVE)', html)
         self.assertNotIn('title="${upper || "UNKNOWN"} | ${pnl}"', html)
+        self.assertIn('const fmtSignedPrice = (x) =>', html)
+        self.assertNotIn('priceEl.classList.toggle("green"', html)
+        self.assertNotIn('priceEl.classList.toggle("red"', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

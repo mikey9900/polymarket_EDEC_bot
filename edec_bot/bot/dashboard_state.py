@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -52,6 +53,11 @@ class DashboardStateService:
         self.slow_refresh_interval_s = max(self.update_interval_s, float(slow_refresh_interval_s))
 
         self._lock = asyncio.Lock()
+        # Cross-thread accessor for the dashboard server (which runs in its own
+        # thread + event loop so it stays responsive when the bot's loop hitches).
+        self._thread_lock = threading.Lock()
+        self._thread_state: dict[str, Any] = {}
+        self._thread_history: list[dict[str, Any]] = []
         self._loop_task: asyncio.Task | None = None
         self._running = False
         self._state: dict[str, Any] = {}
@@ -106,6 +112,13 @@ class DashboardStateService:
                         # Keep just the lighter top-level fields.
                         self._history.append(self._compact_for_history(snapshot))
                         next_history_at = now_loop + self.history_sample_interval_s
+                # Publish to the thread-safe accessor so the dashboard server
+                # (running in its own thread) can read without going through
+                # this loop. Lock is briefly held — pointer-swap only.
+                with self._thread_lock:
+                    self._thread_state = snapshot
+                    if sample_history:
+                        self._thread_history = list(self._history)
                 await asyncio.sleep(self.update_interval_s)
             except asyncio.CancelledError:
                 break
@@ -384,3 +397,15 @@ class DashboardStateService:
     async def get_history(self) -> list[dict[str, Any]]:
         async with self._lock:
             return list(self._history)
+
+    # ------------------------------------------------------------------
+    # Thread-safe accessors for the dashboard HTTP server thread
+    # ------------------------------------------------------------------
+
+    def get_state_threadsafe(self) -> dict[str, Any]:
+        with self._thread_lock:
+            return self._thread_state
+
+    def get_history_threadsafe(self) -> list[dict[str, Any]]:
+        with self._thread_lock:
+            return self._thread_history

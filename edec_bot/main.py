@@ -492,7 +492,9 @@ async def main():
     try:
         if live_api:
             await dashboard_state.start()
-            await live_api.start()
+            # Run on a dedicated thread so the dashboard stays responsive even
+            # when the main bot loop is busy.
+            live_api.start_threaded()
         await telegram.start()
 
         feed_pairs = start_all_feeds(config, price_queue)
@@ -563,7 +565,7 @@ async def main():
         await telegram.send_alert("🔴 EDEC Bot stopped")
         await telegram.stop()
         if live_api:
-            await live_api.stop()
+            live_api.stop_threaded()
             await dashboard_state.stop()
 
         tracker.close()

@@ -1,10 +1,15 @@
-"""Minimal built-in HTTP server for Home Assistant ingress."""
+"""Minimal built-in HTTP server for Home Assistant ingress.
+
+Runs on its own thread + event loop so the dashboard stays responsive even
+if the main bot loop hitches on long-running work.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timezone
 
 logger = logging.getLogger("edec.live_api")
@@ -17,20 +22,62 @@ class LiveApiServer:
         self.dashboard_state = dashboard_state
         self.host = host
         self.port = int(port)
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._server: asyncio.AbstractServer | None = None
+        self._ready = threading.Event()
+        self._stop = threading.Event()
 
-    async def start(self) -> None:
-        if self._server is not None:
+    def start_threaded(self) -> None:
+        """Spin up the server on a dedicated thread + event loop."""
+        if self._thread is not None and self._thread.is_alive():
             return
-        self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
-        logger.info("Dashboard API listening on http://%s:%s", self.host, self.port)
+        self._stop.clear()
+        self._ready.clear()
+        self._thread = threading.Thread(
+            target=self._run_thread, name="edec-dashboard-api", daemon=True
+        )
+        self._thread.start()
+        # Wait briefly for the server to bind so we can log a coherent error.
+        self._ready.wait(timeout=5.0)
 
-    async def stop(self) -> None:
-        if self._server is None:
+    def stop_threaded(self) -> None:
+        if self._loop is None or not self._loop.is_running():
             return
-        self._server.close()
-        await self._server.wait_closed()
+        self._stop.set()
+        try:
+            self._loop.call_soon_threadsafe(self._loop.stop)
+        except Exception:
+            pass
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        self._thread = None
+        self._loop = None
         self._server = None
+
+    def _run_thread(self) -> None:
+        try:
+            self._loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self._loop)
+            self._loop.run_until_complete(self._serve())
+        except Exception as exc:
+            logger.error("Dashboard API thread crashed: %s", exc)
+        finally:
+            try:
+                if self._loop is not None and not self._loop.is_closed():
+                    self._loop.close()
+            except Exception:
+                pass
+
+    async def _serve(self) -> None:
+        self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
+        logger.info(
+            "Dashboard API listening on http://%s:%s (own thread)",
+            self.host, self.port,
+        )
+        self._ready.set()
+        async with self._server:
+            await self._server.serve_forever()
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
@@ -49,10 +96,11 @@ class LiveApiServer:
                 await self._send(writer, 200, {"status": "ok", "timestamp_utc": datetime.now(timezone.utc).isoformat()})
                 return
             if path == "/api/state":
-                await self._send(writer, 200, await self.dashboard_state.get_state())
+                # Thread-safe snapshot — no await on bot loop.
+                await self._send(writer, 200, self.dashboard_state.get_state_threadsafe())
                 return
             if path == "/api/history":
-                await self._send(writer, 200, await self.dashboard_state.get_history())
+                await self._send(writer, 200, self.dashboard_state.get_history_threadsafe())
                 return
 
             await self._send(writer, 404, {"error": "not_found", "path": path})
@@ -574,7 +622,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.29</span></div>
+    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.31</span></div>
     <div class="topstats">
       <div class="pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
       <div class="pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>

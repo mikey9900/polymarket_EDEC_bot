@@ -855,21 +855,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 10px;
     letter-spacing: 2px;
   }
-  .chart-meta {
-    position: absolute;
-    top: 6px; left: 8px;
-    display: flex; gap: 14px;
-    flex-wrap: wrap;
-    max-width: 48%;
-    font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 9px;
-    letter-spacing: 1px;
-    pointer-events: none;
-  }
-  .chart-meta .lo  { color: var(--text-dim); }
-  .chart-meta .hi  { color: var(--text-dim); }
-  .chart-meta .now { color: var(--neon-cyan); text-shadow: 0 0 4px var(--neon-cyan); }
-  .chart-meta .stk { color: var(--neon-amber); text-shadow: 0 0 4px var(--neon-amber); }
   .chart-feeds {
     position: absolute;
     top: 6px; right: 8px;
@@ -992,7 +977,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .session .item .lbl { font-size: 9px; }
     .chart-slot { height: 84px; }
     .chart-empty { font-size: 8px; letter-spacing: 1px; }
-    .chart-meta { font-size: 7px; gap: 8px; }
     .chart-feed { font-size: 6px; padding: 2px 4px; }
     .chart-res-dot { width: 8px; height: 8px; }
   }
@@ -1368,14 +1352,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
                 filter="url(#${gid})" style="display:none"/>
       <circle data-r="dot" cx="-10" cy="-10" r="3.2" fill="var(--neon-cyan)" filter="url(#${gid})"/>
     `;
-    const meta = document.createElement("div");
-    meta.className = "chart-meta";
-    meta.innerHTML = `
-      <span class="hi"  data-r="hi">▲ —</span>
-      <span class="lo"  data-r="lo">▼ —</span>
-      <span class="stk" data-r="stk" style="display:none">━ —</span>
-      <span class="now" data-r="now">● —</span>
-    `;
     const empty = document.createElement("div");
     empty.className = "chart-empty";
     empty.textContent = "⏳ AWAITING TELEMETRY";
@@ -1386,13 +1362,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
     resolutions.className = "chart-resolutions";
     resolutions.setAttribute("data-r", "resolutions");
     host.appendChild(svg);
-    host.appendChild(meta);
     host.appendChild(feeds);
     host.appendChild(resolutions);
     host.appendChild(empty);
 
     host.__chart = {
-      svg, meta, empty, feeds, resolutions,
+      svg, empty, feeds, resolutions,
       strikeLine: svg.querySelector('[data-r="strike"]'),
       green: svg.querySelector('[data-r="green"]'),
       red:   svg.querySelector('[data-r="red"]'),
@@ -1400,10 +1375,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
       dot:   svg.querySelector('[data-r="dot"]'),
       clipAbove: svg.querySelector('[data-r="above"]'),
       clipBelow: svg.querySelector('[data-r="below"]'),
-      mHi:  meta.querySelector('[data-r="hi"]'),
-      mLo:  meta.querySelector('[data-r="lo"]'),
-      mStk: meta.querySelector('[data-r="stk"]'),
-      mNow: meta.querySelector('[data-r="now"]'),
     };
     return host.__chart;
   }
@@ -1473,8 +1444,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
       setStyle(c.green, "display", "");
       setStyle(c.red,   "display", "");
       setStyle(c.solo,  "display", "none");
-      setStyle(c.mStk,  "display", "");
-      setText(c.mStk, "━ " + fmtPrice(strike));
     } else {
       // No strike → single cyan line, hide split + strike line.
       setAttr(c.strikeLine, "opacity", "0");
@@ -1483,15 +1452,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
       setStyle(c.solo,  "display", "");
       setStyle(c.green, "display", "none");
       setStyle(c.red,   "display", "none");
-      setStyle(c.mStk,  "display", "none");
     }
     setAttr(c.dot, "cx", lastX.toFixed(1));
     setAttr(c.dot, "cy", lastY.toFixed(1));
     setAttr(c.dot, "fill", lineColor);
-
-    setText(c.mHi,  "▲ " + fmtPrice(yMax));
-    setText(c.mLo,  "▼ " + fmtPrice(yMin));
-    setText(c.mNow, "● " + fmtPrice(last.p));
   }
 
   function renderSessionInline(host, session) {

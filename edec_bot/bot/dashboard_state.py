@@ -29,10 +29,11 @@ class DashboardStateService:
         strategy_engine,
         executor,
         aggregator,
-        update_interval_s: float = 0.25,
-        history_sample_interval_s: float = 1.0,
+        update_interval_s: float = 0.1,
+        history_sample_interval_s: float = 0.5,
         history_points: int = 600,
-        price_series_points: int = 120,
+        price_series_points: int = 240,
+        slow_refresh_interval_s: float = 0.5,
     ):
         self.config = config
         self.tracker = tracker
@@ -41,10 +42,14 @@ class DashboardStateService:
         self.strategy_engine = strategy_engine
         self.executor = executor
         self.aggregator = aggregator
-        self.update_interval_s = max(0.1, float(update_interval_s))
+        # Floor at 50ms so we don't pin a CPU.
+        self.update_interval_s = max(0.05, float(update_interval_s))
         self.history_sample_interval_s = max(self.update_interval_s, float(history_sample_interval_s))
         self.history_points = max(10, int(history_points))
         self.price_series_points = max(20, int(price_series_points))
+        # DB-derived data (recent_resolutions, session_stats, recent_signals) is the
+        # heavy part of each snapshot — cache it and refresh at this slower cadence.
+        self.slow_refresh_interval_s = max(self.update_interval_s, float(slow_refresh_interval_s))
 
         self._lock = asyncio.Lock()
         self._loop_task: asyncio.Task | None = None
@@ -53,6 +58,13 @@ class DashboardStateService:
         self._history: deque[dict[str, Any]] = deque(maxlen=self.history_points)
         # Per-coin rolling underlying-price series: {coin: deque[(t_unix, price)]}
         self._coin_price_series: dict[str, deque[tuple[float, float]]] = {}
+        # Slow-tier cache (refreshed every slow_refresh_interval_s)
+        self._slow_cache: dict[str, Any] = {
+            "recent_signals": {},
+            "session_by_coin": {},
+            "recent_resolutions_by_coin": {},
+        }
+        self._next_slow_refresh_at: float = 0.0
 
     async def start(self) -> None:
         if self._running:
@@ -70,9 +82,15 @@ class DashboardStateService:
     async def _run(self) -> None:
         next_history_at = 0.0
         loop = asyncio.get_running_loop()
+        # Prime slow cache immediately so the first snapshot has data.
+        self._refresh_slow_cache()
+        self._next_slow_refresh_at = loop.time() + self.slow_refresh_interval_s
         while self._running:
             try:
                 now_loop = loop.time()
+                if now_loop >= self._next_slow_refresh_at:
+                    self._refresh_slow_cache()
+                    self._next_slow_refresh_at = now_loop + self.slow_refresh_interval_s
                 sample_history = now_loop >= next_history_at
                 if sample_history:
                     self._sample_price_series()
@@ -90,6 +108,33 @@ class DashboardStateService:
             except Exception as exc:
                 logger.debug("Dashboard snapshot update failed: %s", exc)
                 await asyncio.sleep(self.update_interval_s)
+
+    def _refresh_slow_cache(self) -> None:
+        """Pull DB-backed data once, store in cache. Keeps the fast loop CPU-bound only."""
+        try:
+            recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
+        except Exception as exc:
+            logger.debug("recent_signals query failed: %s", exc)
+            recent_signals = self._slow_cache.get("recent_signals", {})
+        try:
+            session_by_coin = self.tracker.get_session_stats_by_coin()
+        except Exception as exc:
+            logger.debug("session_by_coin query failed: %s", exc)
+            session_by_coin = self._slow_cache.get("session_by_coin", {})
+        resolutions_by_coin: dict[str, list[dict]] = {}
+        for coin in self.config.coins:
+            try:
+                resolutions_by_coin[coin] = self.tracker.get_coin_recent_resolutions(coin, limit=4)
+            except Exception as exc:
+                logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
+                resolutions_by_coin[coin] = self._slow_cache.get(
+                    "recent_resolutions_by_coin", {}
+                ).get(coin, [])
+        self._slow_cache = {
+            "recent_signals": recent_signals,
+            "session_by_coin": session_by_coin,
+            "recent_resolutions_by_coin": resolutions_by_coin,
+        }
 
     # ------------------------------------------------------------------
     # Snapshot assembly
@@ -110,17 +155,10 @@ class DashboardStateService:
     def _build_snapshot(self) -> dict[str, Any]:
         paper_total, paper_balance = self.tracker.get_paper_capital()
 
-        # One-shot DB queries reused across coins
-        try:
-            recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
-        except Exception as exc:
-            logger.debug("recent_signals query failed: %s", exc)
-            recent_signals = {}
-        try:
-            session_by_coin = self.tracker.get_session_stats_by_coin()
-        except Exception as exc:
-            logger.debug("session_by_coin query failed: %s", exc)
-            session_by_coin = {}
+        slow = self._slow_cache
+        recent_signals = slow.get("recent_signals", {})
+        session_by_coin = slow.get("session_by_coin", {})
+        resolutions_by_coin = slow.get("recent_resolutions_by_coin", {})
 
         open_singles = list(self.executor.get_open_positions().values())
         open_swings = list(getattr(self.executor, "_open_swing_positions", {}).values())
@@ -131,6 +169,7 @@ class DashboardStateService:
                 coin,
                 recent_signals=recent_signals.get(coin, []),
                 session=session_by_coin.get(coin, {"wins": 0, "losses": 0, "open": 0, "pnl": 0.0}),
+                resolutions=resolutions_by_coin.get(coin, []),
                 open_singles=open_singles,
                 open_swings=open_swings,
             )
@@ -156,6 +195,7 @@ class DashboardStateService:
         *,
         recent_signals: list[dict],
         session: dict,
+        resolutions: list[dict],
         open_singles: list,
         open_swings: list,
     ) -> dict[str, Any]:
@@ -165,12 +205,6 @@ class DashboardStateService:
         sources_payload = self._build_sources_payload(coin, agg)
         market_payload = self._build_market_payload(coin, live_price)
         open_trades_payload = self._build_open_trades_payload(coin, open_singles, open_swings)
-
-        try:
-            resolutions = self.tracker.get_coin_recent_resolutions(coin, limit=4)
-        except Exception as exc:
-            logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
-            resolutions = []
 
         # Chart color: green if above strike, red if below, neutral otherwise
         strike = market_payload.get("strike") if market_payload else None

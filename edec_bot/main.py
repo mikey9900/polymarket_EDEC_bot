@@ -357,9 +357,10 @@ async def main():
     dashboard_api_enabled = _as_bool(os.getenv("EDEC_DASHBOARD_API_ENABLED"), True)
     dashboard_api_host = os.getenv("EDEC_DASHBOARD_API_HOST", "0.0.0.0")
     dashboard_api_port = _as_int(os.getenv("EDEC_DASHBOARD_API_PORT"), 8099)
-    dashboard_update_ms = _as_int(os.getenv("EDEC_DASHBOARD_UPDATE_MS"), 250)
-    dashboard_history_sample_ms = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_SAMPLE_MS"), 1000)
+    dashboard_update_ms = _as_int(os.getenv("EDEC_DASHBOARD_UPDATE_MS"), 100)
+    dashboard_history_sample_ms = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_SAMPLE_MS"), 500)
     dashboard_history_points = _as_int(os.getenv("EDEC_DASHBOARD_HISTORY_POINTS"), 600)
+    dashboard_slow_refresh_ms = _as_int(os.getenv("EDEC_DASHBOARD_SLOW_REFRESH_MS"), 500)
 
     def do_archive() -> dict:
         return run_daily_archive(
@@ -478,9 +479,10 @@ async def main():
                 strategy_engine=strategy,
                 executor=executor,
                 aggregator=aggregator,
-                update_interval_s=max(0.1, dashboard_update_ms / 1000.0),
+                update_interval_s=max(0.05, dashboard_update_ms / 1000.0),
                 history_sample_interval_s=max(dashboard_update_ms, dashboard_history_sample_ms) / 1000.0,
                 history_points=dashboard_history_points,
+                slow_refresh_interval_s=max(dashboard_update_ms, dashboard_slow_refresh_ms) / 1000.0,
             )
             live_api = LiveApiServer(dashboard_state, host=dashboard_api_host, port=dashboard_api_port)
 

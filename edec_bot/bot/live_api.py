@@ -219,6 +219,31 @@ _DASHBOARD_HTML = r"""<!doctype html>
     70%, 100% { opacity: 0.25; }
   }
 
+  .uplink {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--chrome-hi);
+    border-radius: 4px;
+    background: #0e1530;
+    font-family: "VT323", monospace;
+    font-size: 14px;
+    letter-spacing: 1px;
+    transition: background 200ms, border-color 200ms;
+  }
+  .uplink .udot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--neon-lime);
+    box-shadow: 0 0 6px var(--neon-lime);
+  }
+  .uplink .uage { color: var(--text-dim); font-size: 12px; }
+  .uplink-ok    { color: var(--neon-lime);  border-color: rgba(170,255,0,0.5); }
+  .uplink-stale { color: var(--neon-amber); border-color: rgba(255,170,0,0.6); background: #2a1f08; animation: blink 0.9s infinite; }
+  .uplink-stale .udot { background: var(--neon-amber); box-shadow: 0 0 8px var(--neon-amber); }
+  .uplink-dead  { color: var(--neon-red);   border-color: rgba(255,30,80,0.7);  background: #320812; animation: blink 0.5s infinite; }
+  .uplink-dead .udot  { background: var(--neon-red);   box-shadow: 0 0 10px var(--neon-red); }
+
   /* ============================================================
      Container
      ============================================================ */
@@ -483,13 +508,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .session .l { color: var(--neon-red);  text-shadow: 0 0 4px var(--neon-red); }
   .session .o { color: var(--neon-amber); text-shadow: 0 0 4px var(--neon-amber); }
 
-  /* Chart placeholder (Step 3 will replace) */
+  /* Live chart slot (Step 3) */
   .chart-slot {
-    height: 130px;
-    border: 1px dashed #2a3a78;
+    position: relative;
+    height: 170px;
+    border: 1px solid #2a3a78;
     border-radius: 4px;
-    display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim);
+    overflow: hidden;
     background:
       repeating-linear-gradient(
         to right,
@@ -499,13 +524,36 @@ _DASHBOARD_HTML = r"""<!doctype html>
       repeating-linear-gradient(
         to bottom,
         rgba(0,240,255,0.05) 0 1px,
-        transparent 1px 30px
+        transparent 1px 28px
       ),
       #050912;
+  }
+  .chart-svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+  .chart-empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 10px;
     letter-spacing: 2px;
   }
+  .chart-meta {
+    position: absolute;
+    top: 6px; left: 8px;
+    display: flex; gap: 14px;
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+    pointer-events: none;
+  }
+  .chart-meta .lo  { color: var(--text-dim); }
+  .chart-meta .hi  { color: var(--text-dim); }
+  .chart-meta .now { color: var(--neon-cyan); text-shadow: 0 0 4px var(--neon-cyan); }
+  .chart-meta .stk { color: var(--neon-amber); text-shadow: 0 0 4px var(--neon-amber); }
 
   /* No-data state */
   .nodata {
@@ -526,13 +574,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.24</span></div>
+    <div class="brand"><span class="pulse"></span>EDEC TERMINAL <span style="color:var(--text-dim);font-size:10px">v5.0.26</span></div>
     <div class="topstats">
       <div class="pill"><span class="lbl">MODE</span><span id="t-mode" class="val cyan">—</span></div>
       <div class="pill"><span class="lbl">DRY</span><span id="t-dry"  class="val amber">—</span></div>
       <div class="pill"><span class="lbl">P&amp;L</span><span id="t-pnl" class="val green">—</span></div>
       <div class="pill"><span class="lbl">BAL</span><span id="t-bal" class="val cyan">—</span></div>
       <div class="pill"><span class="lbl">UTC</span><span id="t-ts"  class="val cyan">—</span></div>
+      <div id="uplink" class="uplink uplink-ok"><span class="udot"></span><span id="uplink-lbl">LINK</span><span id="uplink-age" class="uage">0ms</span></div>
     </div>
   </header>
 
@@ -543,7 +592,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
 <script>
 (() => {
   // ----- Constants -----
-  const POLL_MS = 1000;
+  const POLL_MS = 100;             // 10 Hz
+  const STALE_AFTER_MS = 1500;     // banner + dim if no frame for this long
+  const DEAD_AFTER_MS = 5000;      // hard "uplink lost" threshold
   const STORAGE_KEY = "edec_card_order_v1";
   const FEED_LABELS = { binance: "BNC", coinbase: "CB ", coingecko: "CG ", polymarket_rtds: "RTDS" };
 
@@ -559,6 +610,38 @@ _DASHBOARD_HTML = r"""<!doctype html>
     return m + ":" + String(r).padStart(2, "0");
   };
   const escapeHtml = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+  // Skip innerHTML if the rendered key matches the previous frame.
+  // Prevents LED-blink restarts and DOM thrash when nothing changed.
+  function cachedSet(el, key, html) {
+    if (el.__lastKey === key) return;
+    el.__lastKey = key;
+    el.innerHTML = html;
+  }
+  function setText(el, value) {
+    if (el.__lastText === value) return;
+    el.__lastText = value;
+    el.textContent = value;
+  }
+  function setAttr(el, name, value) {
+    const k = "__lastAttr_" + name;
+    if (el[k] === value) return;
+    el[k] = value;
+    el.setAttribute(name, value);
+  }
+  function setStyle(el, prop, value) {
+    const k = "__lastStyle_" + prop;
+    if (el[k] === value) return;
+    el[k] = value;
+    el.style[prop] = value;
+  }
+  function setClassList(el, cls, on) {
+    const k = "__lastCls_" + cls;
+    const v = !!on;
+    if (el[k] === v) return;
+    el[k] = v;
+    el.classList.toggle(cls, v);
+  }
 
   // ----- Card order persistence (per-device via localStorage) -----
   function loadOrder() {
@@ -673,10 +756,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
         </div>
 
         <div class="panel span2">
-          <h4>📈 LIVE CHART (Step 3)</h4>
-          <div class="chart-slot">
-            CHART MODULE OFFLINE — installing in next phase
-          </div>
+          <h4>📈 LIVE CHART</h4>
+          <div class="chart-slot" data-field="chart"></div>
         </div>
       </div>
     `;
@@ -686,19 +767,21 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   function renderLeds(host, sources) {
     const feeds = (sources && sources.feeds) || [];
-    host.innerHTML = feeds.map(f => {
+    // Round age to coarse buckets so the cache key doesn't churn every 100ms.
+    const key = JSON.stringify(feeds.map(f => [f.name, !!f.active, f.age_s != null && f.age_s > 3 ? 1 : 0]));
+    cachedSet(host, key, feeds.map(f => {
       const cls = f.active ? (f.age_s != null && f.age_s > 3 ? "stale" : "on") : "";
       const lbl = FEED_LABELS[f.name] || f.name.toUpperCase().slice(0,4);
       return `<div class="led ${cls}"><span class="dot"></span><span class="lbl">${lbl}</span></div>`;
-    }).join("");
+    }).join(""));
   }
 
   function renderSignals(host, signals) {
     if (!signals || !signals.length) {
-      host.innerHTML = '<div class="muted">no live signals</div>';
+      cachedSet(host, "empty", '<div class="muted">no live signals</div>');
       return;
     }
-    host.innerHTML = signals.map(s => {
+    const html = signals.map(s => {
       const sideCls = s.side === "UP" ? "side-up" : (s.side === "DOWN" ? "side-down" : "");
       const arrow = s.side === "UP" ? "▲" : (s.side === "DOWN" ? "▼" : "•");
       const buy = s.entry_price != null ? s.entry_price.toFixed(2) : "—";
@@ -715,14 +798,15 @@ _DASHBOARD_HTML = r"""<!doctype html>
           </span>
         </div>`;
     }).join("");
+    cachedSet(host, html, html);  // key === html, simple but correct
   }
 
   function renderTrades(host, trades) {
     if (!trades || !trades.length) {
-      host.innerHTML = '<div class="muted">no open trades</div>';
+      cachedSet(host, "empty", '<div class="muted">no open trades</div>');
       return;
     }
-    host.innerHTML = trades.map(t => {
+    const html = trades.map(t => {
       const sideCls = t.side === "UP" ? "side-up" : "side-down";
       const arrow = t.side === "UP" ? "▲" : "▼";
       const pnlCls = t.unrealized_pnl == null ? "" : (t.unrealized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
@@ -739,16 +823,17 @@ _DASHBOARD_HTML = r"""<!doctype html>
           <span class="b">bid ${bid} <span class="${pnlCls}">${pnlStr}</span></span>
         </div>`;
     }).join("");
+    cachedSet(host, html, html);
   }
 
   function renderTape(host, resolutions) {
     if (!resolutions || !resolutions.length) {
-      host.innerHTML = '<span class="muted">no history yet</span>';
+      cachedSet(host, "empty", '<span class="muted">no history yet</span>');
       return;
     }
     // Display oldest-first L→R so newest is on right (like a tape)
     const reversed = resolutions.slice().reverse();
-    host.innerHTML = reversed.map(r => {
+    const html = reversed.map(r => {
       const upper = (r.winner || "").toUpperCase();
       const isUp = upper === "UP";
       const cls = isUp ? "win-up" : "win-down";
@@ -759,6 +844,159 @@ _DASHBOARD_HTML = r"""<!doctype html>
         : `<span class="nope">—</span>`;
       return `<div class="seg ${cls}"><span class="arrow ${arrowCls}">${arrow}</span>${traded}</div>`;
     }).join("");
+    cachedSet(host, html, html);
+  }
+
+  // ----- Live chart (SVG, in-place updates) -----
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const CHART_W = 400, CHART_H = 170, CHART_PADX = 6, CHART_PADY = 14;
+
+  // Mount a chart skeleton into the host the first time we see it.
+  // Returns the cached refs so subsequent ticks can update attributes only.
+  function ensureChart(host, coin) {
+    if (host.__chart) return host.__chart;
+    host.innerHTML = "";
+    const gid = `g-${coin}`, cidA = `ca-${coin}`, cidB = `cb-${coin}`;
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "chart-svg");
+    svg.setAttribute("viewBox", `0 0 ${CHART_W} ${CHART_H}`);
+    svg.setAttribute("preserveAspectRatio", "none");
+    svg.innerHTML = `
+      <defs>
+        <filter id="${gid}" x="-20%" y="-20%" width="140%" height="140%">
+          <feGaussianBlur stdDeviation="1.4" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <clipPath id="${cidA}"><rect data-r="above" x="0" y="0" width="${CHART_W}" height="${CHART_H}"/></clipPath>
+        <clipPath id="${cidB}"><rect data-r="below" x="0" y="0" width="${CHART_W}" height="0"/></clipPath>
+      </defs>
+      <line data-r="strike" x1="0" y1="-10" x2="${CHART_W}" y2="-10"
+            stroke="var(--neon-amber)" stroke-width="1.2"
+            stroke-dasharray="5 4" opacity="0" filter="url(#${gid})"/>
+      <polyline data-r="green" fill="none" stroke="var(--neon-lime)"
+                stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
+                filter="url(#${gid})" clip-path="url(#${cidA})"/>
+      <polyline data-r="red"   fill="none" stroke="var(--neon-red)"
+                stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
+                filter="url(#${gid})" clip-path="url(#${cidB})"/>
+      <polyline data-r="solo"  fill="none" stroke="var(--neon-cyan)"
+                stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"
+                filter="url(#${gid})" style="display:none"/>
+      <circle data-r="dot" cx="-10" cy="-10" r="3.2" fill="var(--neon-cyan)" filter="url(#${gid})"/>
+    `;
+    const meta = document.createElement("div");
+    meta.className = "chart-meta";
+    meta.innerHTML = `
+      <span class="hi"  data-r="hi">▲ —</span>
+      <span class="lo"  data-r="lo">▼ —</span>
+      <span class="stk" data-r="stk" style="display:none">━ —</span>
+      <span class="now" data-r="now">● —</span>
+    `;
+    const empty = document.createElement("div");
+    empty.className = "chart-empty";
+    empty.textContent = "⏳ AWAITING TELEMETRY";
+    host.appendChild(svg);
+    host.appendChild(meta);
+    host.appendChild(empty);
+
+    host.__chart = {
+      svg, meta, empty,
+      strikeLine: svg.querySelector('[data-r="strike"]'),
+      green: svg.querySelector('[data-r="green"]'),
+      red:   svg.querySelector('[data-r="red"]'),
+      solo:  svg.querySelector('[data-r="solo"]'),
+      dot:   svg.querySelector('[data-r="dot"]'),
+      clipAbove: svg.querySelector('[data-r="above"]'),
+      clipBelow: svg.querySelector('[data-r="below"]'),
+      mHi:  meta.querySelector('[data-r="hi"]'),
+      mLo:  meta.querySelector('[data-r="lo"]'),
+      mStk: meta.querySelector('[data-r="stk"]'),
+      mNow: meta.querySelector('[data-r="now"]'),
+    };
+    return host.__chart;
+  }
+
+  function renderChart(host, coin, payload) {
+    const c = ensureChart(host, coin);
+    const series = payload.price_series || [];
+    const market = payload.market || null;
+    const strike = market ? market.strike : null;
+    const color  = payload.chart_color || "neutral";
+
+    if (series.length < 2) {
+      setStyle(c.empty, "display", "flex");
+      setStyle(c.svg,   "opacity", "0.25");
+      return;
+    }
+    setStyle(c.empty, "display", "none");
+    setStyle(c.svg,   "opacity", "1");
+
+    const xs = series.map(p => p.t);
+    const ys = series.map(p => p.p);
+    let xMin = xs[0], xMax = xs[xs.length - 1];
+    if (market && market.start_time && market.end_time) {
+      const s = Date.parse(market.start_time) / 1000;
+      const e = Date.parse(market.end_time) / 1000;
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) { xMin = s; xMax = e; }
+    }
+    const xRange = Math.max(1, xMax - xMin);
+
+    let yMin = Math.min.apply(null, ys);
+    let yMax = Math.max.apply(null, ys);
+    if (strike != null) { yMin = Math.min(yMin, strike); yMax = Math.max(yMax, strike); }
+    if (yMax - yMin < 1e-9) { yMax = yMin + 1; }
+    const yPad = (yMax - yMin) * 0.12;
+    yMin -= yPad; yMax += yPad;
+    const yRange = yMax - yMin;
+
+    const sx = t => CHART_PADX + ((t - xMin) / xRange) * (CHART_W - 2 * CHART_PADX);
+    const sy = p => CHART_PADY + (1 - (p - yMin) / yRange) * (CHART_H - 2 * CHART_PADY);
+
+    let points = "";
+    for (let i = 0; i < series.length; i++) {
+      const p = series[i];
+      points += sx(p.t).toFixed(1) + "," + sy(p.p).toFixed(1) + " ";
+    }
+    const last = series[series.length - 1];
+    const lastX = sx(last.t), lastY = sy(last.p);
+    const lineColor = color === "green" ? "var(--neon-lime)"
+                    : color === "red"   ? "var(--neon-red)"
+                    : "var(--neon-cyan)";
+
+    if (strike != null) {
+      const strikeY = sy(strike);
+      // Show split (green-above / red-below) line.
+      setAttr(c.strikeLine, "y1", strikeY.toFixed(1));
+      setAttr(c.strikeLine, "y2", strikeY.toFixed(1));
+      setAttr(c.strikeLine, "opacity", "0.9");
+      setAttr(c.clipAbove, "y", "0");
+      setAttr(c.clipAbove, "height", strikeY.toFixed(1));
+      setAttr(c.clipBelow, "y", strikeY.toFixed(1));
+      setAttr(c.clipBelow, "height", (CHART_H - strikeY).toFixed(1));
+      setAttr(c.green, "points", points);
+      setAttr(c.red,   "points", points);
+      setStyle(c.green, "display", "");
+      setStyle(c.red,   "display", "");
+      setStyle(c.solo,  "display", "none");
+      setStyle(c.mStk,  "display", "");
+      setText(c.mStk, "━ " + fmtPrice(strike));
+    } else {
+      // No strike → single cyan line, hide split + strike line.
+      setAttr(c.strikeLine, "opacity", "0");
+      setAttr(c.solo, "points", points);
+      setAttr(c.solo, "stroke", lineColor);
+      setStyle(c.solo,  "display", "");
+      setStyle(c.green, "display", "none");
+      setStyle(c.red,   "display", "none");
+      setStyle(c.mStk,  "display", "none");
+    }
+    setAttr(c.dot, "cx", lastX.toFixed(1));
+    setAttr(c.dot, "cy", lastY.toFixed(1));
+    setAttr(c.dot, "fill", lineColor);
+
+    setText(c.mHi,  "▲ " + fmtPrice(yMax));
+    setText(c.mLo,  "▼ " + fmtPrice(yMin));
+    setText(c.mNow, "● " + fmtPrice(last.p));
   }
 
   function renderSession(host, session) {
@@ -820,6 +1058,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     renderTrades(get("trades"), payload.open_trades);
     renderTape(get("tape"), payload.recent_resolutions);
     renderSession(get("session"), payload.session);
+    renderChart(get("chart"), coin, payload);
     return card;
   }
 
@@ -867,20 +1106,40 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
 
   let inFlight = false;
+  let lastFrameAt = 0;
+  let lastUplinkClass = "";
   async function poll() {
     if (inFlight) return;
     inFlight = true;
     try {
       const res = await fetch("api/state", { cache: "no-store" });
-      if (res.ok) applyState(await res.json());
+      if (res.ok) {
+        applyState(await res.json());
+        lastFrameAt = performance.now();
+      }
     } catch (e) {
-      // Silently ignore — keep last frame visible
+      // Silently ignore — keep last frame visible; staleness banner will show
     } finally {
       inFlight = false;
     }
   }
+  function tickUplink() {
+    const uplink = document.getElementById("uplink");
+    const lbl    = document.getElementById("uplink-lbl");
+    const age    = document.getElementById("uplink-age");
+    if (!uplink) return;
+    const dt = lastFrameAt ? (performance.now() - lastFrameAt) : Infinity;
+    let cls, label;
+    if (dt >= DEAD_AFTER_MS)        { cls = "uplink uplink-dead";  label = "OFFLINE"; }
+    else if (dt >= STALE_AFTER_MS)  { cls = "uplink uplink-stale"; label = "STALE";   }
+    else                            { cls = "uplink uplink-ok";    label = "LINK";    }
+    if (cls !== lastUplinkClass) { uplink.className = cls; lastUplinkClass = cls; }
+    setText(lbl, label);
+    setText(age, isFinite(dt) ? Math.round(dt) + "ms" : "—");
+  }
   poll();
   setInterval(poll, POLL_MS);
+  setInterval(tickUplink, 200);
 })();
 </script>
 </body>

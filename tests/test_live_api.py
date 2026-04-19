@@ -16,7 +16,16 @@ class _FakeDashboardState:
         self.control_payloads = []
 
     def get_state_threadsafe(self):
-        return {"controls": {"state": "running"}, "coins": {}, "coins_order": []}
+        return {
+            "controls": {
+                "state": "running",
+                "available_actions": {"start": True},
+                "last_message": "CONTROL LINK STANDBY",
+                "last_ok": None,
+            },
+            "coins": {},
+            "coins_order": [],
+        }
 
     def get_history_threadsafe(self):
         return []
@@ -40,6 +49,20 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("v9.9.9", html)
         self.assertNotIn("__APP_VERSION__", html)
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
+        self.assertIn('data-action="reset_stats"', html)
+        self.assertIn('data-action="export_today"', html)
+        self.assertIn('data-action="export_all"', html)
+        self.assertIn('data-action="export_recent"', html)
+        self.assertIn('data-action="session_export"', html)
+        self.assertIn('data-action="archive_now"', html)
+        self.assertIn('data-action="archive_latest"', html)
+        self.assertIn('data-action="archive_health"', html)
+        self.assertIn('data-action="sync_repo_latest"', html)
+        self.assertIn('data-action="fetch_github"', html)
+        self.assertIn("ARCHIVE + SYNC", html)
+        self.assertIn("function syncControlButtons(controls)", html)
+        self.assertIn('controls.last_message || "CONTROL LINK STANDBY"', html)
+        self.assertIn('setClassList(btn, "unavailable", !enabled);', html)
         self.assertIn('data-field="session-inline"', html)
         self.assertNotIn('data-field="pred-copy"', html)
         self.assertIn('data-field="strike-delta"', html)
@@ -84,6 +107,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('rgba(255,184,0,0.12)', html)
         self.assertIn('text-align: left;', html)
         self.assertIn('white-space: nowrap;', html)
+        self.assertIn('.control-block.span-2 { grid-column: span 2; }', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

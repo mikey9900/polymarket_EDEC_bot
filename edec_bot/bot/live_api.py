@@ -380,9 +380,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .control-grid {
     display: grid;
-    grid-template-columns: 1.1fr 1.6fr 1.2fr;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 10px;
   }
+  .control-block.span-2 { grid-column: span 2; }
   .control-block {
     background: rgba(10, 15, 38, 0.68);
     border: 1px solid #1f2a55;
@@ -446,6 +447,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .ctl-btn:disabled {
     opacity: 0.45;
     cursor: wait;
+  }
+  .ctl-btn.unavailable {
+    opacity: 0.28;
+    cursor: not-allowed;
   }
   .ctl-btn.active {
     color: var(--neon-cyan);
@@ -925,8 +930,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
     font-size: 18px;
   }
 
+  @media (max-width: 1160px) {
+    .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+
   @media (max-width: 860px) {
     .control-grid { grid-template-columns: 1fr; }
+    .control-block.span-2 { grid-column: auto; }
     .chart-slot { height: 104px; }
     .ticker-lock { grid-template-columns: auto 92px; gap: 4px; }
     .live-price { font-size: 20px; width: 92px; min-width: 92px; }
@@ -1017,6 +1027,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
             <button id="btn-start" type="button" class="ctl-btn" data-action="start">START</button>
             <button id="btn-stop" type="button" class="ctl-btn" data-action="stop">STOP</button>
             <button id="btn-kill" type="button" class="ctl-btn warn" data-action="kill">KILL</button>
+            <button id="btn-reset" type="button" class="ctl-btn" data-action="reset_stats">RESET</button>
           </div>
           <div class="control-readout">
             <div class="readout-pill"><span class="lbl">STATE</span><span id="ctrl-state">-</span></div>
@@ -1044,6 +1055,30 @@ _DASHBOARD_HTML = r"""<!doctype html>
             <button type="button" class="ctl-btn" data-action="budget" data-value="10">$10</button>
             <button type="button" class="ctl-btn" data-action="budget" data-value="15">$15</button>
             <button type="button" class="ctl-btn" data-action="budget" data-value="20">$20</button>
+          </div>
+        </div>
+        <div class="control-block">
+          <span class="head">ARCHIVE CHECK</span>
+          <div class="control-row">
+            <button type="button" class="ctl-btn" data-action="archive_latest">LATEST</button>
+            <button type="button" class="ctl-btn" data-action="archive_health">HEALTH</button>
+          </div>
+        </div>
+        <div class="control-block span-2">
+          <span class="head">EXPORTS</span>
+          <div class="control-row">
+            <button type="button" class="ctl-btn" data-action="export_today">TODAY</button>
+            <button type="button" class="ctl-btn" data-action="export_all">FULL</button>
+            <button type="button" class="ctl-btn" data-action="export_recent">RECENT</button>
+            <button type="button" class="ctl-btn" data-action="session_export">SESSION</button>
+          </div>
+        </div>
+        <div class="control-block span-2">
+          <span class="head">ARCHIVE + SYNC</span>
+          <div class="control-row">
+            <button type="button" class="ctl-btn" data-action="archive_now">ARCHIVE NOW</button>
+            <button type="button" class="ctl-btn" data-action="sync_repo_latest">SYNC LATEST</button>
+            <button type="button" class="ctl-btn" data-action="fetch_github">GH FETCH</button>
           </div>
         </div>
       </div>
@@ -1189,6 +1224,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
 
   let controlBusy = false;
+  let lastState = null;
   async function sendControl(action, value) {
     action = (action || "").trim();
     if (!action) {
@@ -1223,7 +1259,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
       setControlStatus("CONTROL REQUEST FAILED.", "err");
     } finally {
       controlBusy = false;
-      document.querySelectorAll(".ctl-btn").forEach((btn) => setDisabled(btn, false));
+      if (lastState && lastState.controls) {
+        syncControlButtons(lastState.controls);
+      } else {
+        document.querySelectorAll(".ctl-btn").forEach((btn) => setDisabled(btn, false));
+      }
     }
   }
   function bindControls() {
@@ -1236,6 +1276,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
           target.getAttribute("data-value")
         );
       });
+    });
+  }
+
+  function syncControlButtons(controls) {
+    const available = controls.available_actions || {};
+    document.querySelectorAll(".ctl-btn[data-action]").forEach((btn) => {
+      const action = btn.dataset.action;
+      const enabled = available[action] !== false;
+      setDisabled(btn, controlBusy || !enabled);
+      setClassList(btn, "unavailable", !enabled);
     });
   }
 
@@ -1560,10 +1610,17 @@ _DASHBOARD_HTML = r"""<!doctype html>
     setClassList($("btn-start"), "active", controls.state === "running");
     setClassList($("btn-stop"), "active", controls.state === "paused");
     setClassList($("btn-kill"), "active", controls.state === "killed");
+    syncControlButtons(controls);
+    if (!controlBusy) {
+      const statusText = controls.last_message || "CONTROL LINK STANDBY";
+      const statusClass = controls.last_ok == null ? "" : (controls.last_ok ? "ok" : "err");
+      setControlStatus(statusText, statusClass);
+    }
   }
 
   function applyState(state) {
     if (!state) return;
+    lastState = state;
     const loading = $("loading");
     if (loading) loading.remove();
     renderTopbar(state);

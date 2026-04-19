@@ -580,7 +580,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     align-items: center;
     justify-content: center;
     min-width: 0;
-    padding: 2px 8px;
+    padding: 1px 6px;
     border: 1px solid #7a5e18;
     border-radius: 6px;
     background: linear-gradient(180deg, rgba(255,184,0,0.12), rgba(22, 14, 4, 0.92));
@@ -616,7 +616,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
 
   .card-header .right {
-    display: flex; align-items: center; gap: 10px;
+    display: flex; align-items: center; gap: 8px;
     color: var(--text-dim);
     font-size: 16px;
     justify-self: end;
@@ -624,11 +624,12 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .timer {
     color: var(--neon-amber);
     text-shadow: 0 0 4px var(--neon-amber);
-    font-size: 18px;
+    font-size: 16px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 46px;
+    min-width: 38px;
+    line-height: 1;
   }
   .session-inline {
     display: flex; align-items: center; justify-content: center;
@@ -986,8 +987,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .ticker-lock { grid-template-columns: auto 92px; gap: 4px; }
     .live-price { font-size: 20px; width: 92px; min-width: 92px; }
     .coin-name { font-size: 11px; }
-    .card-header .right { font-size: 14px; }
-    .timer { font-size: 16px; }
+    .card-header .right { font-size: 13px; }
+    .timer { font-size: 15px; min-width: 36px; }
     .session-inline { gap: 4px; }
     .session-inline .item { padding: 2px 5px; }
     .session-inline .val { font-size: 11px; }
@@ -1040,8 +1041,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .ticker-lock { grid-template-columns: auto 84px; gap: 3px; padding: 2px 6px 2px 7px; }
     .live-price { font-size: 18px; width: 84px; min-width: 84px; }
     .coin-name { font-size: 10px; }
-    .card-header .right { font-size: 12px; }
-    .timer { font-size: 15px; }
+    .card-header .right { font-size: 11px; }
+    .timer { font-size: 14px; min-width: 34px; }
     .market-strip { gap: 6px; }
     .predbar { min-width: 126px; }
     .chart-slot { height: 78px; }

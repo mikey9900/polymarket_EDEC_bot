@@ -239,7 +239,14 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     ever_profitable INTEGER DEFAULT 0
     ,
     resolution_winner TEXT,
-    resolution_side_match INTEGER
+    resolution_side_match INTEGER,
+    resolution_value REAL,
+    resolution_pnl REAL,
+    would_have_won INTEGER DEFAULT 0,
+    would_have_beaten_exit INTEGER DEFAULT 0,
+    missed_upside_after_exit REAL,
+    time_to_resolution_s REAL,
+    recovered_after_exit INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS paper_capital (
@@ -336,7 +343,16 @@ def migrate(conn) -> None:
             loss_cut_threshold_pct REAL,
             loss_pct_at_exit REAL,
             favorable_excursion REAL,
-            ever_profitable INTEGER DEFAULT 0
+            ever_profitable INTEGER DEFAULT 0,
+            resolution_winner TEXT,
+            resolution_side_match INTEGER,
+            resolution_value REAL,
+            resolution_pnl REAL,
+            would_have_won INTEGER DEFAULT 0,
+            would_have_beaten_exit INTEGER DEFAULT 0,
+            missed_upside_after_exit REAL,
+            time_to_resolution_s REAL,
+            recovered_after_exit INTEGER DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS paper_capital (
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -530,6 +546,13 @@ def migrate(conn) -> None:
         "ever_profitable": "INTEGER DEFAULT 0",
         "resolution_winner": "TEXT",
         "resolution_side_match": "INTEGER",
+        "resolution_value": "REAL",
+        "resolution_pnl": "REAL",
+        "would_have_won": "INTEGER DEFAULT 0",
+        "would_have_beaten_exit": "INTEGER DEFAULT 0",
+        "missed_upside_after_exit": "REAL",
+        "time_to_resolution_s": "REAL",
+        "recovered_after_exit": "INTEGER DEFAULT 0",
     }
     for col, col_type in new_pt_cols.items():
         if col not in pt_cols:

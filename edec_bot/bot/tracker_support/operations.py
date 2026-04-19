@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from bot.models import Decision, TradeResult
+from bot.tracker_support import paper as tracker_paper
 from bot.tracker_support.schema import utc_now
 
 logger = logging.getLogger(__name__)
@@ -293,17 +294,23 @@ def log_trade(tracker: Any, decision_id: int, result: TradeResult) -> int:
 def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, btc_close: float) -> None:
     """Log a market resolution and backfill decision outcomes."""
     normalized_winner = (winner or "").upper()
+    resolved_at = utc_now().isoformat()
     cursor = tracker.conn.execute(
         """INSERT OR IGNORE INTO outcomes (
             market_slug, resolved_at, winner, btc_open_price, btc_close_price
         ) VALUES (?, ?, ?, ?, ?)""",
-        (market_slug, utc_now().isoformat(), normalized_winner, btc_open, btc_close),
+        (market_slug, resolved_at, normalized_winner, btc_open, btc_close),
     )
     tracker.conn.commit()
     outcome_id = cursor.lastrowid
     if outcome_id == 0:
-        row = tracker.conn.execute("SELECT id FROM outcomes WHERE market_slug = ?", (market_slug,)).fetchone()
+        row = tracker.conn.execute(
+            "SELECT id, resolved_at FROM outcomes WHERE market_slug = ?",
+            (market_slug,),
+        ).fetchone()
         outcome_id = row[0] if row else 0
+        if row and row[1]:
+            resolved_at = row[1]
 
     if not outcome_id:
         return
@@ -332,6 +339,7 @@ def log_outcome(tracker: Any, market_slug: str, winner: str, btc_open: float, bt
            WHERE market_slug = ?""",
         (normalized_winner, normalized_winner, market_slug),
     )
+    tracker_paper.apply_resolution_outcome(tracker, market_slug, normalized_winner, resolved_at)
 
     decisions = tracker.conn.execute(
         "SELECT id, up_best_ask, down_best_ask, combined_cost, action FROM decisions WHERE market_slug = ?",

@@ -1,6 +1,6 @@
 # EDEC Bot — Strategy & Logic Summary
 > Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 5.0.2
+> Current version: 5.0.22
 
 
 ---
@@ -228,6 +228,8 @@ Kill switch: auto-activates if daily P&L hits -$20. Deactivated manually via Tel
 | 3.2.32 | Shifted the exploration profile to `both` by default, loosened repricing filters, added lead-lag stall/hard-stop exits, XRP overrides, deterministic signal scoring, and compact signals exports | Collect 500+ dry-run/day with much richer prediction telemetry before the next tuning pass |
 | 4.0.0 | Linked paper trades directly to their originating decisions, kept optional latest-signals delivery non-fatal, and hardened optional dashboard imports | Make the new exploration exports trustworthy and keep the addon resilient while Dropbox/dashboard pieces are still rolling out |
 | 4.0.1 | Removed duplicate repricing `strategy_type` payload values and guarded `_log_decision()` against duplicate keys | Prevent strategy evaluation crashes once live signals begin flowing again |
+| 5.0.21 | Raised repricing velocity floors to `0.12` and tightened `lead_lag.max_entry` to `0.60` in the active Phase A profile | Cut the largest low-velocity and high-entry losing clusters before changing stop behavior |
+| 5.0.22 | Added paper-trade resolution comparison telemetry and exported hold-vs-exit learning fields | Measure which loss cuts truly saved us versus which ones would have recovered by market close |
 
 ---
 

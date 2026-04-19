@@ -575,7 +575,8 @@ def _build_paper_trades_sheet(wb, conn, date_str):
         "Target Delta", "Hard Stop Delta", "MFE", "MAE",
         "Peak Net P&L", "Trough Net P&L", "Stall Exit",
         "Hold To Res", "Loss Cut Threshold", "Loss % @ Exit", "Favorable Excursion", "Ever Profitable",
-        "Resolution Winner", "Resolution Match",
+        "Resolution Winner", "Resolution Match", "Resolution Value", "Resolution P&L",
+        "Would Have Won", "Would Beat Exit", "Exit Vs Res Delta", "Time To Res (s)", "Recovered After Exit",
     ]
     ws.append(headers)
     _style_header(ws, len(headers))
@@ -599,7 +600,9 @@ def _build_paper_trades_sheet(wb, conn, date_str):
                target_delta, hard_stop_delta, mfe, mae,
                peak_net_pnl, trough_net_pnl, stall_exit_triggered,
                hold_to_resolution, loss_cut_threshold_pct, loss_pct_at_exit, favorable_excursion, ever_profitable,
-               resolution_winner, resolution_side_match
+               resolution_winner, resolution_side_match, resolution_value, resolution_pnl,
+               would_have_won, would_have_beaten_exit, missed_upside_after_exit,
+               time_to_resolution_s, recovered_after_exit
         FROM paper_trades {where}
         ORDER BY id DESC LIMIT 10000
     """, params)

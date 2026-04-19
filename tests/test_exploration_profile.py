@@ -12,7 +12,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
-from bot.archive import export_recent_signals_csv_gz, export_recent_trades_csv_gz
+from bot.archive import export_recent_signals_csv_gz, export_recent_trades_csv_gz, export_session_trades_csv_gz
 from bot.config import load_config
 from bot.execution import ExecutionEngine
 from bot.models import Decision, FilterResult, MarketInfo
@@ -90,8 +90,9 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertEqual(xrp["min_entry"], 0.52)
         self.assertEqual(xrp["max_entry"], 0.60)
         self.assertEqual(xrp["min_book_depth_usd"], 20.0)
-        self.assertEqual(btc["min_velocity_30s"], 0.08)
-        self.assertEqual(btc["max_entry"], 0.66)
+        self.assertEqual(btc["min_velocity_30s"], 0.12)
+        self.assertEqual(btc["min_entry"], 0.50)
+        self.assertEqual(btc["max_entry"], 0.60)
         self.assertEqual(btc["min_book_depth_usd"], 6.0)
 
     def test_strategy_and_execution_share_lead_lag_params(self):
@@ -330,6 +331,153 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertIn("act", signals_rows[0])
         self.assertIn("sup", signals_rows[0])
         self.assertEqual(signals_rows[1][signals_rows[0].index("act")], "SUPPRESSED")
+
+    def test_resolution_backfill_marks_when_a_loss_cut_would_have_won(self):
+        scratch_root = ROOT / ".tmp_testdata" / "resolution_case"
+        if scratch_root.exists():
+            shutil.rmtree(scratch_root, ignore_errors=True)
+        scratch_root.mkdir(parents=True, exist_ok=True)
+        db_path = str(scratch_root / "decisions.db")
+        out_dir = scratch_root / "exports"
+        tracker = DecisionTracker(db_path)
+        self.addCleanup(lambda: shutil.rmtree(scratch_root, ignore_errors=True))
+        self.addCleanup(tracker.conn.close)
+        tracker.set_paper_capital(5000.0)
+        tracker.set_runtime_context(
+            {
+                "run_id": "run-resolution",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+                "app_version": "3.4.test",
+                "strategy_version": "3.2.test",
+                "config_path": "config_phase_a_single.yaml",
+                "config_hash": "abc123",
+                "dry_run": True,
+                "mode": "both",
+                "order_size_usd": 10.0,
+                "paper_capital_total": 5000.0,
+            }
+        )
+        now = datetime.now(timezone.utc)
+        filters = [FilterResult("risk_limits", True, "ok", "ok")]
+        decision_id = tracker.log_decision(
+            Decision(
+                timestamp=now,
+                market_slug="btc-2026-04-18-1200",
+                window_id="btc-2026-04-18-1200",
+                coin="btc",
+                market_end_time=now + timedelta(minutes=5),
+                market_start_time=now,
+                strategy_type="single_leg",
+                up_best_ask=0.56,
+                down_best_ask=0.44,
+                combined_cost=1.0,
+                btc_price=85000.0,
+                coin_velocity_30s=0.18,
+                coin_velocity_60s=0.22,
+                up_depth_usd=31.0,
+                down_depth_usd=14.0,
+                time_remaining_s=150.0,
+                feed_count=3,
+                filter_results=filters,
+                action="DRY_RUN_SIGNAL",
+                reason="resolution backfill test",
+                run_id="run-resolution",
+                mode="both",
+                dry_run=True,
+                order_size_usd=10.0,
+                paper_capital_total=5000.0,
+                signal_context="single_leg",
+                signal_overlap_count=1,
+                entry_price=0.56,
+                target_price=0.64,
+                expected_profit_per_share=0.02,
+            )
+        )
+        trade_id = tracker.log_paper_trade(
+            market_slug="btc-2026-04-18-1200",
+            coin="btc",
+            strategy_type="single_leg",
+            side="up",
+            entry_price=0.56,
+            target_price=0.64,
+            shares=17,
+            fee_total=0.4,
+            decision_id=decision_id,
+            market_end_time=(now + timedelta(minutes=5)).isoformat(),
+            market_start_time=now.isoformat(),
+            signal_context="single_leg",
+            signal_overlap_count=1,
+            order_size_usd=10.0,
+            window_id="btc-2026-04-18-1200",
+            target_delta=0.08,
+            hard_stop_delta=0.056,
+        )
+        tracker.close_paper_trade_early(
+            trade_id,
+            exit_price=0.50,
+            pnl=-1.42,
+            status="closed_loss",
+            exit_reason="loss_cut",
+            time_remaining_s=80.0,
+            bid_at_exit=0.50,
+            ask_at_exit=0.51,
+            loss_cut_threshold_pct=0.10,
+            loss_pct_at_exit=0.107,
+            favorable_excursion=0.01,
+            ever_profitable=True,
+        )
+
+        tracker.log_outcome(
+            market_slug="btc-2026-04-18-1200",
+            winner="UP",
+            btc_open=0.0,
+            btc_close=86000.0,
+        )
+
+        row = tracker.conn.execute(
+            """SELECT resolution_winner, resolution_side_match, resolution_value, resolution_pnl,
+                      would_have_won, would_have_beaten_exit, missed_upside_after_exit,
+                      time_to_resolution_s, recovered_after_exit
+               FROM paper_trades
+               WHERE id = ?""",
+            (trade_id,),
+        ).fetchone()
+
+        self.assertEqual(row[0], "UP")
+        self.assertEqual(row[1], 1)
+        self.assertAlmostEqual(row[2], 1.0, places=6)
+        self.assertGreater(row[3], 0.0)
+        self.assertEqual(row[4], 1)
+        self.assertEqual(row[5], 1)
+        self.assertGreater(row[6], 0.0)
+        self.assertIsNotNone(row[7])
+        self.assertEqual(row[8], 1)
+
+        recent_path, recent_count, _, _ = export_recent_trades_csv_gz(db_path, str(out_dir), "EDEC-BOT", 20)
+        session_path, session_count, _, _ = export_session_trades_csv_gz(
+            db_path,
+            str(out_dir),
+            "EDEC-BOT",
+            since_utc=(now - timedelta(minutes=1)).replace(tzinfo=None).isoformat(),
+        )
+
+        self.assertEqual(recent_count, 1)
+        self.assertEqual(session_count, 1)
+
+        with gzip.open(recent_path, "rt", encoding="utf-8", newline="") as fh:
+            recent_rows = list(csv.DictReader(fh))
+        with gzip.open(session_path, "rt", encoding="utf-8", newline="") as fh:
+            session_rows = list(csv.DictReader(fh))
+
+        for rows in (recent_rows, session_rows):
+            self.assertEqual(rows[0]["rw"], "UP")
+            self.assertEqual(rows[0]["rsm"], "1")
+            self.assertEqual(rows[0]["whw"], "1")
+            self.assertEqual(rows[0]["wbe"], "1")
+            self.assertEqual(rows[0]["rae"], "1")
+            self.assertGreater(float(rows[0]["rv"]), 0.0)
+            self.assertGreater(float(rows[0]["rpn"]), 0.0)
+            self.assertGreater(float(rows[0]["mux"]), 0.0)
 
     def test_trade_exports_keep_decision_metadata_for_same_window_refires(self):
         scratch_root = ROOT / ".tmp_testdata" / "decision_link_case"

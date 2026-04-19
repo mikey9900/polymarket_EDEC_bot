@@ -3,11 +3,55 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from bot.tracker_support.schema import utc_now
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_iso_datetime(value: object | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(text)
+    except Exception:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _paper_trade_resolution_result(
+    strategy_type: str | None,
+    side: str | None,
+    entry_price: float,
+    shares: float,
+    cost: float,
+    fee_total: float,
+    winner: str,
+) -> tuple[float, float, str]:
+    normalized_winner = (winner or "").upper()
+    if str(strategy_type or "").lower() == "dual_leg":
+        resolution_value = 1.0
+        resolution_pnl = (1.0 - entry_price) * shares - fee_total
+        resolution_status = "closed_win" if resolution_pnl > 0 else "closed_loss"
+        return resolution_value, resolution_pnl, resolution_status
+
+    won = (str(side or "").lower() == "up" and normalized_winner == "UP") or (
+        str(side or "").lower() == "down" and normalized_winner == "DOWN"
+    )
+    if won:
+        resolution_value = 1.0
+        resolution_pnl = (1.0 - entry_price) * shares - fee_total
+        resolution_status = "closed_win"
+    else:
+        resolution_value = 0.0
+        resolution_pnl = -cost
+        resolution_status = "closed_loss"
+    return resolution_value, resolution_pnl, resolution_status
 
 
 def _require_linked_decision(decision_id: int | None) -> int:
@@ -218,20 +262,15 @@ def close_paper_trades(
     ).fetchall()
 
     for trade_id, strategy_type, side, entry_price, shares, cost, fee_total in trades:
-        if strategy_type == "dual_leg":
-            pnl = (1.0 - entry_price) * shares - fee_total
-            exit_price = 1.0
-            status = "closed_win" if pnl > 0 else "closed_loss"
-        else:
-            won = (side == "up" and winner.upper() == "UP") or (side == "down" and winner.upper() == "DOWN")
-            if won:
-                pnl = (1.0 - entry_price) * shares - fee_total
-                exit_price = 1.0
-                status = "closed_win"
-            else:
-                pnl = -cost
-                exit_price = 0.0
-                status = "closed_loss"
+        exit_price, pnl, status = _paper_trade_resolution_result(
+            strategy_type,
+            side,
+            float(entry_price or 0.0),
+            float(shares or 0.0),
+            float(cost or 0.0),
+            float(fee_total or 0.0),
+            winner,
+        )
 
         now = utc_now().isoformat()
         tracker.conn.execute(
@@ -261,6 +300,64 @@ def close_paper_trades(
     if trades:
         tracker.conn.commit()
         logger.info(f"Closed {len(trades)} paper trades for {market_slug} -> winner: {winner}")
+
+
+def apply_resolution_outcome(
+    tracker: Any,
+    market_slug: str,
+    winner: str,
+    resolved_at: str | None = None,
+) -> None:
+    resolved_at_iso = resolved_at or utc_now().isoformat()
+    resolved_at_dt = _parse_iso_datetime(resolved_at_iso)
+    rows = tracker.conn.execute(
+        """SELECT id, strategy_type, side, entry_price, shares, cost, fee_total, pnl, exit_timestamp
+           FROM paper_trades
+           WHERE market_slug = ?""",
+        (market_slug,),
+    ).fetchall()
+    if not rows:
+        return
+
+    for trade_id, strategy_type, side, entry_price, shares, cost, fee_total, actual_pnl, exit_timestamp in rows:
+        resolution_value, resolution_pnl, _ = _paper_trade_resolution_result(
+            strategy_type,
+            side,
+            float(entry_price or 0.0),
+            float(shares or 0.0),
+            float(cost or 0.0),
+            float(fee_total or 0.0),
+            winner,
+        )
+        actual = float(actual_pnl) if actual_pnl is not None else None
+        exit_dt = _parse_iso_datetime(exit_timestamp)
+        time_to_resolution_s = None
+        if resolved_at_dt and exit_dt:
+            time_to_resolution_s = round(max(0.0, (resolved_at_dt - exit_dt).total_seconds()), 3)
+
+        tracker.conn.execute(
+            """UPDATE paper_trades
+               SET resolution_value = ?,
+                   resolution_pnl = ?,
+                   would_have_won = ?,
+                   would_have_beaten_exit = ?,
+                   missed_upside_after_exit = ?,
+                   time_to_resolution_s = ?,
+                   recovered_after_exit = ?
+               WHERE id = ?""",
+            (
+                resolution_value,
+                resolution_pnl,
+                int(resolution_pnl > 0),
+                int(actual is not None and resolution_pnl > actual),
+                (resolution_pnl - actual) if actual is not None else None,
+                time_to_resolution_s,
+                int(actual is not None and actual <= 0 and resolution_pnl > 0),
+                trade_id,
+            ),
+        )
+
+    tracker.conn.commit()
 
 
 def close_paper_trade_early(

@@ -137,6 +137,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
                     "trade_count": 7,
                     "signal_count": 14,
                     "excel_path": "data/session_export.xlsx",
+                    "session_dir": "data/exports/2026-04-19_170000_EDEC-BOT_session_export",
                 },
             }
         service = DashboardStateService(
@@ -231,7 +232,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         session_result = await service._apply_control_async("session_export")
         self.assertTrue(session_result["ok"])
         self.assertIn("7 trades, 14 signals", session_result["message"])
-        self.assertIn("session_export.xlsx", session_result["message"])
+        self.assertIn("2026-04-19_170000_EDEC-BOT_session_export", session_result["message"])
         self.assertEqual(
             session_result["state"]["controls"]["available_actions"]["session_export"],
             True,

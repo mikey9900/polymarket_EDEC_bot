@@ -1026,10 +1026,12 @@ class TelegramBot:
             trade_count = result.get("trade_count", 0)
             signal_count = result.get("signal_count", 0)
             since = result.get("session_since_utc", "unknown")
+            session_dir = result.get("session_dir", "unknown")
             lines = [
                 f"\u2705 *Session Export Complete*",
                 f"Trades: {trade_count} | Signals: {signal_count}",
                 f"Since: `{since}`",
+                f"Folder: `{session_dir}`",
             ]
             uploads = result.get("dropbox_uploads") or {}
             failed_dbx = [k for k, v in uploads.items() if not v.get("ok")]

@@ -12,10 +12,18 @@ from openpyxl import load_workbook
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
-from bot.archive import _build_session_excel_export
+from bot.archive import _build_session_excel_export, _session_export_folder_name
 
 
 class SessionExcelExportTests(unittest.TestCase):
+    def test_session_export_folder_name_is_stable(self):
+        folder = _session_export_folder_name(
+            datetime(2026, 4, 19, 16, 55, 0, tzinfo=timezone.utc),
+            "EDEC-BOT",
+        )
+
+        self.assertEqual(folder, "2026-04-19_165500_EDEC-BOT_session_export")
+
     def test_build_session_excel_export_creates_summary_and_data_sheets(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir)

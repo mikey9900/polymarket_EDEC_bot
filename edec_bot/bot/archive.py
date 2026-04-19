@@ -433,6 +433,10 @@ def _sheet_from_rows(wb: Workbook, sheet_name: str, columns: list[str], rows: li
     _auto_width(ws)
 
 
+def _session_export_folder_name(now_utc: datetime, label: str) -> str:
+    return f"{now_utc.strftime('%Y-%m-%d_%H%M%S')}_{label}_session_export"
+
+
 def _read_gzip_csv_rows(path: str) -> tuple[list[str], list[tuple[Any, ...]]]:
     with gzip.open(path, "rt", encoding="utf-8", newline="") as fh:
         reader = csv.reader(fh)
@@ -1986,6 +1990,9 @@ def run_session_export(
     label = _safe_label(label)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    session_folder = _session_export_folder_name(now_utc, label)
+    session_output_path = output_path / session_folder
+    session_output_path.mkdir(parents=True, exist_ok=True)
 
     # Resolve reset_at from DB
     conn = sqlite3.connect(db_path)
@@ -2003,13 +2010,13 @@ def run_session_export(
     )
 
     trades_path, trade_count, oldest_id, newest_id = export_session_trades_csv_gz(
-        db_path=db_path, output_dir=output_dir, label=label, since_utc=reset_at, now_utc=now_utc,
+        db_path=db_path, output_dir=str(session_output_path), label=label, since_utc=reset_at, now_utc=now_utc,
     )
     signals_path, signal_count, oldest_sig, newest_sig = export_session_signals_csv_gz(
-        db_path=db_path, output_dir=output_dir, label=label, since_utc=reset_at, now_utc=now_utc,
+        db_path=db_path, output_dir=str(session_output_path), label=label, since_utc=reset_at, now_utc=now_utc,
     )
     excel_path = _build_session_excel_export(
-        output_dir=output_dir,
+        output_dir=str(session_output_path),
         label=label,
         now_utc=now_utc,
         reset_at=reset_at,
@@ -2022,11 +2029,12 @@ def run_session_export(
     date_stamp = now_utc.strftime("%Y-%m-%d")
     time_stamp = now_utc.strftime("%H%M%S")
     index_filename = f"{date_stamp}_{time_stamp}_{label}_session_index.json"
-    index_path = output_path / index_filename
+    index_path = session_output_path / index_filename
     index: dict[str, Any] = {
         "label": label,
         "exported_at_utc": now_utc.isoformat(),
         "session_since_utc": reset_at,
+        "session_folder": session_folder,
         "row_counts": {
             "session_trades_rows": trade_count,
             "session_signals_rows": signal_count,
@@ -2045,6 +2053,8 @@ def run_session_export(
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
 
     result: dict[str, Any] = {
+        "session_dir": str(session_output_path),
+        "session_folder": session_folder,
         "excel_path": excel_path,
         "trades_path": trades_path,
         "signals_path": signals_path,
@@ -2058,7 +2068,7 @@ def run_session_export(
 
     if dropbox_auth:
         root = _normalize_dropbox_root(dropbox_root)
-        folder = f"{root}/session-exports"
+        folder = f"{root}/session-exports/{session_folder}"
         uploads = {
             "session_excel_xlsx": _dropbox_upload_file(
                 excel_path, f"{folder}/{Path(excel_path).name}", dropbox_auth
@@ -2079,7 +2089,6 @@ def run_session_export(
 
     if github_token and github_repo:
         export_folder = github_export_path.strip("/")
-        folder_ts = now_utc.strftime("%Y-%m-%d_%H%M%S")
         pushes: dict[str, Any] = {}
         for local_path, key in [
             (excel_path, "session_excel_xlsx"),
@@ -2087,22 +2096,22 @@ def run_session_export(
             (signals_path, "session_signals_csv_gz"),
             (str(index_path), "session_index_json"),
         ]:
-            repo_file_path = f"{export_folder}/{folder_ts}/{Path(local_path).name}"
+            repo_file_path = f"{export_folder}/{session_folder}/{Path(local_path).name}"
             pushes[key] = _github_push_file(
                 local_path=local_path,
                 repo_path=repo_file_path,
                 github_token=github_token,
                 github_repo=github_repo,
                 github_branch=github_branch,
-                commit_message=f"Session export {folder_ts}: {Path(local_path).name}",
+                commit_message=f"Session export {session_folder}: {Path(local_path).name}",
             )
         index["github_pushes"] = pushes
         index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
         result["github_pushes"] = pushes
 
     logger.info(
-        "Session export complete: %d trades, %d signals since %s",
-        trade_count, signal_count, reset_at,
+        "Session export complete: %d trades, %d signals since %s -> %s",
+        trade_count, signal_count, reset_at, session_output_path,
     )
     return result
 

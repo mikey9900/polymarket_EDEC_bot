@@ -545,13 +545,14 @@ class DashboardStateService:
             if not callable(self.session_export_fn):
                 return self._control_unavailable("Session export is not configured.")
             result = await self._run_control_job(self.session_export_fn)
+            session_folder = Path(str(result.get("session_dir") or "")).name or str(result.get("session_folder") or "").strip()
             return {
                 "ok": True,
                 "status": 200,
                 "message": (
                     f"Session export ready: {int(result.get('trade_count', 0))} trades, "
                     f"{int(result.get('signal_count', 0))} signals, "
-                    f"XLSX {Path(str(result.get('excel_path') or '')).name or 'ready'}."
+                    f"folder {session_folder or 'ready'}."
                 ),
             }
         return {"ok": False, "status": 400, "message": f"Unknown action: {action or 'empty'}"}

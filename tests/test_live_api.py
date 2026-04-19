@@ -66,6 +66,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('font-variant-numeric: tabular-nums;', html)
         self.assertIn('width: 96px;', html)
         self.assertIn('border-radius: 6px;', html)
+        self.assertNotIn('🪙', html)
         self.assertIn('white-space: nowrap;', html)
 
 

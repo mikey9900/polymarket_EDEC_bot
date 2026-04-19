@@ -1219,7 +1219,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
         <div class="left">
           <span class="grip">⋮⋮</span>
           <div class="ticker-lock">
-          <span class="coin-name">🪙 ${coin.toUpperCase()}</span>
+          <span class="coin-name">${coin.toUpperCase()}</span>
           <span class="live-price" data-field="price">—</span>
           </div>
         </div>

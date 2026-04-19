@@ -80,34 +80,61 @@ class DashboardStateService:
             "paper_capital": (0.0, 0.0),
         }
         self._next_slow_refresh_at: float = 0.0
+        # Per-coin captured strike: {coin: (slug, strike_price)}. Sampled from
+        # the live aggregator the first time we see each new market window so
+        # the dashboard can draw the open-price line.
+        self._market_strikes: dict[str, tuple[str, float]] = {}
+        self._slow_loop_task: asyncio.Task | None = None
+        self._slow_refresh_in_flight: bool = False
 
     async def start(self) -> None:
         if self._running:
             return
         self._running = True
         self._loop_task = asyncio.create_task(self._run())
+        self._slow_loop_task = asyncio.create_task(self._slow_loop())
 
     async def stop(self) -> None:
         self._running = False
-        if self._loop_task:
-            self._loop_task.cancel()
-            await asyncio.gather(self._loop_task, return_exceptions=True)
-            self._loop_task = None
+        for task in (self._loop_task, self._slow_loop_task):
+            if task:
+                task.cancel()
+        await asyncio.gather(
+            *(t for t in (self._loop_task, self._slow_loop_task) if t),
+            return_exceptions=True,
+        )
+        self._loop_task = None
+        self._slow_loop_task = None
+
+    async def _slow_loop(self) -> None:
+        """Refresh the DB-backed slow tier on its own cadence.
+
+        Runs as an independent task so the 100ms snapshot loop never has to
+        wait on SQLite — keeps live price/timer fresh while DB reads happen.
+        """
+        loop = asyncio.get_running_loop()
+        # Prime immediately so the first snapshot has data.
+        try:
+            await loop.run_in_executor(None, self._refresh_slow_cache)
+        except Exception as exc:
+            logger.debug("Initial slow refresh failed: %s", exc)
+        while self._running:
+            try:
+                await asyncio.sleep(self.slow_refresh_interval_s)
+                if not self._running:
+                    break
+                await loop.run_in_executor(None, self._refresh_slow_cache)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug("Slow refresh failed: %s", exc)
 
     async def _run(self) -> None:
         next_history_at = 0.0
         loop = asyncio.get_running_loop()
-        # Prime slow cache immediately so the first snapshot has data.
-        # tracker.conn is now check_same_thread=False, so the slow-tier reads
-        # run in a worker thread to keep WS heartbeats from starving.
-        await loop.run_in_executor(None, self._refresh_slow_cache)
-        self._next_slow_refresh_at = loop.time() + self.slow_refresh_interval_s
         while self._running:
             try:
                 now_loop = loop.time()
-                if now_loop >= self._next_slow_refresh_at:
-                    await loop.run_in_executor(None, self._refresh_slow_cache)
-                    self._next_slow_refresh_at = now_loop + self.slow_refresh_interval_s
                 sample_history = now_loop >= next_history_at
                 if sample_history:
                     self._sample_price_series()
@@ -314,13 +341,28 @@ class DashboardStateService:
                 "down_prob": round(down_prob, 4),
             }
 
-        strike = float(market.reference_price) if market.reference_price is not None else None
+        # Capture strike on first sight of each market window. The 5-min
+        # up/down market resolves UP if BTC's close > open, so the strike line
+        # on the chart is the BTC price sampled when the window opened.
+        # MarketInfo.reference_price isn't populated by the scanner, so we
+        # snapshot from the live aggregator the first time we see this slug.
+        strike: float | None = None
+        if market.reference_price is not None:
+            strike = float(market.reference_price)
+        else:
+            cached = self._market_strikes.get(coin)
+            if cached and cached[0] == market.slug:
+                strike = cached[1]
+            elif live_price is not None:
+                self._market_strikes[coin] = (market.slug, float(live_price))
+                strike = float(live_price)
+        strike_label = market.reference_label or ("open" if strike is not None else "")
 
         return {
             "slug": market.slug,
             "question": market.question,
             "strike": strike,
-            "strike_label": market.reference_label or "",
+            "strike_label": strike_label,
             "start_time": market.start_time.isoformat() if market.start_time else None,
             "end_time": market.end_time.isoformat() if market.end_time else None,
             "time_remaining_s": time_remaining_s,

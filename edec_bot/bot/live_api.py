@@ -510,17 +510,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     overflow: hidden;
     transition: transform 0.18s ease, box-shadow 0.18s ease;
   }
-  .card.dragging {
-    opacity: 0.55;
-    transform: scale(0.99);
-  }
-  .card.drop-target {
-    box-shadow:
-      inset 0 1px 0 #2c3865,
-      inset 0 -2px 0 #000,
-      0 0 0 2px var(--neon-cyan),
-      0 0 24px rgba(0, 240, 255, 0.7);
-  }
   .card.color-green::before {
     content: "";
     position: absolute; inset: 0;
@@ -542,10 +531,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     padding: 7px 10px;
     background: linear-gradient(180deg, #1a2247 0%, #0d1532 100%);
     border-bottom: 1px solid var(--chrome-lo);
-    cursor: grab;
-    user-select: none;
   }
-  .card-header:active { cursor: grabbing; }
   .card-header .left {
     display: flex; align-items: center; gap: 8px; min-width: 0;
     flex-wrap: nowrap;
@@ -587,13 +573,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.35), 0 0 10px rgba(255,184,0,0.08);
   }
   .card-header .mid { min-width: 0; }
-  .grip {
-    color: var(--text-dim);
-    font-size: 22px;
-    letter-spacing: -2px;
-    margin-right: 4px;
-    text-shadow: 0 1px 0 #000;
-  }
   .coin-name {
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 12px;
@@ -1116,7 +1095,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
   const POLL_MS = 100;             // 10 Hz
   const STALE_AFTER_MS = 1500;     // banner + dim if no frame for this long
   const DEAD_AFTER_MS = 5000;      // hard "uplink lost" threshold
-  const STORAGE_KEY = "edec_card_order_v1";
   const FEED_LABELS = { binance: "BNC", coinbase: "CB ", coingecko: "CG ", polymarket_rtds: "RTDS" };
   const MODE_NAMES = { both: "ALL", dual: "DUAL", single: "SINGLE", lead: "LEAD", swing: "SWING", off: "OFF" };
 
@@ -1184,58 +1162,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     host.className = "ctl-status" + (cls ? " " + cls : "");
   }
 
-  // ----- Card order persistence (per-device via localStorage) -----
-  function loadOrder() {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { return []; }
-  }
-  function saveOrder(arr) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); } catch {}
-  }
-  function effectiveOrder(serverOrder) {
-    const stored = loadOrder();
-    const known = new Set(serverOrder);
-    const out = stored.filter(c => known.has(c));
-    serverOrder.forEach(c => { if (!out.includes(c)) out.push(c); });
-    return out;
-  }
-
-  // ----- Drag and drop -----
-  let dragCoin = null;
-  function bindDrag(card) {
-    const header = card.querySelector(".card-header");
-    header.draggable = true;
-    header.addEventListener("dragstart", (e) => {
-      dragCoin = card.dataset.coin;
-      card.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", dragCoin);
-    });
-    header.addEventListener("dragend", () => {
-      card.classList.remove("dragging");
-      document.querySelectorAll(".card.drop-target").forEach(el => el.classList.remove("drop-target"));
-      dragCoin = null;
-    });
-    card.addEventListener("dragover", (e) => {
-      if (!dragCoin || dragCoin === card.dataset.coin) return;
-      e.preventDefault();
-      e.dataTransfer.dropEffect = "move";
-      card.classList.add("drop-target");
-    });
-    card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
-    card.addEventListener("drop", (e) => {
-      e.preventDefault();
-      card.classList.remove("drop-target");
-      const src = document.querySelector(`.card[data-coin="${dragCoin}"]`);
-      if (!src || src === card) return;
-      const stack = $("stack");
-      const rect = card.getBoundingClientRect();
-      const before = e.clientY < rect.top + rect.height / 2;
-      stack.insertBefore(src, before ? card : card.nextSibling);
-      const newOrder = Array.from(stack.querySelectorAll(".card")).map(c => c.dataset.coin);
-      saveOrder(newOrder);
-    });
-  }
-
   // ----- Card rendering -----
   function ensureCard(coin) {
     let card = document.querySelector(`.card[data-coin="${coin}"]`);
@@ -1246,7 +1172,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     card.innerHTML = `
       <div class="card-header">
         <div class="left">
-          <span class="grip">⋮⋮</span>
           <div class="ticker-lock">
           <span class="coin-name">${coin.toUpperCase()}</span>
           <span class="live-price" data-field="price">—</span>
@@ -1294,7 +1219,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
         </div>
       </div>
     `;
-    bindDrag(card);
     return card;
   }
 
@@ -1701,7 +1625,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     if (!state.coins) return;
 
     const stack = $("stack");
-    const order = effectiveOrder(state.coins_order || Object.keys(state.coins));
+    const order = state.coins_order || Object.keys(state.coins);
 
     // Render & order cards
     order.forEach((coin) => {

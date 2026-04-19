@@ -66,7 +66,6 @@ class DashboardStateService:
             "paper_capital": (0.0, 0.0),
         }
         self._next_slow_refresh_at: float = 0.0
-        self._slow_refresh_in_flight: bool = False
 
     async def start(self) -> None:
         if self._running:
@@ -85,20 +84,17 @@ class DashboardStateService:
         next_history_at = 0.0
         loop = asyncio.get_running_loop()
         # Prime slow cache immediately so the first snapshot has data.
-        # Run the SQLite work on the default executor so it never blocks the loop.
-        await loop.run_in_executor(None, self._refresh_slow_cache)
+        # NOTE: tracker.conn is created with check_same_thread=True, so the slow
+        # refresh has to run on the loop thread. Keep the slow tier rare (500ms+)
+        # to limit how much it can starve WS heartbeats.
+        self._refresh_slow_cache()
         self._next_slow_refresh_at = loop.time() + self.slow_refresh_interval_s
         while self._running:
             try:
                 now_loop = loop.time()
-                if (
-                    now_loop >= self._next_slow_refresh_at
-                    and not self._slow_refresh_in_flight
-                ):
-                    self._slow_refresh_in_flight = True
+                if now_loop >= self._next_slow_refresh_at:
+                    self._refresh_slow_cache()
                     self._next_slow_refresh_at = now_loop + self.slow_refresh_interval_s
-                    # Fire-and-forget — the executor task updates the cache when done.
-                    asyncio.create_task(self._refresh_slow_cache_async())
                 sample_history = now_loop >= next_history_at
                 if sample_history:
                     self._sample_price_series()
@@ -117,16 +113,8 @@ class DashboardStateService:
                 logger.debug("Dashboard snapshot update failed: %s", exc)
                 await asyncio.sleep(self.update_interval_s)
 
-    async def _refresh_slow_cache_async(self) -> None:
-        """Run the blocking SQLite work in the default executor and update the cache."""
-        loop = asyncio.get_running_loop()
-        try:
-            await loop.run_in_executor(None, self._refresh_slow_cache)
-        finally:
-            self._slow_refresh_in_flight = False
-
     def _refresh_slow_cache(self) -> None:
-        """Pull DB-backed data once, store in cache. MUST run off the event loop thread."""
+        """Pull DB-backed data once, store in cache. Runs on the event loop thread."""
         try:
             recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
         except Exception as exc:

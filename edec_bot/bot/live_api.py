@@ -535,9 +535,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
 
   .card-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     align-items: center;
-    justify-content: space-between;
+    gap: 10px;
     padding: 8px 12px;
     background: linear-gradient(180deg, #1a2247 0%, #0d1532 100%);
     border-bottom: 1px solid var(--chrome-lo);
@@ -548,6 +549,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .card-header .left {
     display: flex; align-items: center; gap: 10px; min-width: 0;
   }
+  .card-header .mid { min-width: 0; }
   .grip {
     color: var(--text-dim);
     font-size: 22px;
@@ -574,11 +576,33 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: flex; align-items: center; gap: 10px;
     color: var(--text-dim);
     font-size: 16px;
+    justify-self: end;
   }
   .timer {
     color: var(--neon-amber);
     text-shadow: 0 0 4px var(--neon-amber);
     font-size: 18px;
+  }
+  .session-inline {
+    display: flex; align-items: center; justify-content: center;
+    gap: 6px; flex-wrap: wrap;
+  }
+  .session-inline .item {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 6px;
+    border: 1px solid #24315f;
+    border-radius: 999px;
+    background: rgba(7, 11, 28, 0.82);
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.35);
+  }
+  .session-inline .lbl {
+    color: var(--text-dim);
+    font-size: 8px;
+    letter-spacing: 1px;
+    font-family: "Press Start 2P", "VT323", monospace;
+  }
+  .session-inline .val {
+    font-size: 12px;
   }
 
   /* ============================================================
@@ -644,12 +668,30 @@ _DASHBOARD_HTML = r"""<!doctype html>
     display: flex; align-items: baseline; justify-content: space-between;
     font-size: 18px;
   }
+  .strike-row.compact {
+    justify-content: flex-start;
+    gap: 8px;
+    min-width: 0;
+  }
   .strike-row .big {
     color: var(--neon-amber);
     font-size: 22px;
     text-shadow: 0 0 6px var(--neon-amber);
   }
   .strike-row .lbl { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
+  .market-strip {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; flex-wrap: wrap;
+  }
+  .pred-copy {
+    color: var(--text-dim);
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-align: right;
+  }
+  .pred-copy .yes { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
+  .pred-copy .no { color: var(--neon-red); text-shadow: 0 0 4px var(--neon-red); }
+  .pred-copy .sep { color: var(--text-dim); }
 
   /* Prediction bar */
   .predbar {
@@ -783,6 +825,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     position: absolute;
     top: 6px; left: 8px;
     display: flex; gap: 14px;
+    flex-wrap: wrap;
+    max-width: 48%;
     font-family: "Press Start 2P", "VT323", monospace;
     font-size: 9px;
     letter-spacing: 1px;
@@ -792,6 +836,66 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .chart-meta .hi  { color: var(--text-dim); }
   .chart-meta .now { color: var(--neon-cyan); text-shadow: 0 0 4px var(--neon-cyan); }
   .chart-meta .stk { color: var(--neon-amber); text-shadow: 0 0 4px var(--neon-amber); }
+  .chart-feeds {
+    position: absolute;
+    top: 6px; right: 8px;
+    display: flex; gap: 5px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    max-width: 44%;
+    pointer-events: none;
+  }
+  .chart-feed {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 5px;
+    border: 1px solid #24315f;
+    border-radius: 999px;
+    background: rgba(7, 11, 28, 0.82);
+    color: var(--text-dim);
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 7px;
+    letter-spacing: 1px;
+    box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.35);
+  }
+  .chart-feed .dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: #24304f;
+    border: 1px solid #000;
+  }
+  .chart-feed.on .dot {
+    background: radial-gradient(circle at 35% 30%, #b3ffd1, var(--neon-lime) 70%);
+    box-shadow: 0 0 6px var(--neon-lime);
+  }
+  .chart-feed.stale .dot {
+    background: radial-gradient(circle at 35% 30%, #ffe8a8, var(--neon-amber) 70%);
+    box-shadow: 0 0 5px var(--neon-amber);
+  }
+  .chart-feed.off .dot {
+    background: #24304f;
+    box-shadow: none;
+  }
+  .chart-resolutions {
+    position: absolute;
+    right: 8px; bottom: 6px;
+    display: flex; align-items: center; gap: 6px;
+    pointer-events: none;
+  }
+  .chart-res-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    border: 1px solid #000;
+    background: #24304f;
+    box-shadow: inset 0 -2px 3px rgba(0, 0, 0, 0.55);
+  }
+  .chart-res-dot.yes {
+    background: radial-gradient(circle at 35% 30%, #b3ffd1, var(--neon-lime) 70%);
+    box-shadow: 0 0 8px var(--neon-lime);
+  }
+  .chart-res-dot.no {
+    background: radial-gradient(circle at 35% 30%, #ffb3b3, var(--neon-red) 70%);
+    box-shadow: 0 0 8px var(--neon-red);
+  }
 
   /* No-data state */
   .nodata {
@@ -809,6 +913,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .coin-name { font-size: 11px; }
     .card-header .right { font-size: 14px; }
     .timer { font-size: 16px; }
+    .session-inline { gap: 4px; }
+    .session-inline .item { padding: 2px 5px; }
+    .session-inline .val { font-size: 11px; }
   }
 
   /* Mobile */
@@ -835,15 +942,21 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .strike-row { font-size: 14px; }
     .strike-row .big { font-size: 18px; }
     .strike-row .lbl { font-size: 10px; }
+    .pred-copy { font-size: 10px; }
     .predbar { height: 16px; }
     .predbar .label-up, .predbar .label-down { font-size: 10px; top: 0; }
     .row { flex-direction: column; gap: 2px; font-size: 14px; }
     .strategy-tag { font-size: 10px; }
+    .session-inline { gap: 4px; }
+    .session-inline .lbl { font-size: 7px; }
+    .session-inline .val { font-size: 10px; }
     .session { gap: 8px; font-size: 14px; }
     .session .item .lbl { font-size: 9px; }
     .chart-slot { height: 92px; }
     .chart-empty { font-size: 8px; letter-spacing: 1px; }
     .chart-meta { font-size: 7px; gap: 8px; }
+    .chart-feed { font-size: 6px; padding: 2px 4px; }
+    .chart-res-dot { width: 8px; height: 8px; }
   }
 
   @media (max-width: 430px) {
@@ -1050,31 +1163,28 @@ _DASHBOARD_HTML = r"""<!doctype html>
           <span class="coin-name">🪙 ${coin.toUpperCase()}</span>
           <span class="live-price" data-field="price">—</span>
         </div>
+        <div class="mid">
+          <div class="session-inline" data-field="session-inline"></div>
+        </div>
         <div class="right">
-          <span data-field="strike-mini" class="muted">strike —</span>
           <span class="timer">⏱ <span data-field="timer">—</span></span>
         </div>
       </div>
       <div class="card-body">
-        <div class="panel">
-          <h4>📡 DATA FEEDS</h4>
-          <div class="leds" data-field="leds"></div>
-        </div>
-        <div class="panel">
-          <h4>🎯 STRIKE (MARKET OPEN)</h4>
-          <div class="strike-row">
-            <span class="big" data-field="strike">—</span>
-            <span class="lbl" data-field="strike-label">—</span>
-          </div>
-        </div>
-
         <div class="panel span2">
-          <h4>🔮 MARKET PREDICTION</h4>
+          <h4>🔮 MARKET LINE</h4>
+          <div class="market-strip">
+            <div class="strike-row compact">
+              <span class="big" data-field="strike">—</span>
+              <span class="lbl" data-field="strike-label">—</span>
+            </div>
+            <div class="pred-copy" data-field="pred-copy"><span class="muted">market prediction pending</span></div>
+          </div>
           <div class="predbar">
             <div class="up"   data-field="predbar-up"   style="width:0%"></div>
             <div class="down" data-field="predbar-down" style="width:0%"></div>
-            <span class="label-up"   data-field="predbar-up-lbl">UP —</span>
-            <span class="label-down" data-field="predbar-down-lbl">— DOWN</span>
+            <span class="label-up"   data-field="predbar-up-lbl">YES —</span>
+            <span class="label-down" data-field="predbar-down-lbl">— NO</span>
           </div>
         </div>
 
@@ -1085,15 +1195,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
         <div class="panel">
           <h4>💼 OPEN TRADES</h4>
           <div data-field="trades"><div class="muted">no open trades</div></div>
-        </div>
-
-        <div class="panel">
-          <h4>📼 LAST 4 RESOLUTIONS</h4>
-          <div class="tape" data-field="tape"></div>
-        </div>
-        <div class="panel">
-          <h4>🏆 SESSION (THIS COIN)</h4>
-          <div class="session" data-field="session"></div>
         </div>
 
         <div class="panel span2">
@@ -1157,14 +1258,14 @@ _DASHBOARD_HTML = r"""<!doctype html>
     });
   }
 
-  function renderLeds(host, sources) {
+  function renderChartFeeds(host, sources) {
     const feeds = (sources && sources.feeds) || [];
     // Round age to coarse buckets so the cache key doesn't churn every 100ms.
     const key = JSON.stringify(feeds.map(f => [f.name, !!f.active, f.age_s != null && f.age_s > 3 ? 1 : 0]));
     cachedSet(host, key, feeds.map(f => {
-      const cls = f.active ? (f.age_s != null && f.age_s > 3 ? "stale" : "on") : "";
+      const cls = f.active ? (f.age_s != null && f.age_s > 3 ? "stale" : "on") : "off";
       const lbl = FEED_LABELS[f.name] || f.name.toUpperCase().slice(0,4);
-      return `<div class="led ${cls}"><span class="dot"></span><span class="lbl">${lbl}</span></div>`;
+      return `<div class="chart-feed ${cls}"><span class="dot"></span><span class="lbl">${lbl}</span></div>`;
     }).join(""));
   }
 
@@ -1218,23 +1319,20 @@ _DASHBOARD_HTML = r"""<!doctype html>
     cachedSet(host, html, html);
   }
 
-  function renderTape(host, resolutions) {
+  function renderResolutionDots(host, resolutions) {
     if (!resolutions || !resolutions.length) {
-      cachedSet(host, "empty", '<span class="muted">no history yet</span>');
+      cachedSet(host, "empty", "");
       return;
     }
-    // Display oldest-first L→R so newest is on right (like a tape)
+    // Oldest-left so the newest result stays on the right edge.
     const reversed = resolutions.slice().reverse();
     const html = reversed.map(r => {
       const upper = (r.winner || "").toUpperCase();
-      const isUp = upper === "UP";
-      const cls = isUp ? "win-up" : "win-down";
-      const arrow = isUp ? "▲" : "▼";
-      const arrowCls = isUp ? "up" : "down";
-      const traded = r.did_we_trade
-        ? `<span class="traded">${r.trade_pnl >= 0 ? "+" : ""}$${r.trade_pnl.toFixed(2)}</span>`
-        : `<span class="nope">—</span>`;
-      return `<div class="seg ${cls}"><span class="arrow ${arrowCls}">${arrow}</span>${traded}</div>`;
+      const cls = upper === "UP" || upper === "YES" ? "yes" : "no";
+      const pnl = r.did_we_trade && r.trade_pnl != null
+        ? `${r.trade_pnl >= 0 ? "+" : ""}$${r.trade_pnl.toFixed(2)}`
+        : "no trade";
+      return `<span class="chart-res-dot ${cls}" title="${upper || "UNKNOWN"} | ${pnl}"></span>`;
     }).join("");
     cachedSet(host, html, html);
   }
@@ -1287,12 +1385,20 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const empty = document.createElement("div");
     empty.className = "chart-empty";
     empty.textContent = "⏳ AWAITING TELEMETRY";
+    const feeds = document.createElement("div");
+    feeds.className = "chart-feeds";
+    feeds.setAttribute("data-r", "feeds");
+    const resolutions = document.createElement("div");
+    resolutions.className = "chart-resolutions";
+    resolutions.setAttribute("data-r", "resolutions");
     host.appendChild(svg);
     host.appendChild(meta);
+    host.appendChild(feeds);
+    host.appendChild(resolutions);
     host.appendChild(empty);
 
     host.__chart = {
-      svg, meta, empty,
+      svg, meta, empty, feeds, resolutions,
       strikeLine: svg.querySelector('[data-r="strike"]'),
       green: svg.querySelector('[data-r="green"]'),
       red:   svg.querySelector('[data-r="red"]'),
@@ -1314,6 +1420,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const market = payload.market || null;
     const strike = market ? market.strike : null;
     const color  = payload.chart_color || "neutral";
+
+    renderChartFeeds(c.feeds, payload.sources);
+    renderResolutionDots(c.resolutions, payload.recent_resolutions);
 
     if (series.length < 2) {
       setStyle(c.empty, "display", "flex");
@@ -1391,15 +1500,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
     setText(c.mNow, "● " + fmtPrice(last.p));
   }
 
-  function renderSession(host, session) {
+  function renderSessionInline(host, session) {
     const s = session || {wins:0, losses:0, open:0, pnl:0};
     const pnlCls = s.pnl >= 0 ? "w" : "l";
-    host.innerHTML = `
-      <div class="item"><span class="lbl">WINS</span><span class="w">${s.wins}</span></div>
-      <div class="item"><span class="lbl">LOSSES</span><span class="l">${s.losses}</span></div>
-      <div class="item"><span class="lbl">OPEN</span><span class="o">${s.open}</span></div>
-      <div class="item"><span class="lbl">P&amp;L</span><span class="${pnlCls}">${fmtUsd(s.pnl)}</span></div>
-    `;
+    const key = JSON.stringify([s.wins, s.losses, s.open, Number(s.pnl || 0).toFixed(2)]);
+    cachedSet(host, key, `
+      <span class="item"><span class="lbl">W</span><span class="val w">${s.wins}</span></span>
+      <span class="item"><span class="lbl">L</span><span class="val l">${s.losses}</span></span>
+      <span class="item"><span class="lbl">O</span><span class="val o">${s.open}</span></span>
+      <span class="item"><span class="lbl">P</span><span class="val ${pnlCls}">${fmtUsd(s.pnl)}</span></span>
+    `);
   }
 
   function renderCoin(coin, payload) {
@@ -1418,7 +1528,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
       get("timer").textContent = fmtSecs(m.time_remaining_s);
       get("strike").textContent = m.strike != null ? "$" + fmtPrice(m.strike) : "—";
       get("strike-label").textContent = m.strike_label || "open";
-      get("strike-mini").textContent = m.strike != null ? `strike $${fmtPrice(m.strike)}` : "no market";
 
       const mp = m.market_prediction;
       if (mp) {
@@ -1426,30 +1535,34 @@ _DASHBOARD_HTML = r"""<!doctype html>
         const dnPct = Math.max(0, Math.min(100, mp.down_prob * 100));
         get("predbar-up").style.width = upPct + "%";
         get("predbar-down").style.width = dnPct + "%";
-        get("predbar-up-lbl").textContent  = `▲ UP ${fmtPct(mp.up_prob)}`;
-        get("predbar-down-lbl").textContent = `${fmtPct(mp.down_prob)} DOWN ▼`;
+        get("predbar-up-lbl").textContent  = `YES ${fmtPct(mp.up_prob)}`;
+        get("predbar-down-lbl").textContent = `${fmtPct(mp.down_prob)} NO`;
+        cachedSet(
+          get("pred-copy"),
+          `${upPct}|${dnPct}`,
+          `<span class="yes">YES ${fmtPct(mp.up_prob)}</span><span class="sep"> / </span><span class="no">NO ${fmtPct(mp.down_prob)}</span>`
+        );
       } else {
         get("predbar-up").style.width = "0%";
         get("predbar-down").style.width = "0%";
-        get("predbar-up-lbl").textContent = "▲ UP —";
-        get("predbar-down-lbl").textContent = "— DOWN ▼";
+        get("predbar-up-lbl").textContent = "YES —";
+        get("predbar-down-lbl").textContent = "— NO";
+        cachedSet(get("pred-copy"), "empty", '<span class="muted">market prediction pending</span>');
       }
     } else {
       get("timer").textContent = "—";
       get("strike").textContent = "—";
       get("strike-label").textContent = "no market";
-      get("strike-mini").textContent = "no market";
       get("predbar-up").style.width = "0%";
       get("predbar-down").style.width = "0%";
-      get("predbar-up-lbl").textContent = "▲ UP —";
-      get("predbar-down-lbl").textContent = "— DOWN ▼";
+      get("predbar-up-lbl").textContent = "YES —";
+      get("predbar-down-lbl").textContent = "— NO";
+      cachedSet(get("pred-copy"), "no-market", '<span class="muted">no market open</span>');
     }
 
-    renderLeds(get("leds"), payload.sources);
     renderSignals(get("signals"), payload.bot_signals);
     renderTrades(get("trades"), payload.open_trades);
-    renderTape(get("tape"), payload.recent_resolutions);
-    renderSession(get("session"), payload.session);
+    renderSessionInline(get("session-inline"), payload.session);
     renderChart(get("chart"), coin, payload);
     return card;
   }

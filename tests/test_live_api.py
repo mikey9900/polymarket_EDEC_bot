@@ -40,6 +40,11 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("v9.9.9", html)
         self.assertNotIn("__APP_VERSION__", html)
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
+        self.assertIn('data-field="session-inline"', html)
+        self.assertIn('data-field="pred-copy"', html)
+        self.assertIn('chart-feeds', html)
+        self.assertIn('chart-resolutions', html)
+        self.assertNotIn('data-field="strike-mini"', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

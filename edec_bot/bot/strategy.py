@@ -97,9 +97,9 @@ class StrategyEngine:
                     signals = self._evaluate_all()
                     for signal in signals:
                         await signal_queue.put(signal)
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(0.25)
                 else:
-                    await asyncio.sleep(2)  # idle — just wait for start command
+                    await asyncio.sleep(1)  # idle — just wait for start command
             except Exception as e:
                 logger.error(f"Strategy evaluation error: {e}")
                 await asyncio.sleep(1)

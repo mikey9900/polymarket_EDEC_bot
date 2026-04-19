@@ -113,6 +113,24 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
     if not f.passed and not failed_reason:
         failed_reason = f"Only {source_count} live feed(s)"
 
+    es_val = max(0.0, entry_price - entry_bid)
+    f = FilterResult("entry_spread", es_val <= cfg.max_entry_spread, f"{es_val:.3f}", f"<={cfg.max_entry_spread:.3f}")
+    filters.append(f)
+    if not f.passed and not failed_reason:
+        failed_reason = f"Entry spread too wide: {es_val:.3f} > {cfg.max_entry_spread:.3f}"
+
+    sdp = agg.source_dispersion_pct if agg else 0.0
+    f = FilterResult("source_dispersion", sdp <= cfg.max_source_dispersion_pct, f"{sdp:.3f}%", f"<={cfg.max_source_dispersion_pct:.3f}%")
+    filters.append(f)
+    if not f.passed and not failed_reason:
+        failed_reason = f"Source dispersion too high: {sdp:.3f}% > {cfg.max_source_dispersion_pct:.3f}%"
+
+    ssx = agg.source_staleness_max_s if agg else 0.0
+    f = FilterResult("source_staleness", ssx <= cfg.max_source_staleness_s, f"{ssx:.2f}s", f"<={cfg.max_source_staleness_s:.2f}s")
+    filters.append(f)
+    if not f.passed and not failed_reason:
+        failed_reason = f"Source staleness too high: {ssx:.2f}s > {cfg.max_source_staleness_s:.2f}s"
+
     risk_ok = engine.risk_manager.can_trade() if engine.risk_manager else True
     f = FilterResult("risk_limits", risk_ok, "ok" if risk_ok else "blocked", "ok")
     filters.append(f)

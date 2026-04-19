@@ -42,6 +42,9 @@ class SingleLegConfig:
     scalp_min_profit_usd: float = 0.05
     resignal_cooldown_s: float = 8.0
     min_price_improvement: float = 0.01
+    max_entry_spread: float = 0.06
+    max_source_dispersion_pct: float = 0.50
+    max_source_staleness_s: float = 4.0
     disabled_coins: tuple = ()
 
 
@@ -90,6 +93,9 @@ class LeadLagConfig:
     stall_window_s: float = 30.0
     min_progress_delta: float = 0.02
     hard_stop_loss_pct: float = 0.10
+    max_entry_spread: float = 0.06
+    max_source_dispersion_pct: float = 0.50
+    max_source_staleness_s: float = 4.0
     disabled_coins: tuple = ()
     coin_overrides: dict[str, LeadLagCoinOverride] = field(default_factory=dict)
 

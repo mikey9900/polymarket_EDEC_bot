@@ -846,6 +846,8 @@ def export_recent_trades_csv_gz(
                 ("loss_pct_at_exit", "loss_pct_at_exit"),
                 ("favorable_excursion", "favorable_excursion"),
                 ("ever_profitable", "ever_profitable"),
+                ("resolution_winner", "resolution_winner"),
+                ("resolution_side_match", "resolution_side_match"),
             ],
         )
         d_select = _aliased_select(
@@ -921,6 +923,7 @@ def export_recent_trades_csv_gz(
                 "ever_profitable": "evp", "source_prices_json": "spj",
                 "source_ages_json": "saj", "source_dispersion_pct": "sdp",
                 "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
+                "resolution_winner": "rw", "resolution_side_match": "rm",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)
@@ -1097,6 +1100,8 @@ def export_session_trades_csv_gz(
                 ("loss_pct_at_exit", "loss_pct_at_exit"),
                 ("favorable_excursion", "favorable_excursion"),
                 ("ever_profitable", "ever_profitable"),
+                ("resolution_winner", "resolution_winner"),
+                ("resolution_side_match", "resolution_side_match"),
             ],
         )
         d_select = _aliased_select(
@@ -1164,6 +1169,7 @@ def export_session_trades_csv_gz(
                 "ever_profitable": "evp", "source_prices_json": "spj",
                 "source_ages_json": "saj", "source_dispersion_pct": "sdp",
                 "source_staleness_max_s": "ssx", "source_staleness_avg_s": "ssa",
+                "resolution_winner": "rw", "resolution_side_match": "rm",
             }
             writer.writerow([compact_names.get(col, col) for col in columns])
             writer.writerows(rows)

@@ -240,6 +240,15 @@ async def main():
     config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
     config = load_config(config_path)
     setup_logging(config)
+
+    # Diagnostics: asyncio's built-in slow-callback warning names the offending
+    # coroutine when something blocks the loop for too long.
+    loop = asyncio.get_running_loop()
+    loop.set_debug(True)
+    loop.slow_callback_duration = 0.5  # log any callback taking >500ms
+    # Quiet the noisy "coroutine was never awaited" debug spam from set_debug;
+    # we only care about slow-callback warnings.
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
     started_at = datetime.now(timezone.utc).isoformat()
     strategy_version = _strategy_version(Path(__file__).resolve().parent.parent / "STRATEGY.md")
     config_hash = _config_hash(config_path)

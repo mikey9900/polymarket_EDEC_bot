@@ -22,7 +22,7 @@ from bot.config import Config
 from bot import telegram_buttons
 from bot import telegram_dashboard as dashboard_ui
 from bot import telegram_exports as export_workflows
-from bot.tracker import DecisionTracker
+from bot.tracker import DecisionTracker, ReadOnlyTrackerProxy
 from bot.risk_manager import RiskManager
 from version import __version__
 
@@ -55,6 +55,11 @@ class TelegramBot:
                  fetch_github_fn=None):
         self.config = config
         self.tracker = tracker
+        # Dedicated read-only SQLite connection so dashboard refreshes don't
+        # contend with the main loop's writer connection. Guarded for tests
+        # that pass mock trackers without a real db_path.
+        db_path = getattr(tracker, "db_path", None)
+        self._dashboard_reader = ReadOnlyTrackerProxy(db_path) if db_path else None
         self.risk_manager = risk_manager
         self.export_fn = export_fn
         self.export_recent_fn = export_recent_fn
@@ -229,11 +234,11 @@ class TelegramBot:
     def _format_usd(price: float) -> str:
         return dashboard_ui.format_usd(price)
 
-    def _build_dashboard_text(self) -> str:
+    def _build_dashboard_text(self, tracker=None) -> str:
         return dashboard_ui.build_dashboard_text(
             version=__version__,
             config=self.config,
-            tracker=self.tracker,
+            tracker=tracker if tracker is not None else self.tracker,
             scanner=self.scanner,
             aggregator=self.aggregator,
             strategy_engine=self.strategy_engine,
@@ -244,15 +249,16 @@ class TelegramBot:
         return self._build_dashboard_text(), self._main_keyboard()
 
     async def _build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
-        # Run the SQLite-heavy build in a worker thread so it can't block WS
-        # heartbeats. tracker.conn is now check_same_thread=False; tracker._io_lock
-        # serializes against main-thread writes.
+        # Run the SQLite-heavy build in a worker thread against a separate
+        # read-only connection — keeps the loop free for WS heartbeats and
+        # avoids contending with the main loop's tracker.conn writer.
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._locked_build_dashboard_payload)
+        return await loop.run_in_executor(None, self._threaded_build_dashboard_payload)
 
-    def _locked_build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
-        with self.tracker._io_lock:
-            return self._build_dashboard_payload_sync()
+    def _threaded_build_dashboard_payload(self) -> tuple[str, InlineKeyboardMarkup]:
+        reader = self._dashboard_reader if self._dashboard_reader is not None else self.tracker
+        text = self._build_dashboard_text(tracker=reader)
+        return text, self._main_keyboard()
 
     _MSG_ID_FILE = "data/dashboard_msg_id.txt"
     _EPHEMERAL_LOG = "data/ephemeral_msgs.txt"

@@ -11,6 +11,52 @@ from bot.tracker_support import reports as tracker_reports
 from bot.tracker_support import schema as tracker_schema
 
 
+class ReadOnlyTrackerProxy:
+    """Standalone SQLite reader for off-loop dashboard queries.
+
+    Holds its own connection so heavy dashboard reads run against the WAL
+    without blocking the writer connection used by the main asyncio loop.
+    SQLite WAL allows concurrent readers + 1 writer with no lock contention.
+    Exposes only the read methods the dashboard helpers need.
+    """
+
+    def __init__(self, db_path: str):
+        self.conn = sqlite3.connect(db_path, check_same_thread=False)
+        self.conn.execute("PRAGMA query_only=ON")
+        # Serialize access to this connection's cursor across executor workers.
+        self._lock = threading.Lock()
+
+    def close(self) -> None:
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def get_paper_capital(self):
+        with self._lock:
+            return tracker_paper.get_paper_capital(self)
+
+    def get_paper_stats(self):
+        with self._lock:
+            return tracker_paper.get_paper_stats(self)
+
+    def get_session_stats_by_coin(self):
+        with self._lock:
+            return tracker_paper.get_session_stats_by_coin(self)
+
+    def get_recent_signals_by_coin(self, max_age_s: float = 30.0):
+        with self._lock:
+            return tracker_reports.get_recent_signals_by_coin(self, max_age_s)
+
+    def get_coin_recent_outcomes(self, coin: str, limit: int = 4):
+        with self._lock:
+            return tracker_reports.get_coin_recent_outcomes(self, coin, limit)
+
+    def get_coin_recent_resolutions(self, coin: str, limit: int = 4):
+        with self._lock:
+            return tracker_reports.get_coin_recent_resolutions(self, coin, limit)
+
+
 
 
 class DecisionTracker:

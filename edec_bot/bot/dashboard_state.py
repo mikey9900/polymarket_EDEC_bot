@@ -10,6 +10,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
+from bot.tracker import ReadOnlyTrackerProxy
+
 logger = logging.getLogger("edec.dashboard_state")
 
 
@@ -38,6 +40,12 @@ class DashboardStateService:
     ):
         self.config = config
         self.tracker = tracker
+        # Dedicated read-only SQLite connection for off-loop slow-tier queries.
+        # Lets the dashboard worker read while the loop's tracker.conn keeps
+        # accepting writes from strategy evaluations. Falls back to the live
+        # tracker for tests that pass mocks without a real db_path.
+        db_path = getattr(tracker, "db_path", None)
+        self._reader = ReadOnlyTrackerProxy(db_path) if db_path else tracker
         self.risk_manager = risk_manager
         self.scanner = scanner
         self.strategy_engine = strategy_engine
@@ -128,34 +136,33 @@ class DashboardStateService:
     def _refresh_slow_cache(self) -> None:
         """Pull DB-backed data once, store in cache. Runs in a worker thread.
 
-        Holds tracker._io_lock so it can't collide with main-thread writes on
-        the shared sqlite connection.
+        Uses self._reader (a dedicated SQLite connection) so reads here never
+        block the main loop's writer connection.
         """
-        with self.tracker._io_lock:
+        try:
+            recent_signals = self._reader.get_recent_signals_by_coin(max_age_s=30.0)
+        except Exception as exc:
+            logger.debug("recent_signals query failed: %s", exc)
+            recent_signals = self._slow_cache.get("recent_signals", {})
+        try:
+            session_by_coin = self._reader.get_session_stats_by_coin()
+        except Exception as exc:
+            logger.debug("session_by_coin query failed: %s", exc)
+            session_by_coin = self._slow_cache.get("session_by_coin", {})
+        resolutions_by_coin: dict[str, list[dict]] = {}
+        for coin in self.config.coins:
             try:
-                recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
+                resolutions_by_coin[coin] = self._reader.get_coin_recent_resolutions(coin, limit=4)
             except Exception as exc:
-                logger.debug("recent_signals query failed: %s", exc)
-                recent_signals = self._slow_cache.get("recent_signals", {})
-            try:
-                session_by_coin = self.tracker.get_session_stats_by_coin()
-            except Exception as exc:
-                logger.debug("session_by_coin query failed: %s", exc)
-                session_by_coin = self._slow_cache.get("session_by_coin", {})
-            resolutions_by_coin: dict[str, list[dict]] = {}
-            for coin in self.config.coins:
-                try:
-                    resolutions_by_coin[coin] = self.tracker.get_coin_recent_resolutions(coin, limit=4)
-                except Exception as exc:
-                    logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
-                    resolutions_by_coin[coin] = self._slow_cache.get(
-                        "recent_resolutions_by_coin", {}
-                    ).get(coin, [])
-            try:
-                paper_capital = self.tracker.get_paper_capital()
-            except Exception as exc:
-                logger.debug("paper_capital query failed: %s", exc)
-                paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
+                logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
+                resolutions_by_coin[coin] = self._slow_cache.get(
+                    "recent_resolutions_by_coin", {}
+                ).get(coin, [])
+        try:
+            paper_capital = self._reader.get_paper_capital()
+        except Exception as exc:
+            logger.debug("paper_capital query failed: %s", exc)
+            paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
         self._slow_cache = {
             "recent_signals": recent_signals,
             "session_by_coin": session_by_coin,

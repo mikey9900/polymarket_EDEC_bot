@@ -42,7 +42,7 @@ class ClobWebSocketFeed:
 
         while self._running:
             try:
-                async with websockets.connect(WS_URL, ping_interval=None) as ws:
+                async with websockets.connect(WS_URL, ping_interval=None, open_timeout=20) as ws:
                     self._ws = ws
                     backoff = RECONNECT_BASE_S
                     logger.info("CLOB WebSocket connected")

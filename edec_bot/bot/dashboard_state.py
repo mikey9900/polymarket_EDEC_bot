@@ -63,8 +63,10 @@ class DashboardStateService:
             "recent_signals": {},
             "session_by_coin": {},
             "recent_resolutions_by_coin": {},
+            "paper_capital": (0.0, 0.0),
         }
         self._next_slow_refresh_at: float = 0.0
+        self._slow_refresh_in_flight: bool = False
 
     async def start(self) -> None:
         if self._running:
@@ -83,14 +85,20 @@ class DashboardStateService:
         next_history_at = 0.0
         loop = asyncio.get_running_loop()
         # Prime slow cache immediately so the first snapshot has data.
-        self._refresh_slow_cache()
+        # Run the SQLite work on the default executor so it never blocks the loop.
+        await loop.run_in_executor(None, self._refresh_slow_cache)
         self._next_slow_refresh_at = loop.time() + self.slow_refresh_interval_s
         while self._running:
             try:
                 now_loop = loop.time()
-                if now_loop >= self._next_slow_refresh_at:
-                    self._refresh_slow_cache()
+                if (
+                    now_loop >= self._next_slow_refresh_at
+                    and not self._slow_refresh_in_flight
+                ):
+                    self._slow_refresh_in_flight = True
                     self._next_slow_refresh_at = now_loop + self.slow_refresh_interval_s
+                    # Fire-and-forget — the executor task updates the cache when done.
+                    asyncio.create_task(self._refresh_slow_cache_async())
                 sample_history = now_loop >= next_history_at
                 if sample_history:
                     self._sample_price_series()
@@ -109,8 +117,16 @@ class DashboardStateService:
                 logger.debug("Dashboard snapshot update failed: %s", exc)
                 await asyncio.sleep(self.update_interval_s)
 
+    async def _refresh_slow_cache_async(self) -> None:
+        """Run the blocking SQLite work in the default executor and update the cache."""
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, self._refresh_slow_cache)
+        finally:
+            self._slow_refresh_in_flight = False
+
     def _refresh_slow_cache(self) -> None:
-        """Pull DB-backed data once, store in cache. Keeps the fast loop CPU-bound only."""
+        """Pull DB-backed data once, store in cache. MUST run off the event loop thread."""
         try:
             recent_signals = self.tracker.get_recent_signals_by_coin(max_age_s=30.0)
         except Exception as exc:
@@ -130,10 +146,16 @@ class DashboardStateService:
                 resolutions_by_coin[coin] = self._slow_cache.get(
                     "recent_resolutions_by_coin", {}
                 ).get(coin, [])
+        try:
+            paper_capital = self.tracker.get_paper_capital()
+        except Exception as exc:
+            logger.debug("paper_capital query failed: %s", exc)
+            paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
         self._slow_cache = {
             "recent_signals": recent_signals,
             "session_by_coin": session_by_coin,
             "recent_resolutions_by_coin": resolutions_by_coin,
+            "paper_capital": paper_capital,
         }
 
     # ------------------------------------------------------------------
@@ -153,12 +175,11 @@ class DashboardStateService:
             series.append((now, float(agg.price)))
 
     def _build_snapshot(self) -> dict[str, Any]:
-        paper_total, paper_balance = self.tracker.get_paper_capital()
-
         slow = self._slow_cache
         recent_signals = slow.get("recent_signals", {})
         session_by_coin = slow.get("session_by_coin", {})
         resolutions_by_coin = slow.get("recent_resolutions_by_coin", {})
+        paper_total, paper_balance = slow.get("paper_capital", (0.0, 0.0))
 
         open_singles = list(self.executor.get_open_positions().values())
         open_swings = list(getattr(self.executor, "_open_swing_positions", {}).values())

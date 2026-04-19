@@ -26,7 +26,7 @@ class BinanceFeed:
         backoff = 1
         while self._running:
             try:
-                async with websockets.connect(self.url) as ws:
+                async with websockets.connect(self.url, open_timeout=20) as ws:
                     logger.info(f"Binance feed connected: {self.symbol}")
                     backoff = 1
                     async for msg in ws:
@@ -65,7 +65,7 @@ class CoinbaseFeed:
         backoff = 1
         while self._running:
             try:
-                async with websockets.connect(self.url) as ws:
+                async with websockets.connect(self.url, open_timeout=20) as ws:
                     await ws.send(json.dumps({
                         "type": "subscribe",
                         "product_ids": [self.product],
@@ -109,7 +109,7 @@ class PolymarketRTDSFeed:
         backoff = 1
         while self._running:
             try:
-                async with websockets.connect(self.url) as ws:
+                async with websockets.connect(self.url, open_timeout=20) as ws:
                     await ws.send(json.dumps({
                         "action": "subscribe",
                         "subscriptions": [

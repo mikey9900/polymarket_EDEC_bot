@@ -132,7 +132,7 @@ class MarketScanner:
             logger.debug(f"[{coin.upper()}] No active market found")
             return None
         except Exception as e:
-            logger.error(f"[{coin.upper()}] Discovery error: {e}")
+            logger.error(f"[{coin.upper()}] Discovery error: {type(e).__name__}: {e}")
             return None
 
     def _parse_event(self, event: dict, coin: str) -> MarketInfo | None:

@@ -13,6 +13,15 @@ from bot.dashboard_state import DashboardStateService
 class _FakeTracker:
     db_path = None
 
+    def get_recent_signals_by_coin(self, max_age_s=30.0):
+        return {}
+
+    def get_session_stats_by_coin(self):
+        return {}
+
+    def get_coin_recent_resolutions(self, coin: str, limit: int = 4):
+        return [{"winner": "DOWN", "market_slug": "tracker-fallback"}][:limit]
+
     def get_paper_capital(self):
         return (100.0, 115.0)
 
@@ -94,6 +103,9 @@ class _FakeScanner:
     def get_books(self, _coin: str):
         return (None, None)
 
+    def get_recent_resolutions(self, _coin: str, limit: int = 4):
+        return [{"winner": "UP", "slug": "poly-1"}, {"winner": "DOWN", "slug": "poly-2"}][:limit]
+
 
 class _FakeAggregator:
     def get_aggregated_price(self, _coin: str):
@@ -172,6 +184,16 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad_mode["status"], 400)
         self.assertFalse(bad_budget["ok"])
         self.assertEqual(bad_budget["status"], 400)
+
+    def test_refresh_slow_cache_prefers_scanner_recent_resolutions(self):
+        service = self._build_service()
+
+        service._refresh_slow_cache()
+
+        self.assertEqual(
+            service._slow_cache["recent_resolutions_by_coin"]["btc"],
+            [{"winner": "UP", "slug": "poly-1"}, {"winner": "DOWN", "slug": "poly-2"}],
+        )
 
 
 if __name__ == "__main__":

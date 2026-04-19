@@ -27,6 +27,7 @@ class MarketScanner:
 
         # Markets that have ended but not yet had their outcome resolved
         self._expired_markets: list[MarketInfo] = []
+        self._recent_resolutions: dict[str, list[dict[str, str]]] = {c: [] for c in self.coins}
 
         # Real-time WebSocket book feed
         self._ws_feed = ClobWebSocketFeed()
@@ -79,6 +80,10 @@ class MarketScanner:
         """Return all coins that currently have an active market."""
         return {c: m for c, m in self._markets.items() if m is not None}
 
+    def get_recent_resolutions(self, coin: str, limit: int = 4) -> list[dict[str, str]]:
+        """Return cached recent Polymarket outcomes for the coin, newest first."""
+        return list(self._recent_resolutions.get(coin, ()))[:limit]
+
     def get_status_snapshot(self) -> dict:
         """Return a dict of coin → (up_ask, down_ask) for Telegram /status."""
         result = {}
@@ -97,6 +102,7 @@ class MarketScanner:
         """Continuously discover and monitor one coin's 5-min market."""
         while self._running:
             try:
+                await self._refresh_recent_resolutions(coin)
                 market = await self._discover_market(coin)
                 if market and market.accepting_orders:
                     self._markets[coin] = market
@@ -225,6 +231,78 @@ class MarketScanner:
         except Exception as e:
             logger.debug(f"[{coin.upper()}] Market metadata refresh error: {e}")
 
+    @staticmethod
+    def _parse_market_winner(data: dict) -> str | None:
+        """Extract normalized UP/DOWN winner from a closed/resolved market dict."""
+        if not isinstance(data, dict):
+            return None
+        is_closed = bool(data.get("resolved") or data.get("closed") or data.get("acceptingOrders") is False)
+        if not is_closed:
+            return None
+        outcomes = data.get("outcomes", [])
+        prices = data.get("outcomePrices", [])
+        if isinstance(outcomes, str):
+            try:
+                outcomes = json.loads(outcomes)
+            except Exception:
+                return None
+        if isinstance(prices, str):
+            try:
+                prices = json.loads(prices)
+            except Exception:
+                return None
+        for i, price in enumerate(prices):
+            try:
+                if float(price) >= 0.99 and i < len(outcomes):
+                    raw = str(outcomes[i]).lower()
+                    if raw in ("up", "yes"):
+                        return "UP"
+                    if raw in ("down", "no"):
+                        return "DOWN"
+                    return str(outcomes[i]).upper()
+            except (ValueError, TypeError):
+                continue
+        return None
+
+    @staticmethod
+    def _resolution_slugs_for_coin(coin: str, *, anchor_ts: float | None = None, limit: int = 4) -> list[str]:
+        now_ts = int(anchor_ts if anchor_ts is not None else time.time())
+        current_window_start = now_ts - (now_ts % 300)
+        return [f"{coin}-updown-5m-{current_window_start - (300 * i)}" for i in range(1, limit + 1)]
+
+    async def _refresh_recent_resolutions(self, coin: str, *, anchor_ts: float | None = None, limit: int = 4) -> list[dict[str, str]]:
+        """Refresh cached last-N closed market outcomes for dashboard LED history."""
+        slugs = self._resolution_slugs_for_coin(coin, anchor_ts=anchor_ts, limit=limit)
+        url = f"{self.config.polymarket.gamma_base_url}/events"
+        try:
+            responses = await asyncio.gather(
+                *(self._http.get(url, params={"slug": slug, "limit": 1}) for slug in slugs),
+                return_exceptions=True,
+            )
+        except Exception as e:
+            logger.debug(f"[{coin.upper()}] Recent resolution refresh error: {e}")
+            return self.get_recent_resolutions(coin, limit=limit)
+
+        recent: list[dict[str, str]] = []
+        for slug, resp in zip(slugs, responses):
+            if isinstance(resp, Exception) or getattr(resp, "status_code", 0) != 200:
+                continue
+            try:
+                events = resp.json()
+            except Exception:
+                continue
+            if not isinstance(events, list) or not events:
+                continue
+            winner = None
+            for market in events[0].get("markets", []):
+                winner = self._parse_market_winner(market)
+                if winner:
+                    break
+            if winner:
+                recent.append({"winner": winner, "slug": slug})
+        self._recent_resolutions[coin] = recent
+        return list(recent)
+
     async def _poll_books_until_end(self, coin: str, market: MarketInfo):
         """Subscribe to WebSocket book updates until the market window closes.
         Falls back to HTTP polling until the WebSocket delivers the first snapshot."""
@@ -302,45 +380,13 @@ class MarketScanner:
     async def get_market_outcome(self, market: MarketInfo) -> str | None:
         """Query resolved outcome for a market. Returns 'UP' or 'DOWN', or None if not yet resolved."""
 
-        def _parse_winner(data) -> str | None:
-            """Extract normalized UP/DOWN winner from a market dict."""
-            if not isinstance(data, dict):
-                return None
-            if not data.get("resolved"):
-                return None
-            outcomes = data.get("outcomes", [])
-            prices = data.get("outcomePrices", [])
-            if isinstance(outcomes, str):
-                try:
-                    outcomes = json.loads(outcomes)
-                except Exception:
-                    return None
-            if isinstance(prices, str):
-                try:
-                    prices = json.loads(prices)
-                except Exception:
-                    return None
-            for i, price in enumerate(prices):
-                try:
-                    if float(price) >= 0.99 and i < len(outcomes):
-                        raw = str(outcomes[i]).lower()
-                        if raw in ("up", "yes"):
-                            return "UP"
-                        elif raw in ("down", "no"):
-                            return "DOWN"
-                        else:
-                            return str(outcomes[i]).upper()
-                except (ValueError, TypeError):
-                    continue
-            return None
-
         try:
             # Primary: query individual market by condition_id
             if market.condition_id:
                 url = f"{self.config.polymarket.gamma_base_url}/markets/{market.condition_id}"
                 resp = await self._http.get(url, timeout=8.0)
                 if resp.status_code == 200:
-                    winner = _parse_winner(resp.json())
+                    winner = self._parse_market_winner(resp.json())
                     if winner:
                         logger.debug(f"[{market.slug}] Outcome resolved via markets endpoint: {winner}")
                         return winner
@@ -352,7 +398,7 @@ class MarketScanner:
                 events = resp.json()
                 if isinstance(events, list) and events:
                     for mkt in events[0].get("markets", []):
-                        winner = _parse_winner(mkt)
+                        winner = self._parse_market_winner(mkt)
                         if winner:
                             logger.debug(f"[{market.slug}] Outcome resolved via events fallback: {winner}")
                             return winner

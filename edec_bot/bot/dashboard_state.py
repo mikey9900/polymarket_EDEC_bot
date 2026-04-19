@@ -182,11 +182,20 @@ class DashboardStateService:
             session_by_coin = self._slow_cache.get("session_by_coin", {})
         resolutions_by_coin: dict[str, list[dict]] = {}
         for coin in self.config.coins:
+            scanner_resolutions: list[dict] = []
+            if self.scanner is not None and hasattr(self.scanner, "get_recent_resolutions"):
+                try:
+                    scanner_resolutions = list(self.scanner.get_recent_resolutions(coin, limit=4))
+                except Exception as exc:
+                    logger.debug("scanner recent_resolutions failed for %s: %s", coin, exc)
             try:
-                resolutions_by_coin[coin] = self._reader.get_coin_recent_resolutions(coin, limit=4)
+                if scanner_resolutions:
+                    resolutions_by_coin[coin] = scanner_resolutions
+                else:
+                    resolutions_by_coin[coin] = self._reader.get_coin_recent_resolutions(coin, limit=4)
             except Exception as exc:
                 logger.debug("recent_resolutions query failed for %s: %s", coin, exc)
-                resolutions_by_coin[coin] = self._slow_cache.get(
+                resolutions_by_coin[coin] = scanner_resolutions or self._slow_cache.get(
                     "recent_resolutions_by_coin", {}
                 ).get(coin, [])
         try:

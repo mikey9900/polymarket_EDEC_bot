@@ -51,6 +51,21 @@ class _FakeHttpClient:
         return None
 
 
+class _FakeRoutingHttpClient:
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    async def get(self, url, params=None, timeout=None):
+        self.calls.append((url, params, timeout))
+        key = (url, tuple(sorted((params or {}).items())))
+        payload = self.routes[key]
+        return _FakeResponse(200, payload)
+
+    async def aclose(self):
+        return None
+
+
 class MarketScannerQueueTests(unittest.IsolatedAsyncioTestCase):
     async def test_queue_expired_market_dedupes_by_slug(self):
         scanner = MarketScanner(SimpleNamespace(coins=("btc",)))
@@ -109,6 +124,49 @@ class MarketScannerQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             fake_http.calls,
             [("https://gamma.example/events", {"slug": market.slug, "limit": 1})],
+        )
+
+    async def test_refresh_recent_resolutions_reads_last_four_closed_markets(self):
+        cfg = SimpleNamespace(
+            coins=("btc",),
+            polymarket=SimpleNamespace(gamma_base_url="https://gamma.example"),
+        )
+        scanner = MarketScanner(cfg)
+        await scanner._http.aclose()
+        base_url = "https://gamma.example/events"
+        routes = {}
+        winners = {
+            "btc-updown-5m-1200": '["1", "0"]',
+            "btc-updown-5m-900": '["0", "1"]',
+            "btc-updown-5m-600": '["1", "0"]',
+            "btc-updown-5m-300": '["0", "1"]',
+        }
+        for slug, prices in winners.items():
+            routes[(base_url, (("limit", 1), ("slug", slug)))] = [
+                {
+                    "markets": [
+                        {
+                            "closed": True,
+                            "acceptingOrders": False,
+                            "outcomes": '["Up", "Down"]',
+                            "outcomePrices": prices,
+                        }
+                    ]
+                }
+            ]
+        scanner._http = _FakeRoutingHttpClient(routes)
+        self.addAsyncCleanup(scanner.aclose)
+
+        recent = await scanner._refresh_recent_resolutions("btc", anchor_ts=1500, limit=4)
+
+        self.assertEqual(
+            recent,
+            [
+                {"winner": "UP", "slug": "btc-updown-5m-1200"},
+                {"winner": "DOWN", "slug": "btc-updown-5m-900"},
+                {"winner": "UP", "slug": "btc-updown-5m-600"},
+                {"winner": "DOWN", "slug": "btc-updown-5m-300"},
+            ],
         )
 
 

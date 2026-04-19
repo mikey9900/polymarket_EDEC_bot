@@ -548,6 +548,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
   .card-header:active { cursor: grabbing; }
   .card-header .left {
     display: flex; align-items: center; gap: 10px; min-width: 0;
+    flex-wrap: nowrap;
+    overflow: hidden;
   }
   .card-header .mid { min-width: 0; }
   .grip {
@@ -563,11 +565,18 @@ _DASHBOARD_HTML = r"""<!doctype html>
     color: var(--neon-cyan);
     text-shadow: 0 0 5px var(--neon-cyan), 0 0 12px rgba(0,240,255,0.4);
     letter-spacing: 2px;
+    white-space: nowrap;
+    flex: 0 0 auto;
   }
   .live-price {
     font-size: 22px;
     color: var(--text);
     text-shadow: 0 0 4px rgba(207,230,255,0.5);
+    min-width: 88px;
+    text-align: right;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    flex: 0 0 auto;
   }
 
   .card-header .right {
@@ -668,16 +677,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
   }
   .strike-row.compact {
     justify-content: flex-start;
-    gap: 8px;
-    flex-wrap: wrap;
+    gap: 7px;
+    flex-wrap: nowrap;
     min-width: 0;
+    flex: 0 0 auto;
   }
   .strike-row .big {
     color: var(--neon-amber);
     font-size: 22px;
     text-shadow: 0 0 6px var(--neon-amber);
   }
-  .strike-row .lbl { color: var(--text-dim); font-size: 12px; letter-spacing: 1px; }
   .strike-row .delta {
     font-size: 14px;
     letter-spacing: 0.5px;
@@ -691,18 +700,9 @@ _DASHBOARD_HTML = r"""<!doctype html>
     text-shadow: 0 0 4px rgba(207,230,255,0.45);
   }
   .market-strip {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 8px; flex-wrap: wrap;
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; flex-wrap: nowrap;
   }
-  .pred-copy {
-    color: var(--text-dim);
-    font-size: 12px;
-    letter-spacing: 1px;
-    text-align: right;
-  }
-  .pred-copy .yes { color: var(--neon-lime); text-shadow: 0 0 4px var(--neon-lime); }
-  .pred-copy .no { color: var(--neon-red); text-shadow: 0 0 4px var(--neon-red); }
-  .pred-copy .sep { color: var(--text-dim); }
 
   /* Prediction bar */
   .predbar {
@@ -712,7 +712,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     border-radius: 3px;
     position: relative;
     overflow: hidden;
-    margin-top: 5px;
+    margin-top: 0;
+    flex: 1 1 190px;
+    min-width: 168px;
+    max-width: 250px;
   }
   .predbar .up {
     position: absolute; left: 0; top: 0; bottom: 0;
@@ -952,10 +955,10 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .panel h4 { font-size: 8px; margin-bottom: 6px; }
     .strike-row { font-size: 14px; }
     .strike-row .big { font-size: 18px; }
-    .strike-row .lbl { font-size: 10px; }
     .strike-row .delta, .strike-row .pct { font-size: 11px; }
-    .pred-copy { font-size: 10px; }
+    .market-strip { gap: 8px; }
     .predbar { height: 16px; }
+    .predbar { min-width: 142px; max-width: none; }
     .predbar .label-up, .predbar .label-down { font-size: 10px; top: 0; }
     .row { flex-direction: column; gap: 2px; font-size: 14px; }
     .strategy-tag { font-size: 10px; }
@@ -977,6 +980,8 @@ _DASHBOARD_HTML = r"""<!doctype html>
     .coin-name { font-size: 10px; }
     .card-header .right { font-size: 12px; }
     .timer { font-size: 15px; }
+    .market-strip { gap: 6px; }
+    .predbar { min-width: 126px; }
     .chart-slot { height: 78px; }
   }
 </style>
@@ -1190,15 +1195,13 @@ _DASHBOARD_HTML = r"""<!doctype html>
               <span class="big" data-field="strike">—</span>
               <span class="delta flat" data-field="strike-delta">—</span>
               <span class="pct" data-field="strike-pct">—</span>
-              <span class="lbl" data-field="strike-label">—</span>
             </div>
-            <div class="pred-copy" data-field="pred-copy"><span class="muted">market prediction pending</span></div>
-          </div>
-          <div class="predbar">
-            <div class="up"   data-field="predbar-up"   style="width:0%"></div>
-            <div class="down" data-field="predbar-down" style="width:0%"></div>
-            <span class="label-up"   data-field="predbar-up-lbl">YES —</span>
-            <span class="label-down" data-field="predbar-down-lbl">— NO</span>
+            <div class="predbar">
+              <div class="up"   data-field="predbar-up"   style="width:0%"></div>
+              <div class="down" data-field="predbar-down" style="width:0%"></div>
+              <span class="label-up"   data-field="predbar-up-lbl">YES —</span>
+              <span class="label-down" data-field="predbar-down-lbl">— NO</span>
+            </div>
           </div>
         </div>
 
@@ -1534,7 +1537,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
     if (m) {
       get("timer").textContent = fmtSecs(m.time_remaining_s);
       get("strike").textContent = m.strike != null ? "$" + fmtPrice(m.strike) : "—";
-      get("strike-label").textContent = m.strike_label || "open";
       const deltaEl = get("strike-delta");
       const pctEl = get("strike-pct");
       if (m.strike != null && payload.live_price != null) {
@@ -1557,22 +1559,15 @@ _DASHBOARD_HTML = r"""<!doctype html>
         get("predbar-down").style.width = dnPct + "%";
         get("predbar-up-lbl").textContent  = `YES ${fmtPct(mp.up_prob)}`;
         get("predbar-down-lbl").textContent = `${fmtPct(mp.down_prob)} NO`;
-        cachedSet(
-          get("pred-copy"),
-          `${upPct}|${dnPct}`,
-          `<span class="yes">YES ${fmtPct(mp.up_prob)}</span><span class="sep"> / </span><span class="no">NO ${fmtPct(mp.down_prob)}</span>`
-        );
       } else {
         get("predbar-up").style.width = "0%";
         get("predbar-down").style.width = "0%";
         get("predbar-up-lbl").textContent = "YES —";
         get("predbar-down-lbl").textContent = "— NO";
-        cachedSet(get("pred-copy"), "empty", '<span class="muted">market prediction pending</span>');
       }
     } else {
       get("timer").textContent = "—";
       get("strike").textContent = "—";
-      get("strike-label").textContent = "no market";
       get("strike-delta").textContent = "—";
       get("strike-delta").className = "delta flat";
       get("strike-pct").textContent = "—";
@@ -1580,7 +1575,6 @@ _DASHBOARD_HTML = r"""<!doctype html>
       get("predbar-down").style.width = "0%";
       get("predbar-up-lbl").textContent = "YES —";
       get("predbar-down-lbl").textContent = "— NO";
-      cachedSet(get("pred-copy"), "no-market", '<span class="muted">no market open</span>');
     }
 
     renderSignals(get("signals"), payload.bot_signals);

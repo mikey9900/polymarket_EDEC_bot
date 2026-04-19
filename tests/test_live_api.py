@@ -41,13 +41,14 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertNotIn("__APP_VERSION__", html)
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
         self.assertIn('data-field="session-inline"', html)
-        self.assertIn('data-field="pred-copy"', html)
+        self.assertNotIn('data-field="pred-copy"', html)
         self.assertIn('data-field="strike-delta"', html)
         self.assertIn('data-field="strike-pct"', html)
         self.assertIn('chart-feeds', html)
         self.assertIn('chart-resolutions', html)
         self.assertIn('return `<span class="chart-res-dot ${cls}"></span>`;', html)
         self.assertNotIn('data-field="strike-mini"', html)
+        self.assertNotIn('data-field="strike-label"', html)
         self.assertIn('🤖 BOT STRATEGIES</h4>', html)
         self.assertNotIn('🔮 MARKET LINE', html)
         self.assertNotIn('📈 LIVE CHART', html)
@@ -56,6 +57,8 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('const fmtSignedPrice = (x) =>', html)
         self.assertNotIn('priceEl.classList.toggle("green"', html)
         self.assertNotIn('priceEl.classList.toggle("red"', html)
+        self.assertIn('font-variant-numeric: tabular-nums;', html)
+        self.assertIn('white-space: nowrap;', html)
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

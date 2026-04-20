@@ -20,20 +20,20 @@ dual_leg:
 
 single_leg:
   enabled: true
-  entry_max: 0.56
+  entry_max: 0.63
   opposite_min: 0.5
   min_time_remaining_s: 40
   min_book_depth_usd: 6.0
   hold_if_unfilled: true
   order_size_usd: 10.0
   min_velocity_30s: 0.12
-  loss_cut_pct: 0.10
+  loss_cut_pct: 0.04
   loss_cut_max_factor: 1.35
-  high_confidence_bid: 0.72
+  high_confidence_bid: 0.70
   time_pressure_s: 75.0
   max_time_remaining_s: 250.0
   max_vel_divergence: 0.03
-  entry_min: 0.5
+  entry_min: 0.54
   scalp_take_profit_bid: 0.64
   scalp_min_profit_usd: 0.18
   resignal_cooldown_s: 0.5
@@ -45,12 +45,13 @@ single_leg:
   - doge
   - hype
   - xrp
+  - bnb
 
 lead_lag:
   enabled: true
   min_velocity_30s: 0.12
-  min_entry: 0.5
-  max_entry: 0.60
+  min_entry: 0.54
+  max_entry: 0.63
   target_sell: 0.66
   min_time_remaining_s: 30
   min_book_depth_usd: 6.0
@@ -61,7 +62,7 @@ lead_lag:
   profit_take_cap: 0.68
   stall_window_s: 30
   min_progress_delta: 0.02
-  hard_stop_loss_pct: 0.10
+  hard_stop_loss_pct: 0.04
   resignal_cooldown_s: 0.5
   min_price_improvement: 0.0
   max_entry_spread: 0.04
@@ -71,6 +72,7 @@ lead_lag:
   - doge
   - hype
   - xrp
+  - bnb
   coin_overrides:
     xrp:
       min_velocity_30s: 0.18

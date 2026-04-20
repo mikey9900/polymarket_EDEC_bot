@@ -54,14 +54,8 @@ def _load_ha_options(ha_options_path: str = "/data/options.json") -> dict:
         return {}
 
 
-def _strategy_version(doc_path: str = "STRATEGY.md") -> str:
-    try:
-        for line in Path(doc_path).read_text(encoding="utf-8").splitlines():
-            if "Current version:" in line:
-                return line.split("Current version:", 1)[1].strip()
-    except Exception:
-        pass
-    return "unknown"
+def _strategy_version() -> str:
+    return __version__
 
 
 def _config_hash(config_path: str) -> str:
@@ -250,7 +244,7 @@ async def main():
     # we only care about slow-callback warnings.
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     started_at = datetime.now(timezone.utc).isoformat()
-    strategy_version = _strategy_version(Path(__file__).resolve().parent.parent / "STRATEGY.md")
+    strategy_version = _strategy_version()
     config_hash = _config_hash(config_path)
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{config_hash}"
     logger.info(f"Using config: {config_path}")

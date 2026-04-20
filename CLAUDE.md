@@ -32,8 +32,9 @@ The most recent export is the folder with the latest timestamp in its name (`YYY
 Each session folder contains one or more CSVs. Rows are individual trades with 90+ columns.
 
 **Timing**
-- `ts` — absolute UTC timestamp of the trade entry. Use `ts` diff between rows to calculate real durations.
-- `td` — trade duration field. **Known bug: scale is broken.** Do not use `td` for duration calculations — always derive from `ts`.
+- `ts` — absolute UTC timestamp of the trade entry.
+- `xt` — exit timestamp. Trade duration = `xt - ts` in seconds. There is no pre-computed duration column.
+- `td` — **target delta** (price distance from entry to profit target at entry time). Not trade duration.
 
 **Entry / book state**
 - `ep` — entry price (ask paid)
@@ -114,13 +115,11 @@ In YAML, `disabled_coins` is a list. `load_config()` converts it to a tuple via 
 
 ---
 
-## Known Telemetry Bugs / Gaps (as of 5.1.7)
+## Telemetry Notes (as of 5.1.7)
 
-These are unresolved — keep them in mind when analysing CSVs so you don't draw wrong conclusions:
-
-| Field | Bug |
+| Field | Note |
 |---|---|
-| `td` | Trade duration scale is broken. Always use `ts` diff instead. |
-| `sv` | Strategy version always "unknown" — not populated. |
-| `lct` | Loss cut threshold only written for `single_leg`. Empty for `lead_lag`. |
-| `hr`, `rpn`, `whw`, `wbe` | Only populated post-resolution. Mid-session exports will always show these blank. Do not interpret blank as "no data" — wait for post-resolution export before counterfactual analysis. |
+| `td` | **target_delta** — price gap to profit target at entry. Not trade duration. Compute duration from `xt - ts`. |
+| `sv` | Fixed in 5.1.7 — now populated from `__version__`. Previously always "unknown". |
+| `lct` | Fixed in 5.1.7 — now written for `lead_lag` exits (uses `hard_stop_loss_pct`). Previously only written for `single_leg`. |
+| `hr`, `rpn`, `whw`, `wbe` | Only populated post-resolution. Mid-session exports will always show these blank. Wait for post-resolution export before counterfactual analysis. |

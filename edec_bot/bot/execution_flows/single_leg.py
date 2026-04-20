@@ -824,6 +824,7 @@ async def monitor_paper_position(
                         bid_at_exit=bid,
                         ask_at_exit=ask,
                         stall_exit_triggered=(exit_reason == "stall_exit"),
+                        loss_cut_threshold_pct=engine.config.lead_lag.hard_stop_loss_pct,
                         loss_pct_at_exit=loss_pct,
                         favorable_excursion=favorable_excursion,
                         ever_profitable=ever_profitable,

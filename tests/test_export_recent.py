@@ -77,6 +77,19 @@ class ExportRecentTests(unittest.TestCase):
                 entry_price=0.55,
                 target_price=0.61,
                 expected_profit_per_share=0.02,
+                research_cluster_id="lead_lag|xrp|0.54-0.56|0.10-0.12|120-180",
+                research_cluster_n=12,
+                research_cluster_win_pct=58.33,
+                research_cluster_avg_pnl=0.14,
+                research_policy_action="advisory",
+                research_market_regime_1d="liquid_balanced",
+                research_liquidity_score_1d=82.5,
+                research_crowding_score_1d=18.4,
+                research_score_flow_1d=3.25,
+                research_score_crowding_1d=1.1,
+                research_signal_score_adjustment=2.15,
+                score_research_flow=3.25,
+                score_research_crowding=-1.1,
             )
         )
         trade_id = tracker.log_paper_trade(
@@ -119,6 +132,13 @@ class ExportRecentTests(unittest.TestCase):
         self.assertEqual(row["v30"], "0.11")
         self.assertEqual(row["v60"], "0.14")
         self.assertEqual(row["why"], "recent export check")
+        self.assertEqual(row["rcid"], "lead_lag|xrp|0.54-0.56|0.10-0.12|120-180")
+        self.assertEqual(row["rpa"], "advisory")
+        self.assertEqual(row["rrg"], "liquid_balanced")
+        self.assertEqual(row["rliq"], "82.5")
+        self.assertEqual(row["rsa"], "2.15")
+        self.assertEqual(row["sgf"], "3.25")
+        self.assertEqual(row["sgc"], "-1.1")
         self.assertEqual(row["status"], "closed_win")
         self.assertEqual(row["sx"], "1")
 

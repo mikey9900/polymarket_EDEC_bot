@@ -190,9 +190,28 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         max_remaining=cfg.max_time_remaining_s,
         depth_ratio=depth_ratio,
     )
+    research_payload = engine._research_annotation(
+        strategy_type="single_leg",
+        coin=coin,
+        entry_price=entry_price,
+        agg=agg,
+        remaining=remaining,
+    )
+    score_payload = engine._apply_research_score(
+        score_payload,
+        research_payload,
+        strategy_type="single_leg",
+    )
+    order_size_payload = engine._research_order_size("single_leg", research_payload)
 
     action = ("DRY_RUN_SIGNAL" if engine.config.execution.dry_run else "TRADE") if all_passed else "SKIP"
     reason = f"Single-leg {side.upper() if side else '?'} @{entry_price:.3f}" if all_passed else failed_reason
+    suppressed_reason = ""
+    research_gate_reason = engine._research_gate_reason(action, research_payload)
+    if research_gate_reason:
+        action = "SUPPRESSED"
+        reason = research_gate_reason
+        suppressed_reason = research_gate_reason
 
     decision_id = engine._log_decision(
         coin,
@@ -214,12 +233,15 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         entry_depth_side_usd=entry_depth,
         opposite_depth_usd=opposite_depth,
         depth_ratio=depth_ratio,
+        suppressed_reason=suppressed_reason,
+        order_size_usd=order_size_payload["order_size_usd"],
         resignal_cooldown_s=cfg.resignal_cooldown_s,
         min_price_improvement=cfg.min_price_improvement,
+        **research_payload,
         **score_payload,
     )
 
-    if not all_passed:
+    if not all_passed or action == "SUPPRESSED":
         return None
 
     signal = TradeSignal(
@@ -243,6 +265,8 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         filter_results=filters,
         target_delta=max(0.0, notional_target - entry_price),
         hard_stop_delta=max(0.0, entry_price * cfg.loss_cut_pct),
+        order_size_usd=order_size_payload["order_size_usd"],
+        order_size_multiplier=order_size_payload["order_size_multiplier"],
         resignal_cooldown_s=cfg.resignal_cooldown_s,
         min_price_improvement=cfg.min_price_improvement,
         **score_payload,

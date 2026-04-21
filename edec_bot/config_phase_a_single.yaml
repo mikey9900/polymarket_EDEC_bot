@@ -56,8 +56,6 @@ lead_lag:
   min_time_remaining_s: 30
   min_book_depth_usd: 6.0
   order_size_usd: 10.0
-  resignal_cooldown_s: 2.0
-  min_price_improvement: 0.0
   profit_take_delta: 0.06
   profit_take_cap: 0.68
   stall_window_s: 30
@@ -105,6 +103,19 @@ execution:
   abort_timeout_s: 2.0
   max_slippage: 0.015
   dry_run: true
+
+research:
+  enabled: true
+  artifact_path: data/research/runtime_policy.json
+  paper_gate_enabled: false
+  execution_overlay_enabled: true
+  size_scaling_enabled: true
+  size_adjustment_per_score_point: 0.06
+  size_floor_multiplier: 0.5
+  size_ceiling_multiplier: 1.25
+  thin_crowded_block_enabled: true
+  thin_crowded_block_live_enabled: false
+  thin_crowded_block_max_adjustment: -7.0
 
 risk:
   max_daily_loss_usd: 20.0

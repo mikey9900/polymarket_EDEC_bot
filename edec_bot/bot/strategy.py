@@ -25,12 +25,13 @@ VALID_MODES = {"dual", "single", "both", "lead", "swing", "off"}
 class StrategyEngine:
     def __init__(self, config: Config, aggregator: PriceAggregator,
                  scanner: MarketScanner, tracker: DecisionTracker,
-                 risk_manager=None):
+                 risk_manager=None, research_provider=None):
         self.config = config
         self.aggregator = aggregator
         self.scanner = scanner
         self.tracker = tracker
         self.risk_manager = risk_manager
+        self.research_provider = research_provider
         self._running = False
         self._mode = "off"
         self._active = False
@@ -326,7 +327,139 @@ class StrategyEngine:
             "score_spread": round(score_spread, 2),
             "score_time": round(score_time, 2),
             "score_balance": round(score_balance, 2),
+            "score_research_flow": 0.0,
+            "score_research_crowding": 0.0,
         }
+
+    def _research_annotation(
+        self,
+        *,
+        strategy_type: str,
+        coin: str,
+        entry_price: float,
+        agg,
+        remaining: float,
+    ) -> dict[str, object]:
+        if not self.research_provider or entry_price <= 0:
+            return {
+                "research_cluster_id": "",
+                "research_cluster_n": 0,
+                "research_cluster_win_pct": 0.0,
+                "research_cluster_avg_pnl": 0.0,
+                "research_policy_action": "",
+                "research_market_regime_1d": "",
+                "research_liquidity_score_1d": 0.0,
+                "research_crowding_score_1d": 0.0,
+                "research_score_flow_1d": 0.0,
+                "research_score_crowding_1d": 0.0,
+                "research_signal_score_adjustment": 0.0,
+            }
+        try:
+            return self.research_provider.lookup(
+                strategy_type=strategy_type,
+                coin=coin,
+                entry_price=entry_price,
+                velocity_30s=agg.velocity_30s if agg else 0.0,
+                time_remaining_s=remaining,
+            )
+        except Exception as exc:
+            logger.debug("Research lookup failed for %s/%s: %s", strategy_type, coin, exc)
+            return {
+                "research_cluster_id": "",
+                "research_cluster_n": 0,
+                "research_cluster_win_pct": 0.0,
+                "research_cluster_avg_pnl": 0.0,
+                "research_policy_action": "",
+                "research_market_regime_1d": "",
+                "research_liquidity_score_1d": 0.0,
+                "research_crowding_score_1d": 0.0,
+                "research_score_flow_1d": 0.0,
+                "research_score_crowding_1d": 0.0,
+                "research_signal_score_adjustment": 0.0,
+            }
+
+    def _apply_research_score(
+        self,
+        score_payload: dict[str, float],
+        research_payload: dict[str, object],
+        *,
+        strategy_type: str,
+    ) -> dict[str, float]:
+        updated = dict(score_payload)
+        strategy_multiplier = 1.1 if strategy_type == "lead_lag" else 1.0
+        flow_score = float(research_payload.get("research_score_flow_1d") or 0.0) * strategy_multiplier
+        crowding_penalty = float(research_payload.get("research_score_crowding_1d") or 0.0) * strategy_multiplier
+        crowding_score = -abs(crowding_penalty)
+        base_total = float(score_payload.get("signal_score") or 0.0)
+        updated["score_research_flow"] = round(flow_score, 2)
+        updated["score_research_crowding"] = round(crowding_score, 2)
+        updated["signal_score"] = round(max(0.0, min(100.0, base_total + flow_score + crowding_score)), 2)
+        return updated
+
+    def _strategy_order_size_usd(self, strategy_type: str) -> float:
+        context: dict[str, object] = {}
+        try:
+            context = self.tracker.get_runtime_context() or {}
+        except Exception:
+            context = {}
+        if context.get("order_size_override_active"):
+            try:
+                override_size = float(context.get("order_size_usd") or 0.0)
+            except (TypeError, ValueError):
+                override_size = 0.0
+            if override_size > 0:
+                return override_size
+        if strategy_type == "lead_lag":
+            return self.config.lead_lag.order_size_usd
+        if strategy_type == "swing_leg":
+            return self.config.swing_leg.order_size_usd
+        if strategy_type == "single_leg":
+            return self.config.single_leg.order_size_usd
+        return self.config.execution.order_size_usd
+
+    def _research_order_size(self, strategy_type: str, annotation: dict[str, object]) -> dict[str, float]:
+        base_size = float(self._strategy_order_size_usd(strategy_type) or 0.0)
+        multiplier = 1.0
+        rcfg = self.config.research
+        if rcfg.enabled and rcfg.execution_overlay_enabled and rcfg.size_scaling_enabled:
+            adjustment = float(annotation.get("research_signal_score_adjustment") or 0.0)
+            multiplier = 1.0 + adjustment * float(rcfg.size_adjustment_per_score_point)
+            multiplier = max(float(rcfg.size_floor_multiplier), min(float(rcfg.size_ceiling_multiplier), multiplier))
+        effective_size = base_size * multiplier if base_size > 0 else 0.0
+        return {
+            "order_size_usd": round(effective_size, 4),
+            "order_size_multiplier": round(multiplier, 4),
+        }
+
+    def _research_gate_reason(self, action: str, annotation: dict[str, object]) -> str | None:
+        if action not in ("DRY_RUN_SIGNAL", "TRADE"):
+            return None
+        if (
+            action == "DRY_RUN_SIGNAL"
+            and self.config.execution.dry_run
+            and self.config.research.paper_gate_enabled
+            and str(annotation.get("research_policy_action") or "") == "paper_blocked"
+        ):
+            cluster_id = str(annotation.get("research_cluster_id") or "unknown")
+            sample_size = int(annotation.get("research_cluster_n") or 0)
+            win_pct = float(annotation.get("research_cluster_win_pct") or 0.0)
+            avg_pnl = float(annotation.get("research_cluster_avg_pnl") or 0.0)
+            return f"research_policy:paper_blocked:{cluster_id}:n={sample_size}:win_pct={win_pct:.2f}:avg_pnl={avg_pnl:.4f}"
+        rcfg = self.config.research
+        if not rcfg.enabled or not rcfg.execution_overlay_enabled or not rcfg.thin_crowded_block_enabled:
+            return None
+        if action == "TRADE" and not rcfg.thin_crowded_block_live_enabled:
+            return None
+        regime = str(annotation.get("research_market_regime_1d") or "")
+        adjustment = float(annotation.get("research_signal_score_adjustment") or 0.0)
+        if regime != "thin_crowded" or adjustment > float(rcfg.thin_crowded_block_max_adjustment):
+            return None
+        liquidity = float(annotation.get("research_liquidity_score_1d") or 0.0)
+        crowding = float(annotation.get("research_crowding_score_1d") or 0.0)
+        return (
+            "research_regime:thin_crowded_block"
+            f":adj={adjustment:.2f}:liq={liquidity:.2f}:crowd={crowding:.2f}"
+        )
 
     # -----------------------------------------------------------------------
     # Dual-leg filter chain
@@ -372,8 +505,11 @@ class StrategyEngine:
                       filters, action, reason, strategy_type, **extra_fields) -> int:
         """Log decision to the tracker."""
         extra_fields.pop("strategy_type", None)
+        explicit_order_size_usd = extra_fields.pop("order_size_usd", None)
         paper_total, _ = self.tracker.get_paper_capital()
-        if strategy_type == "lead_lag":
+        if explicit_order_size_usd is not None:
+            order_size_usd = float(explicit_order_size_usd)
+        elif strategy_type == "lead_lag":
             order_size_usd = self.config.lead_lag.order_size_usd
         elif strategy_type == "swing_leg":
             order_size_usd = self.config.swing_leg.order_size_usd

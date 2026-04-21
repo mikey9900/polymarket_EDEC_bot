@@ -21,7 +21,7 @@ HEADERS = [
     "ep", "tp", "eb", "ea", "es", "sh", "srq", "sfl", "b5", "cs", "fee",
     "te", "ts", "v30", "v60", "du", "dd", "eds", "ods", "drt", "ma",
     "sg", "sgv", "sge", "sgd", "sgs", "sgt", "sgb", "td", "hsd",
-    "fp", "ff", "why",
+    "fp", "ff", "why", "rcid", "rcn", "rcw", "rcp", "rpa", "rrg", "rliq", "rcrd", "rsa", "sgf", "sgc",
     "er", "xp", "xb", "xa", "xs", "tx", "hd",
     "pnl", "pp", "maxb", "minb", "ttmax", "ttmin", "tfp", "sc", "hc",
     "mfe", "mae", "pnp", "tnp", "sx", "rw", "rm",
@@ -91,6 +91,17 @@ def fetch_recent_trade_rows(conn: sqlite3.Connection, limit: int) -> list[sqlite
             pt.hard_stop_delta,
             d.filter_passed,
             d.filter_failed,
+            d.research_cluster_id,
+            d.research_cluster_n,
+            d.research_cluster_win_pct,
+            d.research_cluster_avg_pnl,
+            d.research_policy_action,
+            d.research_market_regime_1d,
+            d.research_liquidity_score_1d,
+            d.research_crowding_score_1d,
+            d.research_signal_score_adjustment,
+            d.score_research_flow,
+            d.score_research_crowding,
             d.coin_velocity_30s,
             d.coin_velocity_60s,
             d.up_depth_usd,
@@ -151,28 +162,28 @@ def format_recent_trade_row(row):
         except (TypeError, ValueError):
             return None
 
-    ts_str = str(row[1] or "")
+    ts_str = str(row["timestamp"] or "")
     date_part = ts_str[:10] if len(ts_str) >= 10 else ts_str
     time_part = ts_str[11:19] if len(ts_str) >= 19 else ""
 
     hold_s = None
-    if row[34] and row[1]:
+    if row["exit_timestamp"] and row["timestamp"]:
         try:
             t_in = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            t_out = datetime.fromisoformat(str(row[34]).replace("Z", "+00:00"))
+            t_out = datetime.fromisoformat(str(row["exit_timestamp"]).replace("Z", "+00:00"))
             hold_s = round((t_out - t_in).total_seconds(), 1)
         except Exception:
             pass
 
     pnl_pct = None
-    if row[25] and row[25] > 0 and row[33] is not None:
-        pnl_pct = round(row[33] / row[25] * 100, 2)
+    if row["cost"] and row["cost"] > 0 and row["pnl"] is not None:
+        pnl_pct = round(row["pnl"] / row["cost"] * 100, 2)
 
-    side = str(row[4] or "").lower()
-    vel30 = _as_float(row[58])
-    vel60 = _as_float(row[59])
-    up_depth = _as_float(row[60])
-    down_depth = _as_float(row[61])
+    side = str(row["side"] or "").lower()
+    vel30 = _as_float(row["coin_velocity_30s"])
+    vel60 = _as_float(row["coin_velocity_60s"])
+    up_depth = _as_float(row["up_depth_usd"])
+    down_depth = _as_float(row["down_depth_usd"])
     if vel30 is None or side not in ("up", "down"):
         momentum_align = None
     else:
@@ -180,22 +191,30 @@ def format_recent_trade_row(row):
         momentum_align = "aligned" if aligned else "counter"
 
     return [
-        row[0], date_part, time_part, row[2], row[3], row[4],
-        row[5], row[6], row[7], row[8], row[9], int(bool(row[10])) if row[10] is not None else None,
-        row[11], row[12], row[13], row[14], row[15],
-        row[16], row[17], row[18], row[19], row[20], row[21], row[22], row[23], row[24], row[25], row[26],
-        row[62], row[27],
+        row["id"], date_part, time_part, row["coin"], row["strategy_type"], row["side"],
+        row["run_id"], row["app_version"], row["strategy_version"], row["config_hash"], row["mode"],
+        int(bool(row["dry_run"])) if row["dry_run"] is not None else None,
+        row["order_size_usd"], row["paper_capital_total"], row["window_id"], row["signal_context"], row["signal_overlap_count"],
+        row["entry_price"], row["target_price"], row["entry_bid"], row["entry_ask"], row["entry_spread"], row["shares"],
+        row["shares_requested"], row["shares_filled"], row["blocked_min_5_shares"], row["cost"], row["fee_total"],
+        row["entry_remaining"], row["market_start_time"],
         round(vel30, 4) if vel30 is not None else None,
         round(vel60, 4) if vel60 is not None else None,
         round(up_depth, 2) if up_depth is not None else None,
         round(down_depth, 2) if down_depth is not None else None,
-        row[44], row[45], row[46], momentum_align,
-        row[47], row[48], row[49], row[50], row[51], row[52], row[53], row[54], row[55],
-        row[56], row[57], row[63],
-        row[28], row[29], row[30], row[31], row[32], row[33], hold_s,
-        row[33], pnl_pct, row[36], row[37], row[38], row[39], row[40],
-        int(bool(row[41])) if row[41] is not None else None,
-        int(bool(row[42])) if row[42] is not None else None,
-        row[64], row[65], row[66], row[67], int(bool(row[68])) if row[68] is not None else None,
-        row[69], row[70], row[43],
+        row["entry_depth_side_usd"], row["opposite_depth_usd"], row["depth_ratio"], momentum_align,
+        row["signal_score"], row["score_velocity"], row["score_entry"], row["score_depth"], row["score_spread"],
+        row["score_time"], row["score_balance"], row["target_delta"], row["hard_stop_delta"],
+        row["filter_passed"], row["filter_failed"], row["decision_reason"],
+        row["research_cluster_id"], row["research_cluster_n"], row["research_cluster_win_pct"],
+        row["research_cluster_avg_pnl"], row["research_policy_action"], row["research_market_regime_1d"],
+        row["research_liquidity_score_1d"], row["research_crowding_score_1d"],
+        row["research_signal_score_adjustment"], row["score_research_flow"], row["score_research_crowding"],
+        row["exit_reason"], row["exit_price"], row["bid_at_exit"], row["ask_at_exit"], row["exit_spread"], row["time_remaining_s"], hold_s,
+        row["pnl"], pnl_pct, row["max_bid_seen"], row["min_bid_seen"], row["time_to_max_bid_s"], row["time_to_min_bid_s"], row["first_profit_time_s"],
+        int(bool(row["scalp_hit"])) if row["scalp_hit"] is not None else None,
+        int(bool(row["high_confidence_hit"])) if row["high_confidence_hit"] is not None else None,
+        row["mfe"], row["mae"], row["peak_net_pnl"], row["trough_net_pnl"],
+        int(bool(row["stall_exit_triggered"])) if row["stall_exit_triggered"] is not None else None,
+        row["resolution_winner"], row["resolution_side_match"], row["status"],
     ]

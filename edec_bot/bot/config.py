@@ -165,6 +165,21 @@ class CliConfig:
 
 
 @dataclass(frozen=True)
+class ResearchConfig:
+    enabled: bool = False
+    artifact_path: str = "data/research/runtime_policy.json"
+    paper_gate_enabled: bool = False
+    execution_overlay_enabled: bool = True
+    size_scaling_enabled: bool = True
+    size_adjustment_per_score_point: float = 0.06
+    size_floor_multiplier: float = 0.5
+    size_ceiling_multiplier: float = 1.25
+    thin_crowded_block_enabled: bool = True
+    thin_crowded_block_live_enabled: bool = False
+    thin_crowded_block_max_adjustment: float = -7.0
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     level: str
     file: str
@@ -179,6 +194,7 @@ class Config:
     lead_lag: LeadLagConfig
     swing_leg: SwingLegConfig
     execution: ExecutionConfig
+    research: ResearchConfig
     risk: RiskConfig
     feeds: FeedsConfig
     polymarket: PolymarketConfig
@@ -216,6 +232,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         for coin, values in (raw_lead_lag.pop("coin_overrides", {}) or {}).items()
     }
     cli_raw = raw.get("cli", {})
+    research_raw = raw.get("research", {}) or {}
 
     return Config(
         coins=tuple(raw.get("coins", ["btc"])),
@@ -234,6 +251,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
             "disabled_coins": tuple(raw["swing_leg"].get("disabled_coins", [])),
         }),
         execution=ExecutionConfig(**raw["execution"]),
+        research=ResearchConfig(**research_raw),
         risk=RiskConfig(**raw["risk"]),
         feeds=FeedsConfig(**raw["feeds"]),
         polymarket=PolymarketConfig(**raw["polymarket"]),

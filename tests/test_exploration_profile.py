@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -77,6 +78,13 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertEqual(cfg.lead_lag.profit_take_cap, 0.68)
         self.assertEqual(cfg.lead_lag.stall_window_s, 30)
         self.assertEqual(cfg.lead_lag.hard_stop_loss_pct, 0.04)
+        self.assertTrue(cfg.research.enabled)
+        self.assertFalse(cfg.research.paper_gate_enabled)
+        self.assertTrue(cfg.research.execution_overlay_enabled)
+        self.assertTrue(cfg.research.size_scaling_enabled)
+        self.assertEqual(cfg.research.size_adjustment_per_score_point, 0.06)
+        self.assertTrue(cfg.research.thin_crowded_block_enabled)
+        self.assertFalse(cfg.research.thin_crowded_block_live_enabled)
         self.assertIn("hype", cfg.lead_lag.disabled_coins)
         self.assertIn("xrp", cfg.lead_lag.coin_overrides)
         self.assertEqual(cfg.lead_lag.coin_overrides["xrp"].min_velocity_30s, 0.18)
@@ -101,6 +109,19 @@ class ExplorationProfileTests(unittest.TestCase):
         self.addCleanup(lambda: __import__("asyncio").run(execution_engine._http.aclose()))
         self.assertEqual(strategy_engine._lead_lag_params("xrp"), execution_engine._lead_lag_params("xrp"))
         self.assertEqual(strategy_engine._lead_lag_params("btc"), execution_engine._lead_lag_params("btc"))
+
+    def test_execution_order_size_uses_signal_multiplier_and_runtime_override(self):
+        tracker = DecisionTracker(":memory:")
+        self.addCleanup(tracker.close)
+        tracker.set_runtime_context({"order_size_usd": 10.0, "order_size_override_active": False})
+        execution_engine = ExecutionEngine(self.config, clob_client=None, risk_manager=None, tracker=tracker)
+        self.addCleanup(lambda: __import__("asyncio").run(execution_engine._http.aclose()))
+        signal = SimpleNamespace(order_size_multiplier=1.2, order_size_usd=12.0)
+
+        self.assertEqual(execution_engine._strategy_order_size_usd("lead_lag", signal), 12.0)
+
+        execution_engine.set_order_size(20.0)
+        self.assertEqual(execution_engine._strategy_order_size_usd("lead_lag", signal), 24.0)
 
     def test_lead_lag_target_price_uses_delta_and_cap(self):
         engine = StrategyEngine(self.config, aggregator=None, scanner=None, tracker=_DummyTracker())
@@ -244,6 +265,11 @@ class ExplorationProfileTests(unittest.TestCase):
                 resignal_cooldown_s=2.0,
                 min_price_improvement=0.0,
                 last_signal_age_s=3.0,
+                research_cluster_id="lead_lag|btc|0.58-0.60|0.15-0.20|120-180",
+                research_cluster_n=44,
+                research_cluster_win_pct=39.5,
+                research_cluster_avg_pnl=-0.18,
+                research_policy_action="paper_blocked",
             )
         )
         tracker.log_paper_trade(
@@ -327,9 +353,14 @@ class ExplorationProfileTests(unittest.TestCase):
 
         self.assertIn("sg", trades_rows[0])
         self.assertIn("sx", trades_rows[0])
+        self.assertIn("rcid", trades_rows[0])
+        self.assertIn("rpa", trades_rows[0])
         self.assertEqual(trades_rows[1][trades_rows[0].index("sx")], "1")
+        self.assertEqual(trades_rows[1][trades_rows[0].index("rpa")], "paper_blocked")
         self.assertIn("act", signals_rows[0])
         self.assertIn("sup", signals_rows[0])
+        self.assertIn("rcid", signals_rows[0])
+        self.assertIn("rpa", signals_rows[0])
         self.assertEqual(signals_rows[1][signals_rows[0].index("act")], "SUPPRESSED")
 
     def test_resolution_backfill_marks_when_a_loss_cut_would_have_won(self):

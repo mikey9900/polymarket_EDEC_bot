@@ -1,8 +1,14 @@
 .env
 data/*
 !data/.gitkeep
+!data/research/
+data/research/*
+!data/research/.gitkeep
 edec_bot/data/*
 !edec_bot/data/.gitkeep
+!edec_bot/data/research/
+edec_bot/data/research/*
+!edec_bot/data/research/.gitkeep
 edec_bot/dropbox_sync/*
 !edec_bot/dropbox_sync/.gitkeep
 !edec_bot/dropbox_sync/*.xlsx

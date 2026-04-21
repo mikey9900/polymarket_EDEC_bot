@@ -33,6 +33,7 @@ from bot.execution import ExecutionEngine
 from bot.runtime_defaults import default_strategy_mode
 from bot.tracker import DecisionTracker
 from bot.telegram_bot import TelegramBot
+from research.runtime import ResearchSnapshotProvider
 
 _dashboard_api_import_error = None
 try:
@@ -303,7 +304,18 @@ async def main():
         max_velocity_60s=config.dual_leg.max_velocity_60s,
     )
     scanner = MarketScanner(config)
-    strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
+    research_provider = None
+    if config.research.enabled:
+        research_provider = ResearchSnapshotProvider(config.research.artifact_path)
+        logger.info("Research runtime policy enabled: %s", config.research.artifact_path)
+    strategy = StrategyEngine(
+        config,
+        aggregator,
+        scanner,
+        tracker,
+        risk_manager,
+        research_provider=research_provider,
+    )
 
     default_mode = default_strategy_mode()
     if default_mode:
@@ -331,6 +343,7 @@ async def main():
         "mode": strategy.mode,
         "dry_run": config.execution.dry_run,
         "order_size_usd": config.execution.order_size_usd,
+        "order_size_override_active": False,
         "paper_capital_total": tracker.get_paper_capital()[0],
     })
 

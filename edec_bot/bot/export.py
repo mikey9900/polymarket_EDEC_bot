@@ -313,6 +313,7 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
     _freeze(ws)
 
     rows = export_recent.fetch_recent_trade_rows(conn, limit)
+    header_positions = {name: idx + 1 for idx, name in enumerate(headers)}
 
     num_cols = len(headers)
     for ri, r in enumerate(rows, start=2):
@@ -335,9 +336,9 @@ def _build_recent_trades_sheet(wb, conn, limit: int):
             for col in range(1, num_cols + 1):
                 ws.cell(row=ri, column=col).fill = row_fill
 
-        _pnl_cell(ws.cell(row=ri, column=58))   # P&L $
-        _pnl_cell(ws.cell(row=ri, column=59))   # P&L %
-        _reason_cell(ws.cell(row=ri, column=54))  # Exit Reason
+        _pnl_cell(ws.cell(row=ri, column=header_positions["pnl"]))
+        _pnl_cell(ws.cell(row=ri, column=header_positions["pp"]))
+        _reason_cell(ws.cell(row=ri, column=header_positions["er"]))
 
     # Summary block below data
     total_rows = len(rows)

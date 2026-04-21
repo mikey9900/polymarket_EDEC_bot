@@ -218,19 +218,31 @@ class ExecutionEngine:
     def order_size_usd(self) -> float:
         return self._order_size_usd if self._order_size_usd is not None else self.config.execution.order_size_usd
 
-    def _strategy_order_size_usd(self, strategy_type: str) -> float:
+    def _strategy_order_size_usd(self, strategy_type: str, signal: TradeSignal | None = None) -> float:
         if self._order_size_usd is not None:
-            return self._order_size_usd
-        if strategy_type == "single_leg":
-            return self.config.single_leg.order_size_usd
-        if strategy_type == "lead_lag":
-            return self.config.lead_lag.order_size_usd
-        if strategy_type == "swing_leg":
-            return self.config.swing_leg.order_size_usd
-        return self.order_size_usd
+            base_size = self._order_size_usd
+        elif strategy_type == "single_leg":
+            base_size = self.config.single_leg.order_size_usd
+        elif strategy_type == "lead_lag":
+            base_size = self.config.lead_lag.order_size_usd
+        elif strategy_type == "swing_leg":
+            base_size = self.config.swing_leg.order_size_usd
+        else:
+            base_size = self.order_size_usd
+        if signal is None:
+            return base_size
+        multiplier = float(getattr(signal, "order_size_multiplier", 1.0) or 1.0)
+        if self._order_size_usd is None and float(getattr(signal, "order_size_usd", 0.0) or 0.0) > 0:
+            return float(signal.order_size_usd)
+        return round(base_size * multiplier, 4)
 
     def set_order_size(self, usd: float):
         self._order_size_usd = usd
+        if self.tracker and hasattr(self.tracker, "get_runtime_context") and hasattr(self.tracker, "set_runtime_context"):
+            context = dict(self.tracker.get_runtime_context() or {})
+            context["order_size_usd"] = float(usd)
+            context["order_size_override_active"] = True
+            self.tracker.set_runtime_context(context)
         logger.info(f"Order size set to ${usd:.2f}")
 
     def _calc_shares(self, price: float) -> float:

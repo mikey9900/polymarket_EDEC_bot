@@ -25,7 +25,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
     coin = market.coin.upper()
     token_id = market.up_token_id if signal.side == "up" else market.down_token_id
 
-    order_size = engine._strategy_order_size_usd(signal.strategy_type)
+    order_size = engine._strategy_order_size_usd(signal.strategy_type, signal)
     shares = math.floor(order_size / signal.entry_price)
     result.shares_requested = shares
     result.shares_filled = 0.0

@@ -102,6 +102,14 @@ polymarket:
   tick_size: '0.01'
   neg_risk: false
 
+cli:
+  enabled: true
+  binary_path: polymarket
+  timeout_s: 8
+  signature_type: proxy
+  allow_mutating_commands: false
+  startup_check: true
+
 logging:
   level: INFO
   file: bot.log

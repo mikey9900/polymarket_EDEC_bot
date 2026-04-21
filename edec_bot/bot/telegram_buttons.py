@@ -171,6 +171,44 @@ async def _handle_control_buttons(bot: Any, query: Any, data: str) -> bool:
     return False
 
 
+async def _handle_polymarket_buttons(bot: Any, query: Any, data: str) -> bool:
+    if data == "pmcancelall_abort":
+        bot._set_dashboard_view("main")
+        await _ack_query(query, "No orders were changed.", show_alert=False)
+        await query.edit_message_text(
+            "Polymarket cancel-all aborted.",
+            reply_markup=_back_keyboard(),
+        )
+        return True
+
+    if data != "pmcancelall_confirm":
+        return False
+
+    bot._set_dashboard_view("main")
+    await _ack_query(query, "Canceling open Polymarket orders...", show_alert=False)
+
+    if not bot._pm_cli_is_available():
+        text = bot._pm_cli_unavailable_text()
+    elif not bot.config.cli.allow_mutating_commands:
+        text = (
+            "*Polymarket Cancel All*\n"
+            "Mutating CLI commands are disabled. Set `cli.allow_mutating_commands: true` to enable this."
+        )
+    else:
+        try:
+            result = await bot.polymarket_cli.cancel_all_orders()
+        except Exception as exc:
+            result = exc
+        text = bot._format_pmcancelall_result_text(result)
+
+    await query.edit_message_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=_back_keyboard(),
+    )
+    return True
+
+
 async def _handle_panel_buttons(bot: Any, query: Any, data: str) -> bool:
     back_kb = _back_keyboard()
 
@@ -283,6 +321,8 @@ async def handle_button(bot: Any, update: Any, context: Any) -> None:
     if await _handle_capital_buttons(bot, query, data):
         return
     if await _handle_control_buttons(bot, query, data):
+        return
+    if await _handle_polymarket_buttons(bot, query, data):
         return
 
     # Panel buttons: ack up front so the spinner dismisses before we build the panel.

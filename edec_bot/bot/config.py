@@ -155,6 +155,16 @@ class PolymarketConfig:
 
 
 @dataclass(frozen=True)
+class CliConfig:
+    enabled: bool = True
+    binary_path: str = "polymarket"
+    timeout_s: float = 8.0
+    signature_type: str = "proxy"
+    allow_mutating_commands: bool = False
+    startup_check: bool = True
+
+
+@dataclass(frozen=True)
 class LoggingConfig:
     level: str
     file: str
@@ -172,6 +182,7 @@ class Config:
     risk: RiskConfig
     feeds: FeedsConfig
     polymarket: PolymarketConfig
+    cli: CliConfig
     logging: LoggingConfig
     private_key: str
     telegram_bot_token: str
@@ -204,6 +215,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         str(coin): LeadLagCoinOverride(**(values or {}))
         for coin, values in (raw_lead_lag.pop("coin_overrides", {}) or {}).items()
     }
+    cli_raw = raw.get("cli", {})
 
     return Config(
         coins=tuple(raw.get("coins", ["btc"])),
@@ -225,6 +237,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         risk=RiskConfig(**raw["risk"]),
         feeds=FeedsConfig(**raw["feeds"]),
         polymarket=PolymarketConfig(**raw["polymarket"]),
+        cli=CliConfig(**cli_raw),
         logging=LoggingConfig(**raw["logging"]),
         private_key=ha.get("private_key") or os.getenv("PRIVATE_KEY", ""),
         telegram_bot_token=ha.get("telegram_bot_token") or os.getenv("TELEGRAM_BOT_TOKEN", ""),

@@ -23,6 +23,7 @@ from bot.archive import (
 )
 from bot.export import export_to_excel, export_recent_to_excel
 from bot.market_scanner import MarketScanner
+from bot.polymarket_cli import PolymarketCli
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
 from bot.risk_manager import RiskManager
@@ -284,6 +285,15 @@ async def main():
         else:
             logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
 
+    polymarket_cli = PolymarketCli(config)
+    cli_health = await polymarket_cli.startup_healthcheck()
+    if cli_health.healthy:
+        logger.info(cli_health.message)
+    elif cli_health.available:
+        logger.warning(cli_health.message)
+    else:
+        logger.info(cli_health.message)
+
     tracker.set_runtime_context({
         "run_id": run_id,
         "started_at": started_at,
@@ -464,6 +474,7 @@ async def main():
         session_export_fn=do_session_export,
         excel_dropbox_link_fn=do_excel_dropbox_link,
         fetch_github_fn=do_fetch_github_exports,
+        polymarket_cli=polymarket_cli,
     )
     dashboard_state = None
     live_api = None

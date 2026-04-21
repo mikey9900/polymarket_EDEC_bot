@@ -70,13 +70,13 @@ class ExplorationProfileTests(unittest.TestCase):
 
     def test_config_parses_new_repricing_fields_and_coin_overrides(self):
         cfg = self.config
-        self.assertEqual(cfg.single_leg.resignal_cooldown_s, 2.0)
+        self.assertEqual(cfg.single_leg.resignal_cooldown_s, 0.5)
         self.assertEqual(cfg.single_leg.min_price_improvement, 0.0)
         self.assertIn("hype", cfg.single_leg.disabled_coins)
         self.assertEqual(cfg.lead_lag.profit_take_delta, 0.06)
         self.assertEqual(cfg.lead_lag.profit_take_cap, 0.68)
         self.assertEqual(cfg.lead_lag.stall_window_s, 30)
-        self.assertEqual(cfg.lead_lag.hard_stop_loss_pct, 0.10)
+        self.assertEqual(cfg.lead_lag.hard_stop_loss_pct, 0.04)
         self.assertIn("hype", cfg.lead_lag.disabled_coins)
         self.assertIn("xrp", cfg.lead_lag.coin_overrides)
         self.assertEqual(cfg.lead_lag.coin_overrides["xrp"].min_velocity_30s, 0.18)
@@ -91,8 +91,8 @@ class ExplorationProfileTests(unittest.TestCase):
         self.assertEqual(xrp["max_entry"], 0.60)
         self.assertEqual(xrp["min_book_depth_usd"], 20.0)
         self.assertEqual(btc["min_velocity_30s"], 0.12)
-        self.assertEqual(btc["min_entry"], 0.50)
-        self.assertEqual(btc["max_entry"], 0.60)
+        self.assertEqual(btc["min_entry"], 0.54)
+        self.assertEqual(btc["max_entry"], 0.63)
         self.assertEqual(btc["min_book_depth_usd"], 6.0)
 
     def test_strategy_and_execution_share_lead_lag_params(self):

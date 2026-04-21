@@ -12,6 +12,7 @@ from pathlib import Path
 from bot.config import load_config
 from bot.export import export_to_excel, export_recent_to_excel
 from bot.market_scanner import MarketScanner
+from bot.polymarket_cli import PolymarketCli
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
 from bot.risk_manager import RiskManager
@@ -152,6 +153,15 @@ async def main():
     )
     scanner = MarketScanner(config)
     strategy = StrategyEngine(config, aggregator, scanner, tracker, risk_manager)
+    polymarket_cli = PolymarketCli(config)
+
+    cli_health = await polymarket_cli.startup_healthcheck()
+    if cli_health.healthy:
+        logger.info(cli_health.message)
+    elif cli_health.available:
+        logger.warning(cli_health.message)
+    else:
+        logger.info(cli_health.message)
 
     # Initialize CLOB client
     clob_client = None
@@ -185,6 +195,7 @@ async def main():
         strategy_engine=strategy,
         executor=executor,
         aggregator=aggregator,
+        polymarket_cli=polymarket_cli,
     )
 
     feed_pairs = []

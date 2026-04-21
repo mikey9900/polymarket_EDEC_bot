@@ -10,6 +10,15 @@ from telegram.error import RetryAfter
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
 from bot.config import Config
+from bot.polymarket_cli import (
+    AccountStatusInfo,
+    BalanceInfo,
+    CancelAllResult,
+    OrdersInfo,
+    PolymarketCliError,
+    TradesInfo,
+    WalletInfo,
+)
 from bot.tracker import DecisionTracker
 from bot.risk_manager import RiskManager
 from version import __version__
@@ -34,7 +43,8 @@ CAPITAL_OPTIONS = [5, 10, 20, 50, 100]
 class TelegramBot:
     def __init__(self, config: Config, tracker: DecisionTracker,
                  risk_manager: RiskManager, export_fn=None, export_recent_fn=None,
-                 scanner=None, strategy_engine=None, executor=None, aggregator=None):
+                 scanner=None, strategy_engine=None, executor=None, aggregator=None,
+                 polymarket_cli=None):
         self.config = config
         self.tracker = tracker
         self.risk_manager = risk_manager
@@ -44,6 +54,7 @@ class TelegramBot:
         self.strategy_engine = strategy_engine
         self.executor = executor
         self.aggregator = aggregator
+        self.polymarket_cli = polymarket_cli
         self.chat_id = config.telegram_chat_id
         self._app: Application | None = None
         self._dashboard_message_id: int | None = None  # live dashboard message
@@ -76,6 +87,10 @@ class TelegramBot:
             ("config", self._cmd_config),
             ("set", self._cmd_set),
             ("filters", self._cmd_filters),
+            ("pmaccount", self._cmd_pmaccount),
+            ("pmorders", self._cmd_pmorders),
+            ("pmtrades", self._cmd_pmtrades),
+            ("pmcancelall", self._cmd_pmcancelall),
             ("help", self._cmd_help),
             ("clean", self._cmd_clean),
         ]
@@ -532,6 +547,148 @@ class TelegramBot:
         rows.append([InlineKeyboardButton("« Back", callback_data="back")])
         return InlineKeyboardMarkup(rows)
 
+    @staticmethod
+    def _short_id(value: str | None, keep: int = 12) -> str:
+        if not value:
+            return "n/a"
+        return value if len(value) <= keep else value[:keep]
+
+    @staticmethod
+    def _format_cli_error(error: Exception) -> str:
+        text = str(error).strip()
+        return text or error.__class__.__name__
+
+    def _pm_cli_unavailable_text(self) -> str:
+        if self.polymarket_cli:
+            return self.polymarket_cli.unavailable_reason()
+        return (
+            "Polymarket CLI not configured for this bot. "
+            "It becomes available when the runtime includes the `polymarket` binary."
+        )
+
+    def _pm_cli_is_available(self) -> bool:
+        if not self.polymarket_cli:
+            return False
+        return bool(getattr(self.polymarket_cli, "is_available", True))
+
+    @staticmethod
+    def _format_allowances(allowances: dict[str, str]) -> str:
+        if not allowances:
+            return "`none`"
+        pairs = []
+        for idx, (address, value) in enumerate(allowances.items()):
+            if idx >= 3:
+                pairs.append("...")
+                break
+            label = address if len(address) <= 10 else f"{address[:10]}..."
+            pairs.append(f"`{label}`={value}")
+        return ", ".join(pairs)
+
+    @staticmethod
+    def _pm_cancel_keyboard() -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("Cancel All Orders", callback_data="pmcancelall_confirm"),
+                InlineKeyboardButton("Keep Orders", callback_data="pmcancelall_abort"),
+            ]
+        ])
+
+    def _format_pm_account_text(
+        self,
+        wallet: WalletInfo | Exception,
+        account_status: AccountStatusInfo | Exception,
+        balance: BalanceInfo | Exception,
+    ) -> str:
+        lines = ["*Polymarket Account*"]
+
+        if isinstance(wallet, Exception):
+            lines.append(f"Wallet: {self._format_cli_error(wallet)}")
+        else:
+            lines.append(f"Configured: `{'yes' if wallet.configured else 'no'}`")
+            lines.append(f"Address: `{wallet.address or 'not configured'}`")
+            lines.append(f"Proxy: `{wallet.proxy_address or 'n/a'}`")
+            lines.append(f"Signature: `{wallet.signature_type or self.config.cli.signature_type}`")
+            lines.append(f"Key source: `{wallet.source or 'unknown'}`")
+
+        if isinstance(account_status, Exception):
+            lines.append(f"Account status: {self._format_cli_error(account_status)}")
+        else:
+            mode = "Closed-only" if account_status.closed_only else "Active"
+            lines.append(f"Mode: `{mode}`")
+
+        if isinstance(balance, Exception):
+            lines.append(f"Collateral: {self._format_cli_error(balance)}")
+        else:
+            lines.append(f"Collateral: `{balance.balance or '0'}` USDC")
+            lines.append(f"Allowances: {self._format_allowances(balance.allowances)}")
+
+        lines.append(
+            f"Cancel-all enabled: `{'yes' if self.config.cli.allow_mutating_commands else 'no'}`"
+        )
+        return "\n".join(lines)
+
+    def _format_pm_orders_text(self, orders: OrdersInfo | Exception) -> str:
+        if isinstance(orders, Exception):
+            return f"*Polymarket Open Orders*\n{self._format_cli_error(orders)}"
+
+        if not orders.data:
+            return "*Polymarket Open Orders*\nNo open orders."
+
+        lines = ["*Polymarket Open Orders*"]
+        for order in orders.data:
+            lines.append(
+                f"`{self._short_id(order.get('id'))}` "
+                f"{str(order.get('side', '?')).upper()} "
+                f"@ {order.get('price', '?')} x {order.get('original_size', '?')} "
+                f"| {order.get('status', '?')} "
+                f"| matched {order.get('size_matched', '?')}"
+            )
+        return "\n".join(lines)
+
+    def _format_pm_trades_text(self, trades: TradesInfo | Exception) -> str:
+        if isinstance(trades, Exception):
+            return f"*Polymarket Recent Trades*\n{self._format_cli_error(trades)}"
+
+        if not trades.data:
+            return "*Polymarket Recent Trades*\nNo trades found."
+
+        lines = ["*Polymarket Recent Trades*"]
+        for trade in trades.data:
+            match_time = str(trade.get("match_time", ""))[:16] or "n/a"
+            lines.append(
+                f"`{self._short_id(trade.get('id'))}` "
+                f"{str(trade.get('side', '?')).upper()} "
+                f"@ {trade.get('price', '?')} x {trade.get('size', '?')} "
+                f"| {trade.get('status', '?')} "
+                f"| {match_time}"
+            )
+        return "\n".join(lines)
+
+    def _format_pmcancelall_result_text(self, result: CancelAllResult | Exception) -> str:
+        if isinstance(result, Exception):
+            return f"*Polymarket Cancel All*\n{self._format_cli_error(result)}"
+
+        lines = ["*Polymarket Cancel All*"]
+        if result.canceled:
+            lines.append(f"Canceled: `{len(result.canceled)}`")
+            for order_id in result.canceled[:5]:
+                lines.append(f"`{self._short_id(order_id, keep=16)}` canceled")
+        else:
+            lines.append("Canceled: `0`")
+
+        if result.not_canceled:
+            lines.append(f"Not canceled: `{len(result.not_canceled)}`")
+            for idx, (order_id, reason) in enumerate(result.not_canceled.items()):
+                if idx >= 5:
+                    lines.append("...")
+                    break
+                lines.append(f"`{self._short_id(order_id, keep=16)}` {reason}")
+
+        if not result.canceled and not result.not_canceled:
+            lines.append("No open orders to cancel.")
+
+        return "\n".join(lines)
+
     async def _handle_button(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle inline keyboard button presses."""
         query = update.callback_query
@@ -595,6 +752,37 @@ class TelegramBot:
         if data == "back":
             await query.answer()
             await self._refresh_dashboard()
+            return
+
+        if data == "pmcancelall_abort":
+            await query.answer("No orders were changed.", show_alert=False)
+            await query.edit_message_text(
+                "Polymarket cancel-all aborted.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]),
+            )
+            return
+
+        if data == "pmcancelall_confirm":
+            await query.answer("Canceling open Polymarket orders...", show_alert=False)
+            if not self._pm_cli_is_available():
+                text = self._pm_cli_unavailable_text()
+            elif not self.config.cli.allow_mutating_commands:
+                text = (
+                    "*Polymarket Cancel All*\n"
+                    "Mutating CLI commands are disabled. Set `cli.allow_mutating_commands: true` to enable this."
+                )
+            else:
+                try:
+                    result = await self.polymarket_cli.cancel_all_orders()
+                except PolymarketCliError as exc:
+                    result = exc
+                text = self._format_pmcancelall_result_text(result)
+
+            await query.edit_message_text(
+                text,
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back")]]),
+            )
             return
 
         # --- Start / Stop / Kill ---
@@ -1008,6 +1196,7 @@ class TelegramBot:
         cfg = self.config
         dl = cfg.dual_leg
         sl = cfg.single_leg
+        cli_cfg = cfg.cli
         msg = (
             f"*Configuration*\n"
             f"Coins: {', '.join(cfg.coins)}\n"
@@ -1023,10 +1212,16 @@ class TelegramBot:
             f"*Single-Leg*\n"
             f"  Entry max: {sl.entry_max}\n"
             f"  Opposite min: {sl.opposite_min}\n"
-            f"  Target sell: {sl.target_sell}\n"
+            f"  Scalp take-profit bid: {sl.scalp_take_profit_bid}\n"
             f"  Order size: ${sl.order_size_usd}\n"
             f"  Min time remaining: {sl.min_time_remaining_s}s\n"
-            f"  Hold if unfilled: {sl.hold_if_unfilled}"
+            f"  Hold if unfilled: {sl.hold_if_unfilled}\n\n"
+            f"*CLI*\n"
+            f"  Enabled: {cli_cfg.enabled}\n"
+            f"  Binary: {cli_cfg.binary_path}\n"
+            f"  Timeout: {cli_cfg.timeout_s}s\n"
+            f"  Signature type: {cli_cfg.signature_type}\n"
+            f"  Mutating commands: {cli_cfg.allow_mutating_commands}"
         )
         self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
 
@@ -1070,27 +1265,104 @@ class TelegramBot:
             )
         self._track(await update.message.reply_text("\n".join(lines), parse_mode="Markdown"))
 
+    async def _cmd_pmaccount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        if not self._pm_cli_is_available():
+            self._track(await update.message.reply_text(self._pm_cli_unavailable_text()))
+            return
+
+        wallet, account_status, balance = await asyncio.gather(
+            self.polymarket_cli.get_wallet_info(),
+            self.polymarket_cli.get_account_status(),
+            self.polymarket_cli.get_collateral_balance(),
+            return_exceptions=True,
+        )
+        text = self._format_pm_account_text(wallet, account_status, balance)
+        self._track(await update.message.reply_text(text, parse_mode="Markdown"))
+
+    async def _cmd_pmorders(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        if not self._pm_cli_is_available():
+            self._track(await update.message.reply_text(self._pm_cli_unavailable_text()))
+            return
+
+        try:
+            result = await self.polymarket_cli.get_open_orders(limit=10)
+        except PolymarketCliError as exc:
+            result = exc
+        text = self._format_pm_orders_text(result)
+        self._track(await update.message.reply_text(text, parse_mode="Markdown"))
+
+    async def _cmd_pmtrades(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        if not self._pm_cli_is_available():
+            self._track(await update.message.reply_text(self._pm_cli_unavailable_text()))
+            return
+
+        try:
+            result = await self.polymarket_cli.get_trades(limit=10)
+        except PolymarketCliError as exc:
+            result = exc
+        text = self._format_pm_trades_text(result)
+        self._track(await update.message.reply_text(text, parse_mode="Markdown"))
+
+    async def _cmd_pmcancelall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._auth(update):
+            return
+        self._track_cmd(update)
+        if not self._pm_cli_is_available():
+            self._track(await update.message.reply_text(self._pm_cli_unavailable_text()))
+            return
+        if not self.config.cli.allow_mutating_commands:
+            self._track(await update.message.reply_text(
+                "Polymarket cancel-all is disabled. Set `cli.allow_mutating_commands: true` to enable it.",
+                parse_mode="Markdown",
+            ))
+            return
+
+        text = (
+            "*Confirm Polymarket Cancel All*\n"
+            "This will cancel all open Polymarket orders for the configured wallet."
+        )
+        self._track(await update.message.reply_text(
+            text,
+            parse_mode="Markdown",
+            reply_markup=self._pm_cancel_keyboard(),
+        ))
+
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._auth(update):
             return
         self._track_cmd(update)
         msg = (
             "*EDEC Bot Commands*\n"
-            "/status — Per-coin book prices + bot state\n"
-            "/mode — Show current strategy mode\n"
-            "/mode both|dual|single|off — Switch mode live\n"
-            "/start — Resume trading\n"
-            "/stop — Pause trading\n"
-            "/kill — Emergency stop\n"
-            "/trades — Last 10 trades\n"
-            "/stats — Today's summary\n"
-            "/stats 7d — Last 7 days\n"
-            "/export — Send Excel file\n"
-            "/export today — Today only\n"
-            "/config — Show all settings\n"
-            "/filters — Filter pass/fail rates\n"
-            "/clean — Delete old chat messages\n"
-            "/help — This message"
+            "/status - Per-coin book prices + bot state\n"
+            "/mode - Show current strategy mode\n"
+            "/mode both|dual|single|off - Switch mode live\n"
+            "/start - Resume trading\n"
+            "/stop - Pause trading\n"
+            "/kill - Emergency stop\n"
+            "/trades - Last 10 trades\n"
+            "/stats - Today's summary\n"
+            "/stats 7d - Last 7 days\n"
+            "/export - Send Excel file\n"
+            "/export today - Today only\n"
+            "/config - Show all settings\n"
+            "/filters - Filter pass/fail rates\n"
+            "/clean - Delete old chat messages\n"
+            "/help - This message"
+        )
+        msg += (
+            "\n/pmaccount - Polymarket wallet/account diagnostics"
+            "\n/pmorders - Polymarket open orders"
+            "\n/pmtrades - Polymarket recent trades"
+            "\n/pmcancelall - Guarded cancel-all for Polymarket orders"
         )
         self._track(await update.message.reply_text(msg, parse_mode="Markdown"))
 

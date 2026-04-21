@@ -96,7 +96,7 @@ def setup_logging(config):
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     handlers = [logging.StreamHandler(sys.stdout)]
     if config.logging.file:
-        handlers.append(logging.FileHandler(config.logging.file))
+        handlers.append(logging.FileHandler(config.logging.file, encoding="utf-8"))
     logging.basicConfig(level=log_level, format=fmt, handlers=handlers)
 
 

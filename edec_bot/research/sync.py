@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 from .sources import FillCursor, FillSource, GammaMarketSource, GoldskyFillSource, normalize_gamma_market, normalize_goldsky_fill
-from .warehouse import ResearchWarehouse
+
+if TYPE_CHECKING:
+    from .warehouse import ResearchWarehouse
 
 
 def sync_markets(

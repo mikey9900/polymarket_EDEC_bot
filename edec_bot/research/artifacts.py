@@ -11,8 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
-import duckdb
-
+from ._duckdb import require_duckdb
 from .buckets import cluster_payload
 from .paths import (
     DEFAULT_POLICY_PATH,
@@ -303,7 +302,7 @@ def _group_cluster_rollup(clusters: dict[str, dict[str, object]], key: str) -> l
 def _build_fill_summary(warehouse_path: Path, *, cutoff: datetime) -> dict[str, list[dict[str, object]]]:
     if not warehouse_path.exists():
         return {"fill_flow_5m_1d": [], "trader_concentration_5m_1d": []}
-    conn = duckdb.connect(str(warehouse_path), read_only=True)
+    conn = require_duckdb().connect(str(warehouse_path), read_only=True)
     try:
         fill_rows = conn.execute(
             """

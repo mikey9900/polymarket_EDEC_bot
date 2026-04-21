@@ -8,8 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
+from ._duckdb import require_duckdb
 from .paths import PARQUET_ROOT, WAREHOUSE_PATH, ensure_research_dirs, resolve_repo_path
 from .sources import FillCursor
 
@@ -24,7 +23,7 @@ class ResearchWarehouse:
         ensure_research_dirs()
         self.db_path = resolve_repo_path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = duckdb.connect(str(self.db_path))
+        self.conn = require_duckdb().connect(str(self.db_path))
         self._create_schema()
 
     def close(self) -> None:

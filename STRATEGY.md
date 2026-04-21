@@ -1,6 +1,6 @@
-# EDEC Bot — Strategy & Logic Summary
-> Paste this file + a compressed trade CSV into any AI for analysis.
-> Current version: 5.0.22
+# EDEC Bot - Historical Strategy Summary
+> Historical reference only. This file is not the source of truth for the live bot.
+> For current behavior, use `edec_bot/config_phase_a_single.yaml`, `TUNING.md`, and `CLAUDE.md`.
 
 
 ---

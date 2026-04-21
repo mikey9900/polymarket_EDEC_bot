@@ -45,7 +45,11 @@
       "Bash(python edec_bot/fetch_github_data.py --limit 3)",
       "Bash(ls -la *.csv *.csv.gz)",
       "Bash(python edec_bot/sync_dropbox_to_repo_latest.py)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(python -m pytest -v)",
+      "Bash(python -m pytest -v --ignore=tests/test_research_artifacts.py --ignore=tests/test_research_sync.py)",
+      "Bash(python -m py_compile edec_bot/bot/config.py edec_bot/bot/strategy.py edec_bot/bot/execution.py edec_bot/bot/models.py edec_bot/bot/strategies/single_leg.py edec_bot/bot/strategies/lead_lag.py edec_bot/bot/strategies/swing_leg.py edec_bot/bot/strategies/dual_leg.py edec_bot/bot/execution_flows/single_leg.py edec_bot/bot/tracker.py edec_bot/bot/market_scanner.py edec_bot/bot/risk_manager.py)",
+      "Bash(python -c \"import duckdb; print\\('duckdb OK'\\)\")"
     ]
   }
 }

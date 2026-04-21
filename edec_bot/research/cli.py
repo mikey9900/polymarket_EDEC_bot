@@ -5,11 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 
-from .artifacts import build_artifacts
 from .paths import DEFAULT_POLICY_PATH, LOCAL_TRACKER_DB, WAREHOUSE_PATH
 from .sources import GammaMarketSource, GoldskyFillSource
 from .sync import sync_fills, sync_markets, sync_recent_5m_fills
-from .warehouse import ResearchWarehouse
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,6 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "sync-markets":
+        from .warehouse import ResearchWarehouse
+
         warehouse = ResearchWarehouse(args.warehouse_path)
         source = GammaMarketSource()
         try:
@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "sync-fills":
+        from .warehouse import ResearchWarehouse
+
         warehouse = ResearchWarehouse(args.warehouse_path)
         source = GoldskyFillSource()
         try:
@@ -79,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "sync-recent-5m-fills":
+        from .warehouse import ResearchWarehouse
+
         warehouse = ResearchWarehouse(args.warehouse_path)
         source = GoldskyFillSource()
         try:
@@ -97,6 +101,8 @@ def main(argv: list[str] | None = None) -> int:
             warehouse.close()
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
+
+    from .artifacts import build_artifacts
 
     result = build_artifacts(
         warehouse_path=args.warehouse_path,

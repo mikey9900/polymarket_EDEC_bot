@@ -17,7 +17,7 @@
 
 - To analyse bot performance and tune parameters, read `TUNING_CLAUDE.md` and follow the steps there.
 - For other AI agents (Codex, GPT, etc.) use `TUNING.md` instead.
-- **`STRATEGY.md` is stale** — last updated at v5.0.22 with old entry logic. Do not use it as a reference for current parameters. Read the active YAML instead.
+- **`STRATEGY.md` is historical only** — it is not the source of truth for current parameters. Use the active YAML config and runtime docs instead.
 
 ### Where to find session exports (priority order)
 
@@ -72,12 +72,12 @@ Each session folder contains one or more CSVs. Rows are individual trades with 9
 - `rpn` — resolution P&L if held to end
 - `whw` — would-have-won flag
 - `wbe` — would-have-broken-even flag
-- `lct` — loss cut threshold pct. **Known bug: only written for `single_leg`, not `lead_lag`.**
+- `lct` — loss cut threshold pct. Populated for both `single_leg` and `lead_lag` as of 5.1.7.
 - `lpx`, `fex`, `evp` — other resolution learning fields
 
 **Filter rejection**
 - `ff` — filter that caused rejection (e.g. `source_staleness`, `entry_spread`). **Check this first after a config change** to see which filter is firing most. Empty on trades that passed all filters.
-- `sv` — strategy version. **Known bug: always "unknown"** — not populated from STRATEGY.md parser.
+- `sv` — strategy version. Populated from `__version__` as of 5.1.7.
 
 ---
 

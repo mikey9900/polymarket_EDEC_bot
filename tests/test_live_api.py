@@ -3,6 +3,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,6 +120,22 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('text-align: left;', html)
         self.assertIn('white-space: nowrap;', html)
         self.assertNotIn('.control-block.span-2 { grid-column: span 2; }', html)
+
+    def test_threaded_server_stops_cleanly_without_error_log(self):
+        server = LiveApiServer(dashboard_state=_FakeDashboardState(), host="127.0.0.1", port=0)
+
+        with mock.patch("bot.live_api.logger.error") as mock_error:
+            server.start_threaded()
+            self.assertTrue(server._ready.wait(timeout=2.0))
+            self.assertIsNotNone(server._thread)
+            self.assertTrue(server._thread.is_alive())
+
+            server.stop_threaded()
+
+        self.assertIsNone(server._thread)
+        self.assertIsNone(server._loop)
+        self.assertIsNone(server._server)
+        mock_error.assert_not_called()
 
 
 class LiveApiServerHttpTests(unittest.IsolatedAsyncioTestCase):

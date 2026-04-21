@@ -52,7 +52,7 @@ class LiveApiServer:
         if self._loop is None or not self._loop.is_running():
             return
         try:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+            self._loop.call_soon_threadsafe(self._stop_loop_threadsafe)
         except Exception:
             pass
         if self._thread is not None:
@@ -61,29 +61,44 @@ class LiveApiServer:
         self._loop = None
         self._server = None
 
+    def _stop_loop_threadsafe(self) -> None:
+        if self._server is not None:
+            self._server.close()
+        if self._loop is not None and self._loop.is_running():
+            self._loop.stop()
+
     def _run_thread(self) -> None:
         try:
             self._loop = asyncio.new_event_loop()
             asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(self._serve())
+            self._server = self._loop.run_until_complete(
+                asyncio.start_server(self._handle_client, self.host, self.port)
+            )
+            sock = self._server.sockets[0] if self._server and self._server.sockets else None
+            if sock is not None:
+                self.port = sock.getsockname()[1]
+            logger.info(
+                "Dashboard API listening on http://%s:%s (own thread)",
+                self.host,
+                self.port,
+            )
+            self._ready.set()
+            self._loop.run_forever()
         except Exception as exc:
             logger.error("Dashboard API thread crashed: %s", exc)
         finally:
+            try:
+                if self._server is not None:
+                    self._server.close()
+                    if self._loop is not None and not self._loop.is_closed():
+                        self._loop.run_until_complete(self._server.wait_closed())
+            except Exception:
+                pass
             try:
                 if self._loop is not None and not self._loop.is_closed():
                     self._loop.close()
             except Exception:
                 pass
-
-    async def _serve(self) -> None:
-        self._server = await asyncio.start_server(self._handle_client, self.host, self.port)
-        logger.info(
-            "Dashboard API listening on http://%s:%s (own thread)",
-            self.host, self.port,
-        )
-        self._ready.set()
-        async with self._server:
-            await self._server.serve_forever()
 
     @staticmethod
     async def _read_chunked_body(reader: asyncio.StreamReader) -> bytes:

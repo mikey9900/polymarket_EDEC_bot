@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import signal
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -96,6 +97,28 @@ def setup_logging(config):
     if config.logging.file:
         handlers.append(logging.FileHandler(config.logging.file))
     logging.basicConfig(level=log_level, format=fmt, handlers=handlers)
+
+
+def _install_shutdown_signal_handlers(loop, cancel_cb) -> tuple:
+    installed = []
+    for sig_name in ("SIGINT", "SIGTERM"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            loop.add_signal_handler(sig, cancel_cb)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(sig)
+    return tuple(installed)
+
+
+def _remove_shutdown_signal_handlers(loop, installed_signals: tuple) -> None:
+    for sig in installed_signals:
+        try:
+            loop.remove_signal_handler(sig)
+        except Exception:
+            continue
 
 
 async def execution_loop(executor: ExecutionEngine, signal_queue: asyncio.Queue,
@@ -239,6 +262,10 @@ async def main():
     # Diagnostics: asyncio's built-in slow-callback warning names the offending
     # coroutine when something blocks the loop for too long.
     loop = asyncio.get_running_loop()
+    installed_signal_handlers: tuple = ()
+    main_task = asyncio.current_task()
+    if main_task is not None:
+        installed_signal_handlers = _install_shutdown_signal_handlers(loop, main_task.cancel)
     loop.set_debug(True)
     loop.slow_callback_duration = 0.5  # log any callback taking >500ms
     # Quiet the noisy "coroutine was never awaited" debug spam from set_debug;
@@ -579,6 +606,7 @@ async def main():
         logger.info("Shutdown requested...")
     finally:
         logger.info("Shutting down...")
+        _remove_shutdown_signal_handlers(loop, installed_signal_handlers)
 
         for _, feed in feed_pairs:
             feed.stop()

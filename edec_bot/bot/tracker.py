@@ -92,6 +92,21 @@ class DecisionTracker:
     def latest_run_metadata(self) -> dict | None:
         return tracker_ops.latest_run_metadata(self)
 
+    def save_runtime_state(self, state: dict[str, object], *, version: int = 1) -> None:
+        tracker_ops.save_runtime_state(self, state, version=version)
+
+    def load_runtime_state(self) -> dict[str, object] | None:
+        return tracker_ops.load_runtime_state(self)
+
+    def clear_runtime_state(self) -> None:
+        tracker_ops.clear_runtime_state(self)
+
+    def get_recoverable_live_trades(self) -> list[dict[str, object]]:
+        return tracker_ops.get_recoverable_live_trades(self)
+
+    def get_open_paper_trades(self) -> list[dict[str, object]]:
+        return tracker_ops.get_open_paper_trades(self)
+
     def _runtime_value(self, key: str, default=None):
         return self._runtime_context.get(key, default)
 
@@ -105,9 +120,22 @@ class DecisionTracker:
         self,
         trade_id: int,
         *,
+        buy_order_id: str | None = None,
         sell_order_id: str | None = None,
         status: str | None = None,
         error: str | None = None,
+        total_cost: float | None = None,
+        fee_total: float | None = None,
+        shares: float | None = None,
+        shares_requested: float | None = None,
+        shares_filled: float | None = None,
+        entry_order_submitted_at: str | None = None,
+        entry_filled_at: str | None = None,
+        entry_time_to_fill_s: float | None = None,
+        entry_limit_price: float | None = None,
+        entry_fill_price: float | None = None,
+        entry_slippage: float | None = None,
+        entry_fill_ratio: float | None = None,
         exit_order_submitted_at: str | None = None,
         exit_limit_price: float | None = None,
         exit_reason: str | None = None,
@@ -119,9 +147,22 @@ class DecisionTracker:
         tracker_ops.update_live_trade(
             self,
             trade_id,
+            buy_order_id=buy_order_id,
             sell_order_id=sell_order_id,
             status=status,
             error=error,
+            total_cost=total_cost,
+            fee_total=fee_total,
+            shares=shares,
+            shares_requested=shares_requested,
+            shares_filled=shares_filled,
+            entry_order_submitted_at=entry_order_submitted_at,
+            entry_filled_at=entry_filled_at,
+            entry_time_to_fill_s=entry_time_to_fill_s,
+            entry_limit_price=entry_limit_price,
+            entry_fill_price=entry_fill_price,
+            entry_slippage=entry_slippage,
+            entry_fill_ratio=entry_fill_ratio,
             exit_order_submitted_at=exit_order_submitted_at,
             exit_limit_price=exit_limit_price,
             exit_reason=exit_reason,

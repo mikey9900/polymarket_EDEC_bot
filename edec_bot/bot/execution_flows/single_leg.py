@@ -83,7 +83,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
                 f"-> EXIT@{signal.target_sell_price:.3f} | score={signal.signal_score:.1f} "
                 f"| {shares} shares, cost=${cost:.2f}"
             )
-            asyncio.create_task(
+            engine._schedule_background_task(
                 engine._monitor_paper_single_leg(
                     trade_id=trade_id,
                     market=market,
@@ -106,6 +106,12 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         return result
 
     result.shares = shares
+    entry_cost = signal.entry_price * shares
+    if not await engine.can_submit_buy_order(entry_cost):
+        result.status = "failed"
+        result.error = f"Insufficient collateral after reservations (need ${entry_cost:.2f})"
+        logger.warning(f"[{coin}] {result.error}")
+        return result
     position = None
 
     try:
@@ -164,7 +170,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             result.entry_fill_ratio = actual_shares / max(shares, 1e-9)
             position.entry_filled_at = result.entry_filled_at
             engine._open_positions[buy_order_id] = position
-            asyncio.create_task(engine._monitor_single_leg(position, result))
+            engine._schedule_background_task(engine._monitor_single_leg(position, result))
             if signal.strategy_type == "lead_lag":
                 logger.info(
                     f"[{coin}] LEAD-LAG BUY filled: {actual_shares:.0f} {signal.side.upper()} "
@@ -182,8 +188,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         status_label = engine._response_status(buy_resp) or "unknown"
         if hold_if_unfilled:
             result.status = "submitted"
+            engine.reserve_buy_order(buy_order_id, entry_cost)
             engine._pending_single_entries[buy_order_id] = position
-            asyncio.create_task(engine._monitor_single_leg_entry(position, result))
+            engine._schedule_background_task(engine._monitor_single_leg_entry(position, result))
             logger.info(
                 f"[{coin}] {signal.strategy_type.upper()} BUY resting on book: "
                 f"{shares} {signal.side.upper()} @ {signal.entry_price:.3f} "
@@ -207,7 +214,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         return result
 
     finally:
-        if resolved_decision_id and result.status not in ("dry_run", "submitted"):
+        if resolved_decision_id and result.status != "dry_run":
             result.trade_id = engine.tracker.log_trade(resolved_decision_id, result)
             if position is not None:
                 position.trade_id = result.trade_id
@@ -225,10 +232,15 @@ async def monitor_entry(engine: Any, position: SingleLegPosition, result: TradeR
         now = datetime.now(timezone.utc)
         if now >= position.market.end_time:
             engine._pending_single_entries.pop(position.buy_order_id, None)
-            try:
-                await asyncio.to_thread(engine.client.cancel, position.buy_order_id)
-            except Exception:
-                pass
+            canceled = await engine.cancel_live_order(position.buy_order_id)
+            if canceled:
+                engine.release_buy_order(position.buy_order_id)
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="failed",
+                    error="Entry order expired before fill",
+                )
             logger.info(f"[{coin}] Entry order expired before fill: {position.buy_order_id}")
             return
 
@@ -269,8 +281,25 @@ async def monitor_entry(engine: Any, position: SingleLegPosition, result: TradeR
             result.entry_fill_ratio = actual_shares / max(requested_shares, 1e-9)
             position.entry_filled_at = result.entry_filled_at
             engine._pending_single_entries.pop(position.buy_order_id, None)
+            engine.release_buy_order(position.buy_order_id)
             engine._open_positions[position.buy_order_id] = position
-            if position.decision_id:
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="open",
+                    total_cost=result.total_cost,
+                    fee_total=result.fee_total,
+                    shares=result.shares,
+                    shares_requested=result.shares_requested,
+                    shares_filled=result.shares_filled,
+                    entry_filled_at=result.entry_filled_at,
+                    entry_time_to_fill_s=result.entry_time_to_fill_s,
+                    entry_fill_price=result.entry_fill_price,
+                    entry_slippage=result.entry_slippage,
+                    entry_fill_ratio=result.entry_fill_ratio,
+                )
+                position.trade_id = result.trade_id
+            elif position.decision_id:
                 result.trade_id = engine.tracker.log_trade(position.decision_id, result)
                 position.trade_id = result.trade_id
             engine.risk_manager.open_position(result)
@@ -285,6 +314,13 @@ async def monitor_entry(engine: Any, position: SingleLegPosition, result: TradeR
         status = engine._response_status(order_status)
         if engine._is_terminal_order_state(status):
             engine._pending_single_entries.pop(position.buy_order_id, None)
+            engine.release_buy_order(position.buy_order_id)
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="failed",
+                    error=f"Entry order ended without fill (status={status or 'unknown'})",
+                )
             logger.info(
                 f"[{coin}] Entry order ended without fill: {position.buy_order_id} "
                 f"(status={status or 'unknown'})"
@@ -408,6 +444,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 order_status = await asyncio.to_thread(engine.client.get_order, position.sell_order_id)
                 status = engine._response_status(order_status)
                 if engine._is_order_filled(order_status, position.shares):
+                    engine.release_sell_order(position.sell_order_id)
                     exit_price = engine._filled_price(order_status, position.pending_exit_price or position.target_price)
                     actual_profit = engine._net_pnl(
                         position.entry_price,
@@ -467,6 +504,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     engine._open_positions.pop(position.buy_order_id, None)
                     return
                 if engine._is_terminal_order_state(status):
+                    engine.release_sell_order(position.sell_order_id)
                     position.sell_order_id = None
                     result.sell_order_id = None
                     position.pending_exit_reason = ""
@@ -498,6 +536,9 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 fee_rate=position.market.fee_rate,
             )
             if exit_reason and not position.sell_order_id:
+                if not engine.can_reserve_sell_shares(position.token_id, position.shares):
+                    logger.warning(f"[{coin}] Lead-lag exit blocked - shares already reserved for sale")
+                    continue
                 try:
                     exit_price = engine._live_exit_price(bid, exit_reason)
                     sell_order = await asyncio.to_thread(
@@ -508,6 +549,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                     submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                    engine.reserve_sell_order(position.sell_order_id, position.token_id, position.shares)
                     position.pending_exit_reason = exit_reason
                     position.pending_exit_price = exit_price
                     result.sell_order_id = position.sell_order_id
@@ -540,6 +582,9 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
         dynamic_loss_cut = engine._dynamic_single_leg_loss_cut(remaining)
 
         if bid >= cfg.scalp_take_profit_bid and bid < cfg.high_confidence_bid and net_pnl >= cfg.scalp_min_profit_usd:
+            if not engine.can_reserve_sell_shares(position.token_id, position.shares):
+                logger.warning(f"[{coin}] Scalp exit blocked - shares already reserved for sale")
+                continue
             try:
                 scalp_price = engine._live_exit_price(bid, "profit_target")
                 sell_order = await asyncio.to_thread(
@@ -550,6 +595,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                 submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                engine.reserve_sell_order(position.sell_order_id, position.token_id, position.shares)
                 position.pending_exit_reason = "profit_target"
                 position.pending_exit_price = scalp_price
                 result.sell_order_id = position.sell_order_id
@@ -612,15 +658,18 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
 
         if not high_confidence_held and loss_pct > 0 and loss_pct >= dynamic_loss_cut:
             if position.sell_order_id:
-                try:
-                    await asyncio.to_thread(engine.client.cancel, position.sell_order_id)
-                except Exception:
-                    pass
+                canceled = await engine.cancel_live_order(position.sell_order_id)
+                if not canceled:
+                    continue
+                engine.release_sell_order(position.sell_order_id)
                 position.cancel_repost_count += 1
                 position.sell_order_id = None
                 result.sell_order_id = None
                 result.cancel_repost_count = position.cancel_repost_count
             if position.sell_order_id:
+                continue
+            if not engine.can_reserve_sell_shares(position.token_id, position.shares):
+                logger.warning(f"[{coin}] Loss-cut exit blocked - shares already reserved for sale")
                 continue
             try:
                 emergency_price = engine._live_exit_price(bid, "loss_cut")
@@ -632,6 +681,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                 submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                engine.reserve_sell_order(position.sell_order_id, position.token_id, position.shares)
                 position.pending_exit_reason = "loss_cut"
                 position.pending_exit_price = emergency_price
                 result.sell_order_id = position.sell_order_id
@@ -662,15 +712,18 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
 
         if not high_confidence_held and remaining <= 30:
             if position.sell_order_id:
-                try:
-                    await asyncio.to_thread(engine.client.cancel, position.sell_order_id)
-                except Exception:
-                    pass
+                canceled = await engine.cancel_live_order(position.sell_order_id)
+                if not canceled:
+                    continue
+                engine.release_sell_order(position.sell_order_id)
                 position.cancel_repost_count += 1
                 position.sell_order_id = None
                 result.sell_order_id = None
                 result.cancel_repost_count = position.cancel_repost_count
             if position.sell_order_id:
+                continue
+            if not engine.can_reserve_sell_shares(position.token_id, position.shares):
+                logger.warning(f"[{coin}] Near-close exit blocked - shares already reserved for sale")
                 continue
             try:
                 emergency_price = engine._live_exit_price(bid, "near_close")
@@ -682,6 +735,7 @@ async def monitor_position(engine: Any, position: SingleLegPosition, result: Tra
                 sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                 submitted_at = datetime.now(timezone.utc).isoformat()
                 position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                engine.reserve_sell_order(position.sell_order_id, position.token_id, position.shares)
                 position.pending_exit_reason = "near_close"
                 position.pending_exit_price = emergency_price
                 result.sell_order_id = position.sell_order_id

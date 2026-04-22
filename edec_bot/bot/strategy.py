@@ -46,6 +46,13 @@ class StrategyEngine:
             "swing_leg": 0.0,
         }
 
+    def _sync_tracker_mode(self) -> None:
+        if not self.tracker or not hasattr(self.tracker, "get_runtime_context") or not hasattr(self.tracker, "set_runtime_context"):
+            return
+        context = dict(self.tracker.get_runtime_context() or {})
+        context["mode"] = self._mode
+        self.tracker.set_runtime_context(context)
+
     @property
     def mode(self) -> str:
         return self._mode
@@ -56,6 +63,7 @@ class StrategyEngine:
             return False
         self._mode = mode
         self._active = (mode != "off")
+        self._sync_tracker_mode()
         logger.info(f"Strategy mode set to: {mode}")
         return True
 
@@ -64,6 +72,7 @@ class StrategyEngine:
         if self._mode == "off":
             self._mode = "both"
         self._active = True
+        self._sync_tracker_mode()
         logger.info(f"Scanning started (mode={self._mode})")
 
     def stop_scanning(self):

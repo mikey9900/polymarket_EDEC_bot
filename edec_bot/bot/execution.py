@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import time
+from datetime import datetime, timezone
 
 import httpx
 
@@ -39,6 +40,10 @@ class ExecutionEngine:
         self._open_swing_positions: dict[str, SwingPosition] = {}
         self._pending_swing_entries: dict[str, SwingPosition] = {}
 
+        # Local reservation ledger for live-order recovery and pre-flight guards.
+        self._reserved_buy_orders: dict[str, float] = {}
+        self._reserved_sell_orders: dict[str, tuple[str, float]] = {}
+
         # HTTP client for dry-run book price monitoring
         self._http = httpx.AsyncClient(timeout=5.0)
 
@@ -53,6 +58,9 @@ class ExecutionEngine:
     async def aclose(self):
         """Close owned HTTP resources."""
         await self._http.aclose()
+
+    def _schedule_background_task(self, coro):
+        return asyncio.create_task(coro)
 
     # -----------------------------------------------------------------------
     # Dual-leg: FOK both sides atomically
@@ -245,6 +253,24 @@ class ExecutionEngine:
             self.tracker.set_runtime_context(context)
         logger.info(f"Order size set to ${usd:.2f}")
 
+    def restore_order_size_override(self, usd: float | None, *, active: bool) -> None:
+        self._order_size_usd = float(usd) if active and usd is not None else None
+        if self.tracker and hasattr(self.tracker, "get_runtime_context") and hasattr(self.tracker, "set_runtime_context"):
+            context = dict(self.tracker.get_runtime_context() or {})
+            context["order_size_usd"] = float(usd) if active and usd is not None else self.config.execution.order_size_usd
+            context["order_size_override_active"] = bool(active)
+            self.tracker.set_runtime_context(context)
+
+    @property
+    def order_size_override_active(self) -> bool:
+        return self._order_size_usd is not None
+
+    def snapshot_runtime_state(self) -> dict[str, object]:
+        return {
+            "order_size_override_active": self.order_size_override_active,
+            "order_size_usd": float(self._order_size_usd) if self._order_size_usd is not None else None,
+        }
+
     def _calc_shares(self, price: float) -> float:
         if price <= 0:
             return 0
@@ -363,6 +389,125 @@ class ExecutionEngine:
             return False
         return ExecutionEngine._response_status(response) in ("matched", "filled")
 
+    def reserve_buy_order(self, order_id: str, cost: float) -> None:
+        if not order_id or cost <= 0:
+            return
+        self._reserved_buy_orders[order_id] = float(cost)
+
+    def release_buy_order(self, order_id: str | None) -> None:
+        if not order_id:
+            return
+        self._reserved_buy_orders.pop(order_id, None)
+
+    def reserve_sell_order(self, order_id: str, token_id: str, shares: float) -> None:
+        if not order_id or not token_id or shares <= 0:
+            return
+        self._reserved_sell_orders[order_id] = (token_id, float(shares))
+
+    def release_sell_order(self, order_id: str | None) -> None:
+        if not order_id:
+            return
+        self._reserved_sell_orders.pop(order_id, None)
+
+    def reserved_collateral_usd(self) -> float:
+        return sum(self._reserved_buy_orders.values())
+
+    def reserved_shares(self, token_id: str) -> float:
+        return sum(shares for reserved_token, shares in self._reserved_sell_orders.values() if reserved_token == token_id)
+
+    def owned_shares(self, token_id: str) -> float:
+        singles = sum(
+            float(position.shares)
+            for position in self._open_positions.values()
+            if position.token_id == token_id
+        )
+        swings = sum(
+            float(position.first_shares)
+            for position in self._open_swing_positions.values()
+            if position.first_token_id == token_id
+        )
+        return singles + swings
+
+    def can_reserve_sell_shares(self, token_id: str, shares: float) -> bool:
+        if shares <= 0:
+            return False
+        return (self.owned_shares(token_id) - self.reserved_shares(token_id)) >= float(shares)
+
+    async def can_submit_buy_order(self, cost: float) -> bool:
+        if cost <= 0 or not self.client or not hasattr(self.client, "get_balance_allowance"):
+            return True
+        try:
+            from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+        except Exception:
+            return True
+        try:
+            response = await asyncio.to_thread(
+                self.client.get_balance_allowance,
+                BalanceAllowanceParams(asset_type=AssetType.COLLATERAL),
+            )
+        except Exception as exc:
+            logger.debug("Collateral balance lookup failed: %s", exc)
+            return True
+        available = self._extract_collateral_balance(response)
+        if available is None:
+            return True
+        return (available - self.reserved_collateral_usd()) >= float(cost)
+
+    @staticmethod
+    def _extract_collateral_balance(response: object) -> float | None:
+        def _candidate(value: object) -> float | None:
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed if math.isfinite(parsed) else None
+
+        if isinstance(response, dict):
+            nested_candidates = []
+            for key in (
+                "available",
+                "availableBalance",
+                "balance",
+                "balanceDecimal",
+                "allowance",
+                "allowanceDecimal",
+            ):
+                if key in response:
+                    value = _candidate(response.get(key))
+                    if value is not None:
+                        nested_candidates.append(value)
+            nested_mappings = []
+            for value in response.values():
+                if isinstance(value, dict):
+                    nested_mappings.append(ExecutionEngine._extract_collateral_balance(value))
+            candidates = [value for value in nested_candidates + nested_mappings if value is not None]
+            if candidates:
+                return min(candidates)
+        return None
+
+    async def cancel_live_order(self, order_id: str | None) -> bool:
+        if not order_id or not self.client:
+            return False
+        try:
+            await asyncio.to_thread(self.client.cancel, order_id)
+            return True
+        except Exception as exc:
+            logger.warning("Cancel order failed for %s: %s", order_id, exc)
+            return False
+
+    def get_unresolved_live_markets(self, now: datetime | None = None) -> list:
+        current = now or datetime.now(timezone.utc)
+        seen: set[str] = set()
+        markets = []
+        for result in self.risk_manager.open_positions:
+            market = getattr(getattr(result, "signal", None), "market", None)
+            if market is None or market.slug in seen:
+                continue
+            if market.end_time <= current:
+                seen.add(market.slug)
+                markets.append(market)
+        return markets
+
     @staticmethod
     def _exclude_market_slug(mapping: dict, market_slug: str, *, attr: str = "market") -> dict:
         return {
@@ -408,6 +553,7 @@ class ExecutionEngine:
                     ever_profitable=result.ever_profitable,
                     cancel_repost_count=result.cancel_repost_count or None,
                 )
+            self.release_sell_order(getattr(result, "sell_order_id", None))
             self.risk_manager.close_position(result, actual_profit)
         self._open_positions = self._exclude_market_slug(self._open_positions, market_slug)
         self._pending_single_entries = self._exclude_market_slug(self._pending_single_entries, market_slug)

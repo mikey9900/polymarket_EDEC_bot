@@ -27,6 +27,13 @@ from bot.market_scanner import MarketScanner
 from bot.polymarket_cli import PolymarketCli
 from bot.price_aggregator import PriceAggregator
 from bot.price_feeds import start_all_feeds
+from bot.process_lock import acquire_pid_lock, default_lock_path
+from bot.recovery import (
+    apply_runtime_state,
+    apply_strategy_runtime_state,
+    recover_runtime,
+    snapshot_runtime_state,
+)
 from bot.risk_manager import RiskManager
 from bot.strategy import StrategyEngine
 from bot.execution import ExecutionEngine
@@ -173,8 +180,22 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
         try:
             await asyncio.sleep(15)
 
-            expired = scanner.pop_expired_markets()
-            for market in expired:
+            expired: dict[str, object] = {
+                market.slug: market for market in scanner.pop_expired_markets()
+            }
+            for market in executor.get_unresolved_live_markets():
+                expired.setdefault(market.slug, market)
+            for paper_trade in tracker.get_open_paper_trades():
+                slug = str(paper_trade.get("market_slug") or "")
+                if not slug or slug in expired or slug in resolved_markets:
+                    continue
+                market = await scanner.get_market_by_slug(slug, coin=str(paper_trade.get("coin") or ""))
+                if market and market.end_time <= datetime.now(timezone.utc):
+                    expired[slug] = market
+
+            for market in expired.values():
+                if not market:
+                    continue
                 if market.slug in resolved_markets:
                     continue
 
@@ -210,6 +231,83 @@ async def outcome_tracker_loop(scanner: MarketScanner, tracker: DecisionTracker,
             break
         except Exception as e:
             logger.error(f"Outcome tracker error: {e}")
+
+
+def _sync_runtime_context(
+    tracker: DecisionTracker,
+    *,
+    strategy,
+    executor,
+    config_path: str,
+    config_hash: str,
+) -> None:
+    context = dict(tracker.get_runtime_context() or {})
+    context.update(
+        {
+            "mode": getattr(strategy, "mode", context.get("mode", "off")),
+            "dry_run": bool(getattr(executor.config.execution, "dry_run", True)),
+            "config_path": str(Path(config_path).resolve()),
+            "config_hash": config_hash,
+            "order_size_usd": float(executor.order_size_usd),
+            "order_size_override_active": bool(getattr(executor, "order_size_override_active", False)),
+            "paper_capital_total": tracker.get_paper_capital()[0],
+        }
+    )
+    tracker.set_runtime_context(context)
+
+
+def _persist_runtime_state(
+    tracker: DecisionTracker,
+    *,
+    risk_manager: RiskManager,
+    executor: ExecutionEngine,
+    strategy,
+    config_path: str,
+    config_hash: str,
+) -> None:
+    _sync_runtime_context(
+        tracker,
+        strategy=strategy,
+        executor=executor,
+        config_path=config_path,
+        config_hash=config_hash,
+    )
+    tracker.save_runtime_state(snapshot_runtime_state(risk_manager, executor, strategy))
+
+
+async def runtime_state_loop(
+    tracker: DecisionTracker,
+    *,
+    risk_manager: RiskManager,
+    executor: ExecutionEngine,
+    strategy,
+    config_path: str,
+    config_hash: str,
+) -> None:
+    while True:
+        try:
+            _persist_runtime_state(
+                tracker,
+                risk_manager=risk_manager,
+                executor=executor,
+                strategy=strategy,
+                config_path=config_path,
+                config_hash=config_hash,
+            )
+            await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning("Runtime state persistence failed: %s", exc)
+            await asyncio.sleep(1.0)
+
+
+async def _warmup_runtime(scanner: MarketScanner, aggregator: PriceAggregator, *, timeout_s: float = 10.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    while asyncio.get_running_loop().time() < deadline:
+        if scanner.get_all_active() or aggregator.get_all_coins_snapshot():
+            return
+        await asyncio.sleep(0.25)
 
 
 async def archive_scheduler_loop(
@@ -287,6 +385,8 @@ async def main():
     logger.info("=" * 60)
 
     Path("data").mkdir(exist_ok=True)
+    runtime_lock = acquire_pid_lock(default_lock_path())
+    logger.info("Runtime PID lock acquired: %s", runtime_lock.path)
 
     tracker = DecisionTracker("data/decisions.db")
     ha_options = _load_ha_options()
@@ -318,11 +418,9 @@ async def main():
     )
 
     default_mode = default_strategy_mode()
-    if default_mode:
-        if strategy.set_mode(default_mode):
-            logger.info(f"Default strategy mode from env: {default_mode}")
-        else:
-            logger.warning(f"Invalid EDEC_DEFAULT_MODE '{default_mode}', keeping mode={strategy.mode}")
+    if not default_mode:
+        default_mode = "both"
+    logger.info("Default strategy mode target: %s", default_mode)
 
     polymarket_cli = PolymarketCli(config)
     cli_health = await polymarket_cli.startup_healthcheck()
@@ -340,7 +438,7 @@ async def main():
         "strategy_version": strategy_version,
         "config_path": str(Path(config_path).resolve()),
         "config_hash": config_hash,
-        "mode": strategy.mode,
+        "mode": default_mode,
         "dry_run": config.execution.dry_run,
         "order_size_usd": config.execution.order_size_usd,
         "order_size_override_active": False,
@@ -567,13 +665,6 @@ async def main():
             last = now
 
     try:
-        if live_api:
-            await dashboard_state.start()
-            # Run on a dedicated thread so the dashboard stays responsive even
-            # when the main bot loop is busy.
-            live_api.start_threaded()
-        await telegram.start()
-
         feed_pairs = start_all_feeds(config, price_queue)
         for task, feed in feed_pairs:
             tasks.append(task)
@@ -581,12 +672,55 @@ async def main():
         tasks.append(asyncio.create_task(_loop_lag_monitor(), name="loop-lag-monitor"))
         tasks.append(asyncio.create_task(aggregator.run(price_queue)))
         tasks.append(asyncio.create_task(scanner.run()))
+        await _warmup_runtime(scanner, aggregator)
+
+        saved_runtime_state = tracker.load_runtime_state()
+        apply_runtime_state(saved_runtime_state, risk_manager, executor)
+        recovery_summary = await recover_runtime(executor, tracker, scanner)
+        applied_mode = apply_strategy_runtime_state(
+            strategy,
+            saved_runtime_state,
+            default_mode=default_mode,
+        )
+        _sync_runtime_context(
+            tracker,
+            strategy=strategy,
+            executor=executor,
+            config_path=config_path,
+            config_hash=config_hash,
+        )
+        logger.info(
+            "Recovery complete: mode=%s, live_rows=%s, live_monitors=%s, pending=%s, paper_rows=%s",
+            applied_mode,
+            recovery_summary.get("live_rows", 0),
+            recovery_summary.get("live_monitors", 0),
+            recovery_summary.get("live_pending", 0),
+            recovery_summary.get("paper_rows", 0),
+        )
+
+        if live_api:
+            await dashboard_state.start()
+            # Run on a dedicated thread so the dashboard stays responsive even
+            # when the main bot loop is busy.
+            live_api.start_threaded()
+        await telegram.start()
+
         tasks.append(asyncio.create_task(strategy.run(signal_queue)))
         tasks.append(asyncio.create_task(
             execution_loop(executor, signal_queue, tracker, telegram, config)
         ))
         tasks.append(asyncio.create_task(
             outcome_tracker_loop(scanner, tracker, aggregator, risk_manager, executor, telegram)
+        ))
+        tasks.append(asyncio.create_task(
+            runtime_state_loop(
+                tracker,
+                risk_manager=risk_manager,
+                executor=executor,
+                strategy=strategy,
+                config_path=config_path,
+                config_hash=config_hash,
+            )
         ))
         tasks.append(asyncio.create_task(
             archive_scheduler_loop(
@@ -606,7 +740,9 @@ async def main():
         await telegram.send_alert(
             f"🤖 *EDEC Bot ready* — {run_type}\n"
             f"Coins: {coins_str}\n"
-            f"Paper capital: ${paper_balance:.2f}",
+            f"Paper capital: ${paper_balance:.2f}\n"
+            f"Recovered live rows: {recovery_summary.get('live_rows', 0)} | "
+            f"paper rows: {recovery_summary.get('paper_rows', 0)}",
         )
 
         # Start live dashboard
@@ -647,7 +783,19 @@ async def main():
             live_api.stop_threaded()
             await dashboard_state.stop()
 
+        try:
+            _persist_runtime_state(
+                tracker,
+                risk_manager=risk_manager,
+                executor=executor,
+                strategy=strategy,
+                config_path=config_path,
+                config_hash=config_hash,
+            )
+        except Exception as exc:
+            logger.warning("Final runtime state persistence failed: %s", exc)
         tracker.close()
+        runtime_lock.release()
         logger.info("Shutdown complete")
 
 

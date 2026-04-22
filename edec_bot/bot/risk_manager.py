@@ -168,3 +168,32 @@ class RiskManager:
             "kill_switch": self.kill_switch_active,
             "paused": self._paused,
         }
+
+    def snapshot_runtime_state(self) -> dict[str, object]:
+        self._prune_hourly_window()
+        return {
+            "daily_pnl": float(self.daily_pnl),
+            "session_pnl": float(self.session_pnl),
+            "trades_this_hour": [stamp.isoformat() for stamp in self.trades_this_hour],
+            "paused": bool(self._paused),
+            "kill_switch": bool(self.kill_switch_active),
+        }
+
+    def restore_runtime_state(self, state: dict[str, object] | None) -> None:
+        if not state:
+            return
+        self.daily_pnl = float(state.get("daily_pnl") or 0.0)
+        self.session_pnl = float(state.get("session_pnl") or 0.0)
+        restored_trades: deque[datetime] = deque()
+        for value in state.get("trades_this_hour") or ():
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            restored_trades.append(parsed.astimezone(timezone.utc))
+        self.trades_this_hour = restored_trades
+        self.kill_switch_active = bool(state.get("kill_switch", False))
+        self._paused = bool(state.get("paused", False))
+        self._prune_hourly_window()

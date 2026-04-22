@@ -99,13 +99,20 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             first_paper_trade_id=trade_id,
         )
         engine._open_swing_positions[market.coin] = position
-        asyncio.create_task(engine._monitor_swing_leg(position))
+        engine._schedule_background_task(engine._monitor_swing_leg(position))
         return result
 
     if shares < 5:
         result.status = "failed"
         result.blocked_min_5_shares = True
         result.error = f"Shares too small: {shares}"
+        return result
+
+    entry_cost = signal.entry_price * shares
+    if not await engine.can_submit_buy_order(entry_cost):
+        result.status = "failed"
+        result.error = f"Insufficient collateral after reservations (need ${entry_cost:.2f})"
+        logger.warning(f"[{coin}] {result.error}")
         return result
 
     position = None
@@ -163,7 +170,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             result.entry_fill_ratio = actual_shares / max(shares, 1e-9)
             position.entry_filled_at = result.entry_filled_at
             engine._open_swing_positions[market.coin] = position
-            asyncio.create_task(engine._monitor_swing_leg(position, result))
+            engine._schedule_background_task(engine._monitor_swing_leg(position, result))
             logger.info(
                 f"[{coin}] SWING LEG 1 filled: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
                 f"({actual_shares:.0f} shares, order {buy_order_id})"
@@ -171,8 +178,9 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
             return result
 
         result.status = "submitted"
+        engine.reserve_buy_order(buy_order_id, entry_cost)
         engine._pending_swing_entries[market.coin] = position
-        asyncio.create_task(engine._monitor_swing_entry(position, result))
+        engine._schedule_background_task(engine._monitor_swing_entry(position, result))
         logger.info(
             f"[{coin}] SWING LEG 1 resting on book: BUY {signal.side.upper()}@{signal.entry_price:.3f} "
             f"({shares} shares, order {buy_order_id}, status={engine._response_status(buy_resp) or 'unknown'})"
@@ -184,7 +192,7 @@ async def execute(engine: Any, signal: TradeSignal, decision_id: int = 0) -> Tra
         logger.error(f"[{coin}] Swing execution error: {exc}")
 
     finally:
-        if resolved_decision_id and result.status not in ("dry_run", "failed", "submitted"):
+        if resolved_decision_id and result.status not in ("dry_run", "failed"):
             result.trade_id = engine.tracker.log_trade(resolved_decision_id, result)
             if position is not None:
                 position.trade_id = result.trade_id
@@ -204,10 +212,15 @@ async def monitor_entry(engine: Any, position: SwingPosition, result: TradeResul
         now = datetime.now(timezone.utc)
         if now >= position.market.end_time:
             engine._pending_swing_entries.pop(position.market.coin, None)
-            try:
-                await asyncio.to_thread(engine.client.cancel, position.first_buy_order_id)
-            except Exception:
-                pass
+            canceled = await engine.cancel_live_order(position.first_buy_order_id)
+            if canceled:
+                engine.release_buy_order(position.first_buy_order_id)
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="failed",
+                    error="Swing entry order expired before fill",
+                )
             logger.info(f"[{coin}] Swing entry order expired before fill: {position.first_buy_order_id}")
             return
 
@@ -248,8 +261,25 @@ async def monitor_entry(engine: Any, position: SwingPosition, result: TradeResul
             result.entry_fill_ratio = actual_shares / max(requested_shares, 1e-9)
             position.entry_filled_at = result.entry_filled_at
             engine._pending_swing_entries.pop(position.market.coin, None)
+            engine.release_buy_order(position.first_buy_order_id)
             engine._open_swing_positions[position.market.coin] = position
-            if result.signal.decision_id:
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="open",
+                    total_cost=result.total_cost,
+                    fee_total=result.fee_total,
+                    shares=result.shares,
+                    shares_requested=result.shares_requested,
+                    shares_filled=result.shares_filled,
+                    entry_filled_at=result.entry_filled_at,
+                    entry_time_to_fill_s=result.entry_time_to_fill_s,
+                    entry_fill_price=result.entry_fill_price,
+                    entry_slippage=result.entry_slippage,
+                    entry_fill_ratio=result.entry_fill_ratio,
+                )
+                position.trade_id = result.trade_id
+            elif result.signal.decision_id:
                 result.trade_id = engine.tracker.log_trade(result.signal.decision_id, result)
                 position.trade_id = result.trade_id
             engine.risk_manager.open_position(result)
@@ -263,6 +293,13 @@ async def monitor_entry(engine: Any, position: SwingPosition, result: TradeResul
         status = engine._response_status(order_status)
         if engine._is_terminal_order_state(status):
             engine._pending_swing_entries.pop(position.market.coin, None)
+            engine.release_buy_order(position.first_buy_order_id)
+            if result.trade_id and hasattr(engine.tracker, "update_live_trade"):
+                engine.tracker.update_live_trade(
+                    result.trade_id,
+                    status="failed",
+                    error=f"Swing entry ended without fill (status={status or 'unknown'})",
+                )
             logger.info(
                 f"[{coin}] Swing entry ended without fill: {position.first_buy_order_id} "
                 f"(status={status or 'unknown'})"
@@ -319,6 +356,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                 order_status = await asyncio.to_thread(engine.client.get_order, position.sell_order_id)
                 status = engine._response_status(order_status)
                 if engine._is_order_filled(order_status, position.first_shares):
+                    engine.release_sell_order(position.sell_order_id)
                     exit_price = engine._filled_price(order_status, position.pending_exit_price or position.first_entry_price)
                     actual_profit = engine._net_pnl(
                         position.first_entry_price,
@@ -371,6 +409,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     logger.info(f"[{coin}] SWING SELL FILLED @{exit_price:.3f} pnl=${actual_profit:+.4f}")
                     return
                 if engine._is_terminal_order_state(status):
+                    engine.release_sell_order(position.sell_order_id)
                     position.sell_order_id = None
                     result.sell_order_id = None
                     position.pending_exit_reason = ""
@@ -554,6 +593,9 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     ever_profitable=ever_profitable,
                 )
             else:
+                if not engine.can_reserve_sell_shares(position.first_token_id, position.first_shares):
+                    logger.warning(f"[{coin}] Swing loss-cut exit blocked - shares already reserved for sale")
+                    continue
                 try:
                     sell_order = await asyncio.to_thread(
                         engine.client.create_order,
@@ -563,6 +605,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                     submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                    engine.reserve_sell_order(position.sell_order_id, position.first_token_id, position.first_shares)
                     position.pending_exit_reason = "loss_cut"
                     position.pending_exit_price = max(0.01, exit_bid - 0.02)
                     if result is not None:
@@ -607,6 +650,9 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     ever_profitable=ever_profitable,
                 )
             else:
+                if not engine.can_reserve_sell_shares(position.first_token_id, position.first_shares):
+                    logger.warning(f"[{coin}] Swing profit exit blocked - shares already reserved for sale")
+                    continue
                 try:
                     sell_order = await asyncio.to_thread(
                         engine.client.create_order,
@@ -616,6 +662,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                     submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                    engine.reserve_sell_order(position.sell_order_id, position.first_token_id, position.first_shares)
                     position.pending_exit_reason = "profit_target"
                     position.pending_exit_price = bid
                     if result is not None:
@@ -659,6 +706,9 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     ever_profitable=ever_profitable,
                 )
             else:
+                if not engine.can_reserve_sell_shares(position.first_token_id, position.first_shares):
+                    logger.warning(f"[{coin}] Swing near-close exit blocked - shares already reserved for sale")
+                    continue
                 try:
                     sell_order = await asyncio.to_thread(
                         engine.client.create_order,
@@ -668,6 +718,7 @@ async def monitor_position(engine: Any, position: SwingPosition, result: TradeRe
                     sell_resp = await asyncio.to_thread(engine.client.post_order, sell_order, "GTC")
                     submitted_at = datetime.now(timezone.utc).isoformat()
                     position.sell_order_id = sell_resp.get("orderID", sell_resp.get("id", ""))
+                    engine.reserve_sell_order(position.sell_order_id, position.first_token_id, position.first_shares)
                     position.pending_exit_reason = "near_close"
                     position.pending_exit_price = bid
                     if result is not None:

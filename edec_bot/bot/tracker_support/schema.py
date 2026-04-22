@@ -280,6 +280,13 @@ CREATE TABLE IF NOT EXISTS runs (
     default_order_size_usd REAL,
     initial_paper_capital REAL
 );
+
+CREATE TABLE IF NOT EXISTS runtime_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    version INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL,
+    state_json TEXT NOT NULL
+);
 """
 
 
@@ -387,6 +394,12 @@ def migrate(conn) -> None:
             initial_mode TEXT,
             default_order_size_usd REAL,
             initial_paper_capital REAL
+        );
+        CREATE TABLE IF NOT EXISTS runtime_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            version INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL,
+            state_json TEXT NOT NULL
         );
         """
     )

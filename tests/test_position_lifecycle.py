@@ -17,6 +17,7 @@ from bot.risk_manager import RiskManager
 class _FakeTracker:
     def __init__(self):
         self.logged_trades: list[tuple[int, str, float]] = []
+        self.updated_trades: list[tuple[int, dict]] = []
 
     def has_paper_capital(self, _cost: float) -> bool:
         return True
@@ -27,6 +28,9 @@ class _FakeTracker:
     def log_trade(self, decision_id: int, result) -> int:
         self.logged_trades.append((decision_id, result.status, result.shares))
         return len(self.logged_trades)
+
+    def update_live_trade(self, trade_id: int, **updates) -> None:
+        self.updated_trades.append((trade_id, updates))
 
 
 class _FakeClient:
@@ -160,13 +164,13 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         engine = ExecutionEngine(config, client, risk_manager, tracker)
         self.addAsyncCleanup(engine._http.aclose)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_signal(self.market))
 
         self.assertEqual(result.status, "submitted")
         self.assertEqual(len(risk_manager.open_positions), 0)
         self.assertIn("buy-1", engine._pending_single_entries)
-        self.assertEqual(tracker.logged_trades, [])
+        self.assertEqual(tracker.logged_trades, [(123, "submitted", 25)])
 
     async def test_resting_entry_opens_only_after_fill(self):
         config = _build_config(hold_if_unfilled=True)
@@ -179,7 +183,7 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         engine = ExecutionEngine(config, client, risk_manager, tracker)
         self.addAsyncCleanup(engine._http.aclose)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_signal(self.market))
 
         position = engine._pending_single_entries["buy-1"]
@@ -192,7 +196,11 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(risk_manager.open_positions), 1)
         self.assertNotIn("buy-1", engine._pending_single_entries)
         self.assertIn("buy-1", engine.get_open_positions())
-        self.assertEqual(tracker.logged_trades, [(123, "open", 8)])
+        self.assertEqual(tracker.logged_trades, [(123, "submitted", 25)])
+        self.assertEqual(len(tracker.updated_trades), 1)
+        self.assertEqual(tracker.updated_trades[0][0], 1)
+        self.assertEqual(tracker.updated_trades[0][1]["status"], "open")
+        self.assertEqual(tracker.updated_trades[0][1]["shares_filled"], 8)
 
     async def test_market_resolution_realizes_live_position_and_clears_engine_state(self):
         config = _build_config(hold_if_unfilled=False)
@@ -202,7 +210,7 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         engine = ExecutionEngine(config, client, risk_manager, tracker)
         self.addAsyncCleanup(engine._http.aclose)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_signal(self.market))
 
         expected_profit = (1.0 - 0.4 - (0.02 * 0.4 * 0.6)) * result.shares
@@ -222,7 +230,7 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         engine = ExecutionEngine(config, client, risk_manager, tracker)
         self.addAsyncCleanup(engine._http.aclose)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_signal(self.market))
 
         expected_loss = -(
@@ -248,7 +256,7 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         engine = ExecutionEngine(config, client, risk_manager, tracker)
         self.addAsyncCleanup(engine._http.aclose)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_lead_lag_signal(self.market))
 
         self.assertEqual(result.status, "open")
@@ -270,7 +278,7 @@ class PositionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(engine._http.aclose)
         engine.set_order_size(12.0)
 
-        with mock.patch("bot.execution.asyncio.create_task", side_effect=_discard_task):
+        with mock.patch.object(engine, "_schedule_background_task", side_effect=_discard_task):
             result = await engine.execute_single_leg(_build_lead_lag_signal(self.market))
 
         self.assertEqual(result.status, "open")

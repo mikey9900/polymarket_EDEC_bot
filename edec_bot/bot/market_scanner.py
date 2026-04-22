@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -56,6 +57,24 @@ class MarketScanner:
 
     def get_market(self, coin: str) -> MarketInfo | None:
         return self._markets.get(coin)
+
+    async def get_market_by_slug(self, slug: str, coin: str | None = None) -> MarketInfo | None:
+        for market in self._markets.values():
+            if market and market.slug == slug:
+                return market
+        inferred_coin = (coin or str(slug).split("-", 1)[0] or "").lower()
+        try:
+            url = f"{self.config.polymarket.gamma_base_url}/events"
+            resp = await self._http.get(url, params={"slug": slug, "limit": 1})
+            if resp.status_code != 200:
+                return None
+            events = resp.json()
+            if not isinstance(events, list) or not events:
+                return None
+            return self._parse_event(events[0], inferred_coin)
+        except Exception as exc:
+            logger.debug("Market lookup failed for %s: %s", slug, exc)
+            return None
 
     def get_books(self, coin: str) -> tuple[OrderBookSnapshot | None, OrderBookSnapshot | None]:
         return self._up_books.get(coin), self._down_books.get(coin)
@@ -173,6 +192,14 @@ class MarketScanner:
                 fee_schedule = json.loads(fee_schedule)
             fee_rate = fee_schedule.get("rate", 0.072)
             volume = self._extract_volume(market, event)
+            question = (
+                market.get("question")
+                or event.get("question")
+                or event.get("title")
+                or event.get("name")
+                or ""
+            )
+            reference_price, reference_label = self._extract_reference_info(question)
 
             end_str = market.get("endDate", event.get("endDate", ""))
             start_str = market.get("eventStartTime", market.get("startDate", ""))
@@ -190,11 +217,28 @@ class MarketScanner:
                 tick_size=self.config.polymarket.tick_size,
                 neg_risk=market.get("negRisk", False),
                 accepting_orders=market.get("acceptingOrders", True),
+                question=question,
                 volume=volume,
+                reference_price=reference_price,
+                reference_label=reference_label,
             )
         except Exception as e:
             logger.error(f"[{coin.upper()}] Parse error: {e}")
             return None
+
+    @staticmethod
+    def _extract_reference_info(question: str) -> tuple[float | None, str]:
+        text = str(question or "").strip()
+        if not text:
+            return None, ""
+        match = re.search(r"\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)", text)
+        if not match:
+            return None, text
+        try:
+            reference = float(match.group(1).replace(",", ""))
+        except ValueError:
+            return None, text
+        return reference, text
 
     @staticmethod
     def _extract_volume(market: dict, event: dict) -> float | None:

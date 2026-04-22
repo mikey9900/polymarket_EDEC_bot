@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -42,6 +43,12 @@ def _trade_update(tracker: Any, trade_id: int, updates: dict[str, object]) -> No
     values.append(trade_id)
     tracker.conn.execute(f"UPDATE trades SET {', '.join(assignments)} WHERE id = ?", tuple(values))
     tracker.conn.commit()
+
+
+def _query_dicts(tracker: Any, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+    cursor = tracker.conn.execute(query, params)
+    columns = [col[0] for col in cursor.description or ()]
+    return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
 def set_runtime_context(tracker: Any, context: dict[str, object]) -> None:
@@ -91,6 +98,78 @@ def latest_run_metadata(tracker: Any) -> dict | None:
         "order_size_usd": row[8],
         "paper_capital_total": row[9],
     }
+
+
+def save_runtime_state(
+    tracker: Any,
+    state: dict[str, object],
+    *,
+    version: int = 1,
+) -> None:
+    updated_at = utc_now().isoformat()
+    payload = json.dumps(state, sort_keys=True)
+    tracker.conn.execute(
+        """INSERT OR REPLACE INTO runtime_state (
+            id, version, updated_at, state_json
+        ) VALUES (1, ?, ?, ?)""",
+        (int(version), updated_at, payload),
+    )
+    tracker.conn.commit()
+
+
+def load_runtime_state(tracker: Any) -> dict[str, object] | None:
+    row = tracker.conn.execute(
+        "SELECT version, updated_at, state_json FROM runtime_state WHERE id = 1"
+    ).fetchone()
+    if not row:
+        return None
+    try:
+        state = json.loads(row[2]) if row[2] else {}
+    except json.JSONDecodeError:
+        logger.warning("Runtime state JSON is invalid; ignoring saved state")
+        return None
+    if not isinstance(state, dict):
+        logger.warning("Runtime state payload is not an object; ignoring saved state")
+        return None
+    return {
+        "version": int(row[0] or 1),
+        "updated_at": row[1],
+        **state,
+    }
+
+
+def clear_runtime_state(tracker: Any) -> None:
+    tracker.conn.execute("DELETE FROM runtime_state WHERE id = 1")
+    tracker.conn.commit()
+
+
+def get_recoverable_live_trades(tracker: Any) -> list[dict[str, object]]:
+    return _query_dicts(
+        tracker,
+        """
+        SELECT
+            t.*,
+            d.market_end_time AS decision_market_end_time,
+            d.market_start_time AS decision_market_start_time
+        FROM trades t
+        LEFT JOIN decisions d ON d.id = t.decision_id
+        WHERE COALESCE(t.dry_run, 0) = 0
+          AND lower(COALESCE(t.status, '')) IN ('submitted', 'open', 'success')
+        ORDER BY t.timestamp ASC, t.id ASC
+        """,
+    )
+
+
+def get_open_paper_trades(tracker: Any) -> list[dict[str, object]]:
+    return _query_dicts(
+        tracker,
+        """
+        SELECT *
+        FROM paper_trades
+        WHERE lower(COALESCE(status, '')) = 'open'
+        ORDER BY timestamp ASC, id ASC
+        """,
+    )
 
 
 def log_decision(tracker: Any, decision: Decision) -> int:
@@ -412,9 +491,22 @@ def update_live_trade(
     tracker: Any,
     trade_id: int,
     *,
+    buy_order_id: str | None = None,
     sell_order_id: str | None = None,
     status: str | None = None,
     error: str | None = None,
+    total_cost: float | None = None,
+    fee_total: float | None = None,
+    shares: float | None = None,
+    shares_requested: float | None = None,
+    shares_filled: float | None = None,
+    entry_order_submitted_at: str | None = None,
+    entry_filled_at: str | None = None,
+    entry_time_to_fill_s: float | None = None,
+    entry_limit_price: float | None = None,
+    entry_fill_price: float | None = None,
+    entry_slippage: float | None = None,
+    entry_fill_ratio: float | None = None,
     exit_order_submitted_at: str | None = None,
     exit_limit_price: float | None = None,
     exit_reason: str | None = None,
@@ -427,9 +519,22 @@ def update_live_trade(
         tracker,
         trade_id,
         {
+            "buy_order_id": buy_order_id,
             "sell_order_id": sell_order_id,
             "status": status,
             "error": error,
+            "combined_cost": total_cost,
+            "fee_total": fee_total,
+            "shares": shares,
+            "shares_requested": shares_requested,
+            "shares_filled": shares_filled,
+            "entry_order_submitted_at": entry_order_submitted_at,
+            "entry_filled_at": entry_filled_at,
+            "entry_time_to_fill_s": entry_time_to_fill_s,
+            "entry_limit_price": entry_limit_price,
+            "entry_fill_price": entry_fill_price,
+            "entry_slippage": entry_slippage,
+            "entry_fill_ratio": entry_fill_ratio,
             "exit_order_submitted_at": exit_order_submitted_at,
             "exit_limit_price": exit_limit_price,
             "exit_reason": exit_reason,

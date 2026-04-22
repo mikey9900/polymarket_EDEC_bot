@@ -2,14 +2,19 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
+
+import httpx
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
-from research.sources import build_goldsky_query
 from research.sources import FillCursor
+from research.sources import GammaMarketSource
+from research.sources import GoldskyFillSource
+from research.sources import build_goldsky_query
 from research.sync import sync_fills, sync_markets, sync_recent_5m_fills
 from research.warehouse import ResearchWarehouse
 
@@ -112,6 +117,24 @@ class _FakeRecentFillSource:
         return [], cursor
 
 
+class _FlakyHttpClient:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.requests = []
+
+    def request(self, method, url, **kwargs):
+        self.requests.append((method, url, kwargs))
+        if not self.outcomes:
+            raise AssertionError("unexpected request")
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    def close(self):
+        pass
+
+
 class ResearchSyncTests(unittest.TestCase):
     def setUp(self):
         tmp_root = ROOT / ".tmp_testdata"
@@ -211,6 +234,68 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertIn('timestamp_gt: "123"', query)
         self.assertIn('makerAssetId_in: ["tok-a", "tok-b"]', query)
         self.assertIn('takerAssetId_in: ["tok-a", "tok-b"]', query)
+
+    def test_goldsky_source_retries_transient_connection_errors(self):
+        request = httpx.Request("POST", "https://example.test/graphql")
+        client = _FlakyHttpClient(
+            [
+                httpx.ConnectError("connect failed", request=request),
+                httpx.Response(
+                    200,
+                    request=request,
+                    json={
+                        "data": {
+                            "orderFilledEvents": [
+                                {
+                                    "id": "fill-1",
+                                    "timestamp": "100",
+                                    "makerAmountFilled": "1000000",
+                                    "makerAssetId": "tok-up",
+                                    "takerAmountFilled": "500000",
+                                    "takerAssetId": "0",
+                                }
+                            ]
+                        }
+                    },
+                ),
+            ]
+        )
+        source = GoldskyFillSource(
+            url="https://example.test/graphql",
+            client=client,
+            retry_attempts=2,
+            retry_backoff_seconds=0.5,
+        )
+
+        with mock.patch("research.sources.time.sleep") as sleep_mock:
+            rows, next_cursor = source.fetch_fills(cursor=FillCursor(), limit=10)
+
+        self.assertEqual(len(client.requests), 2)
+        self.assertEqual(rows[0]["id"], "fill-1")
+        self.assertEqual(next_cursor.last_timestamp, 100)
+        sleep_mock.assert_called_once_with(0.5)
+
+    def test_gamma_source_retries_retryable_status_codes(self):
+        request = httpx.Request("GET", "https://gamma.example/markets")
+        client = _FlakyHttpClient(
+            [
+                httpx.Response(503, request=request, text="service unavailable"),
+                httpx.Response(200, request=request, json=[{"id": "m-1"}]),
+            ]
+        )
+        source = GammaMarketSource(
+            base_url="https://gamma.example/markets",
+            client=client,
+            retry_attempts=2,
+            retry_backoff_seconds=0.5,
+        )
+
+        with mock.patch("research.sources.time.sleep") as sleep_mock:
+            rows = source.fetch_markets(offset=0, limit=1)
+
+        self.assertEqual(len(client.requests), 2)
+        self.assertEqual(rows[0]["id"], "m-1")
+        sleep_mock.assert_called_once_with(0.5)
 
 
 if __name__ == "__main__":

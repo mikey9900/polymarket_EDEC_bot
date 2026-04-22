@@ -145,6 +145,7 @@ class DashboardSnapshotBuilder:
             "dry_run": bool(self.config.execution.dry_run),
             "mode": getattr(self.strategy_engine, "mode", "unknown"),
             "controls": self.control_plane.build_controls_payload(),
+            **self._build_codex_payload(),
             "coins_order": list(self.config.coins),
             "coins": coins_payload,
             "summary": {
@@ -155,6 +156,16 @@ class DashboardSnapshotBuilder:
                 },
             },
         }
+
+    def _build_codex_payload(self) -> dict[str, Any]:
+        manager = getattr(self.control_plane, "codex_manager", None)
+        if manager is None:
+            return {"codex": {}, "tuner": {}}
+        try:
+            return manager.snapshot()
+        except Exception as exc:
+            logger.debug("codex snapshot failed: %s", exc)
+            return {"codex": {}, "tuner": {}}
 
     def _build_open_paper_adjustments(self, open_trades: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
         adjustments: dict[str, dict[str, float]] = {}

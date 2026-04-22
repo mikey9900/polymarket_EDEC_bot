@@ -825,6 +825,34 @@
             <button type="button" class="ctl-btn" data-action="session_export">EXPORT SESSION</button>
           </div>
         </div>
+        <div class="control-block">
+          <span class="head">RESEARCH CODEx</span>
+          <div class="control-row">
+            <button type="button" class="ctl-btn" data-action="research_run_now">RUN RESEARCH</button>
+          </div>
+          <div class="control-readout">
+            <div class="readout-pill"><span class="lbl">QUEUE</span><span id="codex-queue">-</span></div>
+            <div class="readout-pill"><span class="lbl">ACTIVE</span><span id="codex-active">-</span></div>
+          </div>
+        </div>
+        <div class="control-block">
+          <span class="head">TUNER</span>
+          <div class="control-row">
+            <button id="btn-tuner-run" type="button" class="ctl-btn" data-action="tuner_run_now">RUN NOW</button>
+            <button id="btn-tuner-pause" type="button" class="ctl-btn" data-action="tuner_schedule_pause">PAUSE</button>
+            <button id="btn-tuner-resume" type="button" class="ctl-btn" data-action="tuner_schedule_resume">RESUME</button>
+            <button id="btn-tuner-weekly" type="button" class="ctl-btn" data-action="tuner_set_cadence" data-value="weekly">WEEKLY</button>
+            <button id="btn-tuner-manual" type="button" class="ctl-btn" data-action="tuner_set_cadence" data-value="manual">MANUAL</button>
+            <button id="btn-tuner-skip" type="button" class="ctl-btn" data-action="tuner_skip_next">SKIP NEXT</button>
+            <button id="btn-tuner-promote" type="button" class="ctl-btn" data-action="tuner_promote_latest">PROMOTE</button>
+            <button id="btn-tuner-reject" type="button" class="ctl-btn warn" data-action="tuner_reject_latest">REJECT</button>
+          </div>
+          <div class="control-readout">
+            <div class="readout-pill"><span class="lbl">CADENCE</span><span id="tuner-cadence">-</span></div>
+            <div class="readout-pill"><span class="lbl">NEXT</span><span id="tuner-next">-</span></div>
+            <div class="readout-pill"><span class="lbl">CAND</span><span id="tuner-candidate">-</span></div>
+          </div>
+        </div>
       </div>
       <div id="ctrl-status" class="ctl-status">CONTROL LINK STANDBY</div>
       <div class="session-summary-strip">
@@ -1374,6 +1402,8 @@
 
   function renderControls(state) {
     const controls = state.controls || {};
+    const codex = state.codex || {};
+    const tuner = state.tuner || {};
     const stateName = String(controls.state || "unknown").toUpperCase();
     setText($("ctrl-state"), stateName);
     setText($("ctrl-mode"), MODE_NAMES[controls.mode] || String(controls.mode || "—").toUpperCase());
@@ -1392,6 +1422,20 @@
     setClassList($("btn-start"), "active", controls.state === "running");
     setClassList($("btn-stop"), "active", controls.state === "paused");
     setClassList($("btn-kill"), "active", controls.state === "killed");
+    setText($("codex-queue"), codex.queue_depth == null ? "—" : String(codex.queue_depth));
+    setText(
+      $("codex-active"),
+      codex.active_run && codex.active_run.job_type
+        ? String(codex.active_run.job_type).replaceAll("_", " ").toUpperCase()
+        : "IDLE"
+    );
+    setText($("tuner-cadence"), String(tuner.cadence || "—").toUpperCase());
+    setText($("tuner-next"), tuner.next_auto_run_at ? String(tuner.next_auto_run_at).slice(5, 16).replace("T", " ") : "—");
+    setText($("tuner-candidate"), String(tuner.candidate_status || "—").toUpperCase());
+    setClassList($("btn-tuner-pause"), "active", tuner.schedule_enabled === false);
+    setClassList($("btn-tuner-resume"), "active", tuner.schedule_enabled !== false);
+    setClassList($("btn-tuner-weekly"), "active", tuner.cadence === "weekly");
+    setClassList($("btn-tuner-manual"), "active", tuner.cadence === "manual");
     syncControlButtons(controls);
     if (!controlBusy) {
       const statusText = controls.last_message || "CONTROL LINK STANDBY";

@@ -59,6 +59,7 @@ class ControlPlane:
         strategy_engine,
         executor,
         session_export_fn=None,
+        codex_manager=None,
     ):
         self.config = config
         self.tracker = tracker
@@ -66,6 +67,7 @@ class ControlPlane:
         self.strategy_engine = strategy_engine
         self.executor = executor
         self.session_export_fn = session_export_fn
+        self.codex_manager = codex_manager
         self._last_control: dict[str, Any] = {
             "action": None,
             "ok": None,
@@ -85,6 +87,14 @@ class ControlPlane:
             "budget": bool(self.executor),
             "reset_stats": bool(self.tracker or self.risk_manager),
             "session_export": callable(self.session_export_fn),
+            "research_run_now": self.codex_manager is not None,
+            "tuner_run_now": self.codex_manager is not None,
+            "tuner_schedule_pause": self.codex_manager is not None,
+            "tuner_schedule_resume": self.codex_manager is not None,
+            "tuner_set_cadence": self.codex_manager is not None,
+            "tuner_skip_next": self.codex_manager is not None,
+            "tuner_promote_latest": self.codex_manager is not None,
+            "tuner_reject_latest": self.codex_manager is not None,
         }
 
     def _current_state_name(self) -> str:
@@ -228,6 +238,31 @@ class ControlPlane:
         )
 
     async def apply_async(self, request: ControlRequest, run_blocking: RunBlocking) -> ControlResult:
+        if request.action in {
+            "research_run_now",
+            "tuner_run_now",
+            "tuner_schedule_pause",
+            "tuner_schedule_resume",
+            "tuner_set_cadence",
+            "tuner_skip_next",
+            "tuner_promote_latest",
+            "tuner_reject_latest",
+        }:
+            if self.codex_manager is None:
+                return self._record_message(
+                    request,
+                    ControlResult(ok=False, status=400, message="Codex automation is not configured.", action=request.action),
+                )
+            result = await run_blocking(lambda: self._apply_codex_action(request))
+            return self._record_message(
+                request,
+                ControlResult(
+                    ok=bool(result.get("ok", False)),
+                    status=int(result.get("status", 200 if result.get("ok", False) else 400)),
+                    message=str(result.get("message") or "Codex action applied."),
+                    action=request.action,
+                ),
+            )
         if request.action != "session_export":
             return self.apply_sync(request)
         if not callable(self.session_export_fn):
@@ -252,3 +287,51 @@ class ControlPlane:
                 action=request.action,
             ),
         )
+
+    def _apply_codex_action(self, request: ControlRequest) -> dict[str, Any]:
+        action = request.action
+        value = request.value
+        try:
+            if action == "research_run_now":
+                result = self.codex_manager.enqueue_daily_refresh(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": "Daily research refresh queued." if result.get("queued") else "Daily research refresh is already queued.",
+                }
+            if action == "tuner_run_now":
+                result = self.codex_manager.enqueue_tuning_proposal(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": "Tuning proposal queued." if result.get("queued") else "Tuning proposal is already queued.",
+                }
+            if action == "tuner_schedule_pause":
+                result = self.codex_manager.pause_tuner_schedule()
+                return {"ok": True, "status": 200, "message": str(result.get("message") or "Tuning schedule paused.")}
+            if action == "tuner_schedule_resume":
+                result = self.codex_manager.resume_tuner_schedule()
+                return {"ok": True, "status": 200, "message": str(result.get("message") or "Tuning schedule resumed.")}
+            if action == "tuner_set_cadence":
+                result = self.codex_manager.set_tuner_cadence(str(value or "weekly"))
+                return {"ok": True, "status": 200, "message": str(result.get("message") or "Tuning cadence updated.")}
+            if action == "tuner_skip_next":
+                result = self.codex_manager.skip_next_tuner_run()
+                return {"ok": True, "status": 200, "message": str(result.get("message") or "Next tuning run skipped.")}
+            if action == "tuner_promote_latest":
+                result = self.codex_manager.enqueue_promote_candidate(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": "Candidate promotion queued." if result.get("queued") else "Candidate promotion is already queued.",
+                }
+            if action == "tuner_reject_latest":
+                result = self.codex_manager.enqueue_reject_candidate(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": "Candidate rejection queued." if result.get("queued") else "Candidate rejection is already queued.",
+                }
+            return {"ok": False, "status": 400, "message": f"Unknown Codex action: {action}"}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "status": 400, "message": str(exc)}

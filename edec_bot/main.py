@@ -39,6 +39,7 @@ from bot.runtime_defaults import default_strategy_mode
 from bot.strategy import StrategyEngine
 from bot.telegram_bot import TelegramBot
 from bot.tracker import DecisionTracker
+from research.codex_automation import CodexAutomationManager
 from research.runtime import ResearchSnapshotProvider
 
 _dashboard_api_import_error = None
@@ -266,6 +267,7 @@ async def main():
         github_branch=str(github_branch),
         github_export_path=str(github_export_path),
     )
+    codex_manager = CodexAutomationManager(config_path=config_path)
 
     control_plane = ControlPlane(
         config=config,
@@ -274,6 +276,7 @@ async def main():
         strategy_engine=strategy,
         executor=executor,
         session_export_fn=archive_workflows.run_session_export,
+        codex_manager=codex_manager,
     )
 
     telegram = TelegramBot(

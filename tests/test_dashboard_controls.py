@@ -138,8 +138,81 @@ class _FakeAggregator:
         return SimpleNamespace(price=self.price)
 
 
+class _FakeCodexManager:
+    def __init__(self):
+        self.calls = []
+        self.schedule_enabled = True
+        self.cadence = "weekly"
+        self.skip_next = False
+
+    def snapshot(self):
+        return {
+            "codex": {
+                "healthy": True,
+                "last_heartbeat_at": "2026-04-22T12:00:00+00:00",
+                "queue_depth": 1,
+                "active_run": {"job_type": "daily_research_refresh"},
+                "last_run": {"job_type": "tuning_proposal"},
+                "latest_candidate": {
+                    "candidate_id": "cand-1",
+                    "status": "ready",
+                    "summary": "Candidate ready for review.",
+                    "paths": {},
+                },
+            },
+            "tuner": {
+                "running": False,
+                "schedule_enabled": self.schedule_enabled,
+                "cadence": self.cadence,
+                "skip_next_auto_run": self.skip_next,
+                "next_auto_run_at": "2026-04-27T12:30:00+00:00",
+                "last_run_at": "2026-04-21T12:30:00+00:00",
+                "last_result": "success",
+                "candidate_available": True,
+                "candidate_status": "ready",
+                "candidate_summary": "Candidate ready for review.",
+            },
+        }
+
+    def enqueue_daily_refresh(self, *, requested_by: str = "dashboard", args=None):
+        self.calls.append(("research_run_now", requested_by, args))
+        return {"queued": True}
+
+    def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args=None):
+        self.calls.append(("tuner_run_now", requested_by, args))
+        return {"queued": True}
+
+    def pause_tuner_schedule(self):
+        self.calls.append(("tuner_schedule_pause",))
+        self.schedule_enabled = False
+        return {"ok": True, "message": "Weekly tuning schedule paused."}
+
+    def resume_tuner_schedule(self):
+        self.calls.append(("tuner_schedule_resume",))
+        self.schedule_enabled = True
+        return {"ok": True, "message": "Weekly tuning schedule resumed."}
+
+    def set_tuner_cadence(self, cadence: str):
+        self.calls.append(("tuner_set_cadence", cadence))
+        self.cadence = cadence
+        return {"ok": True, "message": f"Tuner cadence set to {cadence}."}
+
+    def skip_next_tuner_run(self):
+        self.calls.append(("tuner_skip_next",))
+        self.skip_next = True
+        return {"ok": True, "message": "Next automatic tuning run will be skipped."}
+
+    def enqueue_promote_candidate(self, *, requested_by: str = "dashboard", candidate_id=None):
+        self.calls.append(("tuner_promote_latest", requested_by, candidate_id))
+        return {"queued": True}
+
+    def enqueue_reject_candidate(self, *, requested_by: str = "dashboard", candidate_id=None, reason="Rejected by operator."):
+        self.calls.append(("tuner_reject_latest", requested_by, candidate_id, reason))
+        return {"queued": True}
+
+
 class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
-    def _build_service(self, *, with_callbacks: bool = False) -> DashboardStateService:
+    def _build_service(self, *, with_callbacks: bool = False, with_codex: bool = False) -> DashboardStateService:
         config = SimpleNamespace(
             coins=["btc"],
             execution=SimpleNamespace(dry_run=True, order_size_usd=10.0),
@@ -169,6 +242,8 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             **callbacks,
         )
         service._slow_cache["paper_capital"] = (100.0, 115.0)
+        if with_codex:
+            service.control_plane.codex_manager = _FakeCodexManager()
         return service
 
     def test_snapshot_includes_control_payload(self):
@@ -182,6 +257,16 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["summary"]["paper"]["pnl"], 15.0)
         self.assertFalse(snapshot["controls"]["available_actions"]["session_export"])
         self.assertEqual(snapshot["controls"]["last_message"], "CONTROL LINK STANDBY")
+
+    def test_snapshot_includes_codex_and_tuner_sections(self):
+        service = self._build_service(with_codex=True)
+
+        snapshot = service._build_snapshot()
+
+        self.assertEqual(snapshot["codex"]["queue_depth"], 1)
+        self.assertEqual(snapshot["codex"]["latest_candidate"]["status"], "ready")
+        self.assertEqual(snapshot["tuner"]["cadence"], "weekly")
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_run_now"])
 
     async def test_apply_control_async_updates_mode_and_budget(self):
         service = self._build_service()
@@ -259,6 +344,17 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             session_result["state"]["controls"]["last_message"],
             session_result["message"],
         )
+
+    async def test_apply_control_async_handles_codex_actions(self):
+        service = self._build_service(with_codex=True)
+
+        research_result = await service._apply_control_async("research_run_now")
+        cadence_result = await service._apply_control_async("tuner_set_cadence", "manual")
+
+        self.assertTrue(research_result["ok"])
+        self.assertIn("queued", research_result["message"].lower())
+        self.assertTrue(cadence_result["ok"])
+        self.assertEqual(cadence_result["state"]["tuner"]["cadence"], "manual")
 
     def test_market_payload_falls_back_when_reference_price_is_implausible(self):
         service = self._build_service()

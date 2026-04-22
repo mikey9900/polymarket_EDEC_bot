@@ -3,16 +3,42 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import httpx
 
 
+DEFAULT_HTTP_TIMEOUT_SECONDS = 30.0
+DEFAULT_HTTP_RETRY_ATTEMPTS = 3
+DEFAULT_HTTP_RETRY_BACKOFF_SECONDS = 1.5
+DEFAULT_HTTP_RETRY_MAX_BACKOFF_SECONDS = 10.0
+
+ENV_GAMMA_MARKETS_URL = "EDEC_RESEARCH_GAMMA_MARKETS_URL"
+ENV_GOLDSKY_ORDERBOOK_URL = "EDEC_RESEARCH_GOLDSKY_ORDERBOOK_URL"
+ENV_HTTP_TIMEOUT_SECONDS = "EDEC_RESEARCH_HTTP_TIMEOUT_SECONDS"
+ENV_HTTP_RETRY_ATTEMPTS = "EDEC_RESEARCH_HTTP_RETRY_ATTEMPTS"
+ENV_HTTP_RETRY_BACKOFF_SECONDS = "EDEC_RESEARCH_HTTP_RETRY_BACKOFF_SECONDS"
+ENV_HTTP_RETRY_MAX_BACKOFF_SECONDS = "EDEC_RESEARCH_HTTP_RETRY_MAX_BACKOFF_SECONDS"
+
 GAMMA_MARKETS_URL = "https://gamma-api.polymarket.com/markets"
 GOLDSKY_ORDERBOOK_URL = (
     "https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/"
     "subgraphs/orderbook-subgraph/0.0.1/gn"
+)
+
+_RETRYABLE_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
+_RETRYABLE_REQUEST_ERRORS = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.RemoteProtocolError,
+    httpx.WriteError,
+    httpx.WriteTimeout,
 )
 
 
@@ -53,17 +79,108 @@ class FillCursor:
         }
 
 
-class GammaMarketSource:
+class _RetryingHttpSource:
+    def __init__(
+        self,
+        *,
+        client: httpx.Client | None = None,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+    ):
+        timeout_seconds = _env_float(ENV_HTTP_TIMEOUT_SECONDS, DEFAULT_HTTP_TIMEOUT_SECONDS) if timeout_seconds is None else timeout_seconds
+        retry_attempts = _env_int(ENV_HTTP_RETRY_ATTEMPTS, DEFAULT_HTTP_RETRY_ATTEMPTS) if retry_attempts is None else retry_attempts
+        retry_backoff_seconds = (
+            _env_float(ENV_HTTP_RETRY_BACKOFF_SECONDS, DEFAULT_HTTP_RETRY_BACKOFF_SECONDS)
+            if retry_backoff_seconds is None
+            else retry_backoff_seconds
+        )
+        retry_max_backoff_seconds = (
+            _env_float(ENV_HTTP_RETRY_MAX_BACKOFF_SECONDS, DEFAULT_HTTP_RETRY_MAX_BACKOFF_SECONDS)
+            if retry_max_backoff_seconds is None
+            else retry_max_backoff_seconds
+        )
+
+        self._client = client or httpx.Client(timeout=max(float(timeout_seconds), 0.1))
+        self._owns_client = client is None
+        self._retry_attempts = max(1, int(retry_attempts))
+        self._retry_backoff_seconds = max(0.0, float(retry_backoff_seconds))
+        self._retry_max_backoff_seconds = max(self._retry_backoff_seconds, float(retry_max_backoff_seconds))
+
+    def _request_json(self, *, method: str, url: str, label: str, **kwargs: Any) -> Any:
+        last_error: Exception | None = None
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                response = self._client.request(method, url, **kwargs)
+            except _RETRYABLE_REQUEST_ERRORS as exc:
+                last_error = exc
+                if attempt >= self._retry_attempts:
+                    raise RuntimeError(self._retry_error_message(label, method, url, attempt, exc)) from exc
+                self._sleep_before_retry(attempt)
+                continue
+
+            if response.status_code in _RETRYABLE_STATUS_CODES and attempt < self._retry_attempts:
+                self._sleep_before_retry(attempt)
+                continue
+
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(self._retry_error_message(label, method, url, attempt, exc)) from exc
+            return response.json()
+
+        if last_error is not None:
+            raise RuntimeError(self._retry_error_message(label, method, url, self._retry_attempts, last_error)) from last_error
+        raise RuntimeError(f"{label} request to {url} exhausted retries")
+
+    def _sleep_before_retry(self, attempt: int) -> None:
+        delay = min(self._retry_backoff_seconds * (2 ** (attempt - 1)), self._retry_max_backoff_seconds)
+        if delay > 0:
+            time.sleep(delay)
+
+    def _retry_error_message(self, label: str, method: str, url: str, attempt: int, exc: Exception) -> str:
+        method = method.upper()
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code if exc.response is not None else "unknown"
+            return f"{label} {method} {url} failed with HTTP {status_code} on attempt {attempt}/{self._retry_attempts}"
+        return (
+            f"{label} {method} {url} failed on attempt {attempt}/{self._retry_attempts}: "
+            f"{exc.__class__.__name__}: {exc}"
+        )
+
+    def close(self) -> None:
+        if self._owns_client:
+            self._client.close()
+
+
+class GammaMarketSource(_RetryingHttpSource):
     """Gamma market metadata adapter."""
 
-    def __init__(self, base_url: str = GAMMA_MARKETS_URL, client: httpx.Client | None = None):
-        self.base_url = base_url
-        self._client = client or httpx.Client(timeout=30.0)
-        self._owns_client = client is None
+    def __init__(
+        self,
+        base_url: str | None = None,
+        client: httpx.Client | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+    ):
+        super().__init__(
+            client=client,
+            timeout_seconds=timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+            retry_max_backoff_seconds=retry_max_backoff_seconds,
+        )
+        self.base_url = base_url or os.getenv(ENV_GAMMA_MARKETS_URL, GAMMA_MARKETS_URL)
 
     def fetch_markets(self, *, offset: int, limit: int) -> list[dict[str, Any]]:
-        response = self._client.get(
-            self.base_url,
+        payload = self._request_json(
+            method="GET",
+            url=self.base_url,
+            label="Gamma markets",
             params={
                 "order": "createdAt",
                 "ascending": "true",
@@ -71,30 +188,39 @@ class GammaMarketSource:
                 "offset": offset,
             },
         )
-        response.raise_for_status()
-        payload = response.json()
         if not isinstance(payload, list):
             raise ValueError("Gamma markets response was not a list")
         return payload
 
-    def close(self) -> None:
-        if self._owns_client:
-            self._client.close()
-
-
-class GoldskyFillSource:
+class GoldskyFillSource(_RetryingHttpSource):
     """Goldsky order-filled adapter with sticky cursor pagination."""
 
-    def __init__(self, url: str = GOLDSKY_ORDERBOOK_URL, client: httpx.Client | None = None):
-        self.url = url
-        self._client = client or httpx.Client(timeout=30.0)
-        self._owns_client = client is None
+    def __init__(
+        self,
+        url: str | None = None,
+        client: httpx.Client | None = None,
+        *,
+        timeout_seconds: float | None = None,
+        retry_attempts: int | None = None,
+        retry_backoff_seconds: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+    ):
+        super().__init__(
+            client=client,
+            timeout_seconds=timeout_seconds,
+            retry_attempts=retry_attempts,
+            retry_backoff_seconds=retry_backoff_seconds,
+            retry_max_backoff_seconds=retry_max_backoff_seconds,
+        )
+        self.url = url or os.getenv(ENV_GOLDSKY_ORDERBOOK_URL, GOLDSKY_ORDERBOOK_URL)
 
     def fetch_fills(self, *, cursor: FillCursor, limit: int) -> tuple[list[dict[str, Any]], FillCursor]:
-        query = build_goldsky_query(cursor=cursor, limit=limit)
-        response = self._client.post(self.url, json={"query": query})
-        response.raise_for_status()
-        payload = response.json()
+        payload = self._request_json(
+            method="POST",
+            url=self.url,
+            label="Goldsky fills",
+            json={"query": build_goldsky_query(cursor=cursor, limit=limit)},
+        )
         if payload.get("errors"):
             raise ValueError(f"Goldsky query error: {payload['errors']}")
         rows = payload.get("data", {}).get("orderFilledEvents", [])
@@ -111,15 +237,19 @@ class GoldskyFillSource:
         limit: int,
         until_timestamp: int | None = None,
     ) -> tuple[list[dict[str, Any]], FillCursor]:
-        query = build_goldsky_query(
-            cursor=cursor,
-            limit=limit,
-            asset_ids=asset_ids,
-            until_timestamp=until_timestamp,
+        payload = self._request_json(
+            method="POST",
+            url=self.url,
+            label="Goldsky fills",
+            json={
+                "query": build_goldsky_query(
+                    cursor=cursor,
+                    limit=limit,
+                    asset_ids=asset_ids,
+                    until_timestamp=until_timestamp,
+                )
+            },
         )
-        response = self._client.post(self.url, json={"query": query})
-        response.raise_for_status()
-        payload = response.json()
         if payload.get("errors"):
             raise ValueError(f"Goldsky query error: {payload['errors']}")
         rows = payload.get("data", {}).get("orderFilledEvents", [])
@@ -129,8 +259,7 @@ class GoldskyFillSource:
         return rows, advance_fill_cursor(rows, prior=cursor, limit=limit)
 
     def close(self) -> None:
-        if self._owns_client:
-            self._client.close()
+        super().close()
 
 
 def build_goldsky_query(
@@ -272,6 +401,26 @@ def _as_float(value: Any, default: float | None = None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return int(default)
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    if raw in (None, ""):
+        return float(default)
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def _goldsky_asset_filter(asset_ids: list[str], temporal_filters: list[str]) -> str:

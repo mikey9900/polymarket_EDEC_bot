@@ -20,10 +20,12 @@ class _FakeDashboardState:
         return {
             "controls": {
                 "state": "running",
-                "available_actions": {"start": True},
+                "available_actions": {"start": True, "research_run_now": True, "tuner_run_now": True},
                 "last_message": "CONTROL LINK STANDBY",
                 "last_ok": None,
             },
+            "codex": {"queue_depth": 0, "active_run": None},
+            "tuner": {"cadence": "weekly", "candidate_status": "ready", "schedule_enabled": True},
             "coins": {},
             "coins_order": [],
         }
@@ -52,8 +54,20 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('type="button" class="ctl-btn" data-action="start"', html)
         self.assertIn('data-action="reset_stats"', html)
         self.assertIn('data-action="session_export"', html)
+        self.assertIn('data-action="research_run_now"', html)
+        self.assertIn('data-action="tuner_run_now"', html)
+        self.assertIn('data-action="tuner_schedule_pause"', html)
+        self.assertIn('data-action="tuner_schedule_resume"', html)
+        self.assertIn('data-action="tuner_set_cadence" data-value="weekly"', html)
+        self.assertIn('data-action="tuner_set_cadence" data-value="manual"', html)
+        self.assertIn('data-action="tuner_skip_next"', html)
+        self.assertIn('data-action="tuner_promote_latest"', html)
+        self.assertIn('data-action="tuner_reject_latest"', html)
         self.assertIn('CLEAR STATS', html)
         self.assertIn('EXPORT SESSION', html)
+        self.assertIn('RUN RESEARCH', html)
+        self.assertIn('PROMOTE', html)
+        self.assertIn('REJECT', html)
         self.assertIn('class="topbar-meta"', html)
         self.assertIn('class="session-summary-strip"', html)
         self.assertIn('id="t-mode-top"', html)
@@ -75,6 +89,11 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("function syncControlButtons(controls)", html)
         self.assertIn('controls.last_message || "CONTROL LINK STANDBY"', html)
         self.assertIn('setClassList(btn, "unavailable", !enabled);', html)
+        self.assertIn('id="codex-queue"', html)
+        self.assertIn('id="codex-active"', html)
+        self.assertIn('id="tuner-cadence"', html)
+        self.assertIn('id="tuner-next"', html)
+        self.assertIn('id="tuner-candidate"', html)
         self.assertIn('data-field="session-inline"', html)
         self.assertNotIn('data-field="pred-copy"', html)
         self.assertIn('data-field="strike-delta"', html)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -13,7 +14,26 @@ WAREHOUSE_PATH = RESEARCH_ROOT / "warehouse.duckdb"
 DEFAULT_POLICY_PATH = RESEARCH_ROOT / "runtime_policy.json"
 DEFAULT_REPORT_JSON_PATH = RESEARCH_ROOT / "research_report.json"
 DEFAULT_REPORT_MD_PATH = RESEARCH_ROOT / "research_report.md"
+TUNER_STATE_PATH = RESEARCH_ROOT / "tuner_state.json"
+TUNER_REPORT_JSON_PATH = RESEARCH_ROOT / "tuner_report.json"
+TUNER_REPORT_MD_PATH = RESEARCH_ROOT / "tuner_report.md"
+TUNER_ACTIVE_PATCH_PATH = RESEARCH_ROOT / "tuner_active_patch.diff"
 LOCAL_TRACKER_DB = DATA_ROOT / "decisions.db"
+DEFAULT_CONFIG_PATH = REPO_ROOT / "edec_bot" / "config_phase_a_single.yaml"
+CONFIG_CANDIDATES_ROOT = REPO_ROOT / "edec_bot" / "config_candidates"
+SHARED_DATA_ROOT = (
+    Path(os.getenv("EDEC_SHARED_DATA_ROOT", str(DATA_ROOT)))
+    if os.getenv("EDEC_SHARED_DATA_ROOT")
+    else DATA_ROOT
+)
+if not SHARED_DATA_ROOT.is_absolute():
+    SHARED_DATA_ROOT = REPO_ROOT / SHARED_DATA_ROOT
+CODEX_ROOT = SHARED_DATA_ROOT / "codex"
+CODEX_QUEUE_ROOT = CODEX_ROOT / "queue"
+CODEX_RUNS_ROOT = CODEX_ROOT / "runs"
+CODEX_STATE_PATH = CODEX_ROOT / "state.json"
+CODEX_LATEST_PATH = CODEX_ROOT / "latest.json"
+CODEX_LOCK_PATH = CODEX_ROOT / "runner.lock"
 
 
 def resolve_repo_path(path_value: str | Path) -> Path:
@@ -25,6 +45,16 @@ def resolve_repo_path(path_value: str | Path) -> Path:
 
 def ensure_research_dirs() -> None:
     for path in (DATA_ROOT, RESEARCH_ROOT, PARQUET_ROOT):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_codex_dirs() -> None:
+    for path in (SHARED_DATA_ROOT, CODEX_ROOT, CODEX_QUEUE_ROOT, CODEX_RUNS_ROOT):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+def ensure_tuner_dirs() -> None:
+    for path in (RESEARCH_ROOT, CONFIG_CANDIDATES_ROOT):
         path.mkdir(parents=True, exist_ok=True)
 
 

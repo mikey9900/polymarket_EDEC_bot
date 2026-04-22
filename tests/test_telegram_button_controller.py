@@ -1,8 +1,8 @@
-import asyncio
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -15,6 +15,7 @@ class _FakeRiskManager:
     def __init__(self):
         self.resume_calls = 0
         self.deactivate_calls = 0
+        self.pause_calls = 0
         self.status = {
             "kill_switch": False,
             "paused": False,
@@ -24,6 +25,9 @@ class _FakeRiskManager:
 
     def resume(self):
         self.resume_calls += 1
+
+    def pause(self):
+        self.pause_calls += 1
 
     def deactivate_kill_switch(self):
         self.deactivate_calls += 1
@@ -35,20 +39,43 @@ class _FakeRiskManager:
 class _FakeStrategyEngine:
     def __init__(self):
         self.start_calls = 0
+        self.stop_calls = 0
         self.mode = "both"
         self.is_active = True
 
     def start_scanning(self):
         self.start_calls += 1
+        self.is_active = True
+
+    def stop_scanning(self):
+        self.stop_calls += 1
+        self.is_active = False
 
 
 class _FakeTracker:
     def get_recent_trades(self, limit: int = 5):
         return []
 
+    def get_paper_capital(self):
+        return (100.0, 100.0)
+
+    def get_daily_stats(self, date=None):
+        return {
+            "date": "2026-04-21",
+            "total_evaluations": 10,
+            "signals": 3,
+            "skips": 1,
+            "trades_executed": 2,
+            "successful": 2,
+            "aborted": 0,
+        }
+
 
 class _FakeExecutor:
     order_size_usd = 10.0
+
+    def set_order_size(self, usd: float):
+        self.order_size_usd = usd
 
 
 class _FakeMessage:
@@ -81,7 +108,8 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         bot = TelegramBot(
             SimpleNamespace(
                 telegram_chat_id="1",
-                execution=SimpleNamespace(order_size_usd=5.0),
+                execution=SimpleNamespace(order_size_usd=5.0, dry_run=True),
+                cli=SimpleNamespace(allow_mutating_commands=False),
             ),
             tracker=_FakeTracker(),
             risk_manager=_FakeRiskManager(),
@@ -91,24 +119,8 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         bot._track = lambda msg: msg
         return bot
 
-    async def test_start_button_uses_controller_and_runs_start_flow(self):
+    async def test_start_button_uses_shared_control_plane(self):
         bot = self._build_bot()
-        cleanup_calls: list[bool] = []
-        scheduled: list[str] = []
-        tasks: list[asyncio.Task] = []
-
-        async def _refresh_then_cleanup():
-            cleanup_calls.append(True)
-
-        def _spawn_background_task(coro, *, label: str):
-            scheduled.append(label)
-            task = asyncio.create_task(coro)
-            tasks.append(task)
-            return task
-
-        bot._refresh_then_cleanup = _refresh_then_cleanup
-        bot._spawn_background_task = _spawn_background_task
-
         query = _FakeCallbackQuery("start")
         update = SimpleNamespace(
             effective_chat=SimpleNamespace(id="1"),
@@ -116,16 +128,13 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
-        await asyncio.gather(*tasks)
 
         self.assertEqual(bot.strategy_engine.start_calls, 1)
         self.assertEqual(bot.risk_manager.resume_calls, 1)
         self.assertEqual(bot.risk_manager.deactivate_calls, 1)
-        self.assertEqual(scheduled, ["start-button"])
-        self.assertEqual(cleanup_calls, [True])
         self.assertEqual(query.answers[0]["text"], "▶ Scanning started")
 
-    async def test_status_button_edits_message_with_shared_status_panel(self):
+    async def test_status_button_edits_message_with_backup_panel(self):
         bot = self._build_bot()
         query = _FakeCallbackQuery("status")
         update = SimpleNamespace(
@@ -142,29 +151,8 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("RUNNING", query.edits[0]["text"])
         self.assertIn("Budget: $10/trade", query.edits[0]["text"])
 
-    async def test_export_recent_button_uses_shared_export_flow_and_reposts_dashboard(self):
+    async def test_export_recent_button_redirects_to_dashboard(self):
         bot = self._build_bot()
-        export_messages = []
-        repost_calls = []
-        scheduled: list[str] = []
-        tasks: list[asyncio.Task] = []
-
-        async def _handle_recent_export_request(message):
-            export_messages.append(message)
-
-        async def _repost_dashboard():
-            repost_calls.append(True)
-
-        def _spawn_background_task(coro, *, label: str):
-            scheduled.append(label)
-            task = asyncio.create_task(coro)
-            tasks.append(task)
-            return task
-
-        bot._handle_recent_export_request = _handle_recent_export_request
-        bot._repost_dashboard = _repost_dashboard
-        bot._spawn_background_task = _spawn_background_task
-
         query = _FakeCallbackQuery("export_recent")
         update = SimpleNamespace(
             effective_chat=SimpleNamespace(id="1"),
@@ -172,11 +160,10 @@ class TelegramButtonControllerTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
-        await asyncio.gather(*tasks)
 
-        self.assertEqual(scheduled, ["button-export_recent"])
-        self.assertEqual(export_messages, [query.message])
-        self.assertEqual(repost_calls, [True])
+        self.assertEqual(query.answers[0]["text"], "Moved to HA dashboard")
+        self.assertTrue(query.answers[0]["show_alert"])
+        self.assertIn("HA dashboard", query.edits[0]["text"])
 
 
 if __name__ == "__main__":

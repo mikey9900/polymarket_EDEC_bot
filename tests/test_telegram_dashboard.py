@@ -91,9 +91,9 @@ class TelegramDashboardUiTests(unittest.TestCase):
         ]
         self.assertIn("stop", callbacks)
         self.assertIn("kill", callbacks)
-        self.assertIn("budget", callbacks)
-        self.assertIn("capital", callbacks)
-        self.assertIn("sync_repo_latest", callbacks)
+        self.assertIn("status", callbacks)
+        self.assertIn("stats", callbacks)
+        self.assertIn("help_panel", callbacks)
 
     def test_build_status_command_text_includes_book_snapshot_and_signal_hint(self):
         risk_status = {

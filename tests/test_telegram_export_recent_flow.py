@@ -1,10 +1,7 @@
-import asyncio
-import shutil
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from uuid import uuid4
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -23,81 +20,41 @@ class _FakeMessage:
     def __init__(self):
         self.texts: list[str] = []
 
-    async def reply_text(self, text: str, parse_mode=None):
+    async def reply_text(self, text: str, parse_mode=None, **kwargs):
         self.texts.append(text)
         return _FakeSentMessage(text=text)
-
-    async def reply_document(self, document, filename=None, caption=None):
-        raise AssertionError("reply_document should not be used in export workflows")
 
 
 class _FakeCallbackQuery:
     def __init__(self, data: str):
         self.data = data
         self.message = _FakeMessage()
+        self.answers = []
+        self.edits = []
 
-    async def answer(self):
-        return None
+    async def answer(self, text=None, show_alert=False):
+        self.answers.append({"text": text, "show_alert": show_alert})
+
+    async def edit_message_text(self, text, parse_mode=None, reply_markup=None):
+        self.edits.append({"text": text, "parse_mode": parse_mode, "reply_markup": reply_markup})
 
 
 class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        tmp_root = ROOT / ".tmp_testdata"
-        tmp_root.mkdir(parents=True, exist_ok=True)
-        self.tmpdir = tmp_root / f"edec_export_recent_{uuid4().hex}"
-        self.tmpdir.mkdir(parents=True, exist_ok=True)
-        self.addCleanup(lambda: shutil.rmtree(self.tmpdir, ignore_errors=True))
-
-    async def _build_bot(self, **kwargs) -> TelegramBot:
-        config = SimpleNamespace(telegram_chat_id="1")
-        bot = TelegramBot(config, tracker=object(), risk_manager=object(), **kwargs)
+    def _build_bot(self) -> TelegramBot:
+        bot = TelegramBot(
+            SimpleNamespace(
+                telegram_chat_id="1",
+                execution=SimpleNamespace(order_size_usd=10.0, dry_run=True),
+                cli=SimpleNamespace(allow_mutating_commands=False),
+            ),
+            tracker=object(),
+            risk_manager=object(),
+        )
         bot._track = lambda msg: msg
-        bot._test_tasks = []
-
-        async def _noop():
-            return None
-
-        def _spawn_background_task(coro, *, label: str):
-            task = asyncio.create_task(coro)
-            bot._test_tasks.append(task)
-            return task
-
-        bot._repost_dashboard = _noop
-        bot._spawn_background_task = _spawn_background_task
         return bot
 
-    async def test_export_recent_prefers_repo_sync_after_archive(self):
-        call_order: list[str] = []
-        sent_files: list[dict] = []
-        archive_trades = self.tmpdir / "archive_trades.csv.gz"
-        archive_signals = self.tmpdir / "archive_signals.csv.gz"
-        sync_trades = self.tmpdir / "sync_trades.csv"
-        sync_signals = self.tmpdir / "sync_signals.csv"
-        local_trades = self.tmpdir / "local_trades.csv"
-        for p in (archive_trades, archive_signals, sync_trades, sync_signals, local_trades):
-            p.write_text("x", encoding="utf-8")
-
-        def archive_fn():
-            call_order.append("archive")
-            return {"latest_trades": str(archive_trades), "latest_signals": str(archive_signals)}
-
-        def repo_sync_fn():
-            call_order.append("sync")
-            return {"expanded_trades_csv": str(sync_trades), "expanded_signals_csv": str(sync_signals)}
-
-        def export_recent_fn():
-            call_order.append("local")
-            return str(local_trades)
-
-        bot = await self._build_bot(
-            archive_fn=archive_fn,
-            repo_sync_fn=repo_sync_fn,
-            export_recent_fn=export_recent_fn,
-        )
-        async def _send_file(path: str, caption: str):
-            sent_files.append({"path": path, "caption": caption})
-            return True, None
-        bot._send_file_path = _send_file
+    async def test_export_recent_button_redirects_to_dashboard(self):
+        bot = self._build_bot()
         query = _FakeCallbackQuery(data="export_recent")
         update = SimpleNamespace(
             callback_query=query,
@@ -105,82 +62,23 @@ class ExportRecentFlowTests(unittest.IsolatedAsyncioTestCase):
         )
 
         await bot._handle_button(update, context=None)
-        await asyncio.gather(*bot._test_tasks)
 
-        self.assertEqual(call_order, ["archive", "sync"])
-        sent_names = [Path(item["path"]).name for item in sent_files]
-        self.assertIn(sync_trades.name, sent_names)
-        self.assertIn(sync_signals.name, sent_names)
+        self.assertEqual(query.answers[0]["text"], "Moved to HA dashboard")
+        self.assertTrue(query.answers[0]["show_alert"])
+        self.assertIn("HA dashboard", query.edits[0]["text"])
 
-    async def test_export_recent_warns_and_falls_back_if_archive_fails(self):
-        sent_files: list[dict] = []
-        local_trades = self.tmpdir / "local_trades.csv"
-        local_trades.write_text("x", encoding="utf-8")
-
-        def archive_fn():
-            raise RuntimeError("dropbox unavailable")
-
-        def repo_sync_fn():
-            return {}
-
-        def export_recent_fn():
-            return str(local_trades)
-
-        bot = await self._build_bot(
-            archive_fn=archive_fn,
-            repo_sync_fn=repo_sync_fn,
-            export_recent_fn=export_recent_fn,
-        )
-        async def _send_file(path: str, caption: str):
-            sent_files.append({"path": path, "caption": caption})
-            return True, None
-        bot._send_file_path = _send_file
-        query = _FakeCallbackQuery(data="export_recent")
+    async def test_session_export_button_redirects_to_dashboard(self):
+        bot = self._build_bot()
+        query = _FakeCallbackQuery(data="session_export")
         update = SimpleNamespace(
             callback_query=query,
             effective_chat=SimpleNamespace(id="1"),
         )
 
         await bot._handle_button(update, context=None)
-        await asyncio.gather(*bot._test_tasks)
 
-        sent_names = [Path(item["path"]).name for item in sent_files]
-        self.assertIn(local_trades.name, sent_names)
-        warning_lines = [t for t in query.message.texts if "Dropbox archive refresh failed" in t]
-        self.assertTrue(warning_lines)
-
-    async def test_export_recent_warns_if_repo_sync_fails_and_uses_local_fallback(self):
-        sent_files: list[dict] = []
-        local_trades = self.tmpdir / "local_trades.csv"
-        local_trades.write_text("x", encoding="utf-8")
-
-        def repo_sync_fn():
-            raise RuntimeError("repo sync exploded")
-
-        def export_recent_fn():
-            return str(local_trades)
-
-        bot = await self._build_bot(
-            repo_sync_fn=repo_sync_fn,
-            export_recent_fn=export_recent_fn,
-        )
-        async def _send_file(path: str, caption: str):
-            sent_files.append({"path": path, "caption": caption})
-            return True, None
-        bot._send_file_path = _send_file
-        query = _FakeCallbackQuery(data="export_recent")
-        update = SimpleNamespace(
-            callback_query=query,
-            effective_chat=SimpleNamespace(id="1"),
-        )
-
-        await bot._handle_button(update, context=None)
-        await asyncio.gather(*bot._test_tasks)
-
-        sent_names = [Path(item["path"]).name for item in sent_files]
-        self.assertIn(local_trades.name, sent_names)
-        warning_lines = [t for t in query.message.texts if "Dropbox repo sync failed" in t]
-        self.assertTrue(warning_lines)
+        self.assertEqual(query.answers[0]["text"], "Moved to HA dashboard")
+        self.assertIn("HA dashboard", query.edits[0]["text"])
 
 
 if __name__ == "__main__":

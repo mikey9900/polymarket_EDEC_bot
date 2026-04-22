@@ -412,8 +412,14 @@ class DashboardStateService:
         # snapshot from the live aggregator the first time we see this slug.
         strike: float | None = None
         if market.reference_price is not None:
-            strike = float(market.reference_price)
-        else:
+            candidate = float(market.reference_price)
+            if candidate > 0 and (
+                live_price is None
+                or live_price <= 0
+                or 0.5 <= (candidate / float(live_price)) <= 1.5
+            ):
+                strike = candidate
+        if strike is None:
             cached = self._market_strikes.get(coin)
             if cached and cached[0] == market.slug:
                 strike = cached[1]

@@ -1072,6 +1072,21 @@ _DASHBOARD_HTML = r"""<!doctype html>
 
   // ----- Helpers -----
   const $ = (id) => document.getElementById(id);
+  function apiUrl(path) {
+    const clean = String(path || "").replace(/^\/+/, "");
+    const url = new URL(window.location.href);
+    const pathname = url.pathname || "/";
+    if (/\/index\.html$/i.test(pathname)) {
+      url.pathname = pathname.replace(/\/index\.html$/i, "/") + clean;
+    } else if (pathname.endsWith("/")) {
+      url.pathname = pathname + clean;
+    } else {
+      url.pathname = pathname + "/" + clean;
+    }
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  }
   const fmtPrice = (p) => p == null ? "—" : (p >= 1000 ? p.toLocaleString(undefined, {maximumFractionDigits: 2}) : p.toFixed(p < 1 ? 4 : 2));
   const fmtPct = (x) => (x == null ? "—" : (x*100).toFixed(0) + "%");
   const fmtUsd = (x) => (x == null ? "—" : (x >= 0 ? "+" : "") + "$" + x.toFixed(2));
@@ -1093,28 +1108,33 @@ _DASHBOARD_HTML = r"""<!doctype html>
   // Skip innerHTML if the rendered key matches the previous frame.
   // Prevents LED-blink restarts and DOM thrash when nothing changed.
   function cachedSet(el, key, html) {
+    if (!el) return;
     if (el.__lastKey === key) return;
     el.__lastKey = key;
     el.innerHTML = html;
   }
   function setText(el, value) {
+    if (!el) return;
     if (el.__lastText === value) return;
     el.__lastText = value;
     el.textContent = value;
   }
   function setAttr(el, name, value) {
+    if (!el) return;
     const k = "__lastAttr_" + name;
     if (el[k] === value) return;
     el[k] = value;
     el.setAttribute(name, value);
   }
   function setStyle(el, prop, value) {
+    if (!el) return;
     const k = "__lastStyle_" + prop;
     if (el[k] === value) return;
     el[k] = value;
     el.style[prop] = value;
   }
   function setClassList(el, cls, on) {
+    if (!el) return;
     const k = "__lastCls_" + cls;
     const v = !!on;
     if (el[k] === v) return;
@@ -1122,11 +1142,16 @@ _DASHBOARD_HTML = r"""<!doctype html>
     el.classList.toggle(cls, v);
   }
   function setDisabled(el, value) {
+    if (!el) return;
     const v = !!value;
     if (el.__lastDisabled === v) return;
     el.__lastDisabled = v;
     el.disabled = v;
   }
+  const numOrNull = (x) => {
+    const parsed = Number(x);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
   function setControlStatus(text, cls) {
     const host = $("ctrl-status");
     if (!host) return;
@@ -1212,7 +1237,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     try {
       const payload = { action };
       if (value != null && value !== "") payload.value = value;
-      const res = await fetch("api/control", {
+      const res = await fetch(apiUrl("api/control"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -1279,8 +1304,11 @@ _DASHBOARD_HTML = r"""<!doctype html>
     const html = signals.map(s => {
       const sideCls = s.side === "UP" ? "side-up" : (s.side === "DOWN" ? "side-down" : "");
       const arrow = s.side === "UP" ? "▲" : (s.side === "DOWN" ? "▼" : "•");
-      const buy = s.entry_price != null ? s.entry_price.toFixed(2) : "—";
-      const tgt = s.target_price != null ? s.target_price.toFixed(2) : "—";
+      const buyValue = numOrNull(s.entry_price);
+      const tgtValue = numOrNull(s.target_price);
+      const scoreValue = numOrNull(s.score);
+      const buy = buyValue != null ? buyValue.toFixed(2) : "—";
+      const tgt = tgtValue != null ? tgtValue.toFixed(2) : "—";
       return `
         <div class="row">
           <span class="a">
@@ -1289,7 +1317,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
           </span>
           <span class="b">
             buy ${buy} → tgt ${tgt}
-            <span class="score">${s.score.toFixed(1)}</span>
+            <span class="score">${scoreValue != null ? scoreValue.toFixed(1) : "—"}</span>
           </span>
         </div>`;
     }).join("");
@@ -1306,14 +1334,17 @@ _DASHBOARD_HTML = r"""<!doctype html>
       const arrow = t.side === "UP" ? "▲" : "▼";
       const pnlCls = t.unrealized_pnl == null ? "" : (t.unrealized_pnl >= 0 ? "pnl-pos" : "pnl-neg");
       const pnlStr = t.unrealized_pnl == null ? "—" : fmtUsd(t.unrealized_pnl);
-      const tgt = t.target_price != null ? `→ ${t.target_price.toFixed(2)}` : (t.hold_to_resolution ? "→ HOLD" : "");
-      const bid = t.current_bid != null ? t.current_bid.toFixed(2) : "—";
+      const entryValue = numOrNull(t.entry_price);
+      const targetValue = numOrNull(t.target_price);
+      const bidValue = numOrNull(t.current_bid);
+      const tgt = targetValue != null ? `→ ${targetValue.toFixed(2)}` : (t.hold_to_resolution ? "→ HOLD" : "");
+      const bid = bidValue != null ? bidValue.toFixed(2) : "—";
       return `
         <div class="row">
           <span class="a">
             <span class="strategy-tag">${escapeHtml(t.strategy)}</span>
             <span class="${sideCls}">${arrow} ${t.side}</span>
-            ${t.entry_price.toFixed(2)} ${tgt}
+            ${entryValue != null ? entryValue.toFixed(2) : "—"} ${tgt}
           </span>
           <span class="b">bid ${bid} <span class="${pnlCls}">${pnlStr}</span></span>
         </div>`;
@@ -1629,7 +1660,7 @@ _DASHBOARD_HTML = r"""<!doctype html>
     if (inFlight) return;
     inFlight = true;
     try {
-      const res = await fetch("api/state", { cache: "no-store" });
+      const res = await fetch(apiUrl("api/state"), { cache: "no-store" });
       if (res.ok) {
         applyState(await res.json());
         lastFrameAt = performance.now();

@@ -199,7 +199,8 @@ class MarketScanner:
                 or event.get("name")
                 or ""
             )
-            reference_price, reference_label = self._extract_reference_info(question)
+            reference_source = market.get("question") or event.get("question") or ""
+            reference_price, reference_label = self._extract_reference_info(reference_source)
 
             end_str = market.get("endDate", event.get("endDate", ""))
             start_str = market.get("eventStartTime", market.get("startDate", ""))
@@ -231,7 +232,10 @@ class MarketScanner:
         text = str(question or "").strip()
         if not text:
             return None, ""
-        match = re.search(r"\$?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)", text)
+        match = re.search(
+            r"(?i)\b(?:above|below|over|under)\b[^0-9$]{0,16}\$?([0-9][0-9,]*(?:\.[0-9]+)?)",
+            text,
+        )
         if not match:
             return None, text
         try:

@@ -1,5 +1,6 @@
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
 from bot.dashboard_state import DashboardStateService
+from bot.models import MarketInfo
 
 
 class _FakeTracker:
@@ -107,8 +109,11 @@ class _FakeExecutor:
 
 
 class _FakeScanner:
+    def __init__(self):
+        self.market = None
+
     def get_market(self, _coin: str):
-        return None
+        return self.market
 
     def get_books(self, _coin: str):
         return (None, None)
@@ -118,8 +123,13 @@ class _FakeScanner:
 
 
 class _FakeAggregator:
+    def __init__(self):
+        self.price = None
+
     def get_aggregated_price(self, _coin: str):
-        return None
+        if self.price is None:
+            return None
+        return SimpleNamespace(price=self.price)
 
 
 class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
@@ -140,14 +150,16 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
                     "session_dir": "data/exports/2026-04-19_170000_EDEC-BOT_session_export",
                 },
             }
+        scanner = _FakeScanner()
+        aggregator = _FakeAggregator()
         service = DashboardStateService(
             config=config,
             tracker=tracker,
             risk_manager=risk_manager,
-            scanner=_FakeScanner(),
+            scanner=scanner,
             strategy_engine=_FakeStrategyEngine(),
             executor=_FakeExecutor(),
-            aggregator=_FakeAggregator(),
+            aggregator=aggregator,
             **callbacks,
         )
         service._slow_cache["paper_capital"] = (100.0, 115.0)
@@ -241,6 +253,30 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             session_result["state"]["controls"]["last_message"],
             session_result["message"],
         )
+
+    def test_market_payload_falls_back_when_reference_price_is_implausible(self):
+        service = self._build_service()
+        now = datetime.now(timezone.utc)
+        service.scanner.market = MarketInfo(
+            event_id="evt-1",
+            condition_id="cond-1",
+            slug="btc-updown-5m-123",
+            coin="btc",
+            up_token_id="up",
+            down_token_id="down",
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(minutes=4),
+            fee_rate=0.02,
+            tick_size="0.01",
+            neg_risk=False,
+            question="Bitcoin Up or Down - April 21, 3:45 PM ET",
+            reference_price=21.0,
+        )
+        service.aggregator.price = 84500.0
+
+        payload = service._build_market_payload("btc", live_price=84500.0)
+
+        self.assertEqual(payload["strike"], 84500.0)
 
 
 if __name__ == "__main__":

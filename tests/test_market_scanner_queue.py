@@ -169,6 +169,18 @@ class MarketScannerQueueTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    def test_extract_reference_info_requires_directional_price_phrase(self):
+        reference, label = MarketScanner._extract_reference_info(
+            "Will BTC be above $84,250.75 at 3:45 PM ET?"
+        )
+        self.assertEqual(reference, 84250.75)
+        self.assertIn("above", label.lower())
+
+        missing_reference, _ = MarketScanner._extract_reference_info(
+            "Bitcoin Up or Down - April 21, 3:45 PM ET"
+        )
+        self.assertIsNone(missing_reference)
+
 
 if __name__ == "__main__":
     unittest.main()

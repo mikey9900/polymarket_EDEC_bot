@@ -68,13 +68,16 @@ def is_pid_running(pid: int | None) -> bool:
 def acquire_pid_lock(lock_path: str | Path) -> ProcessLock:
     path = Path(lock_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    current_pid = os.getpid()
     existing = read_pid_lock(path)
     if existing:
         existing_pid = existing.get("pid")
+        if int(existing_pid or 0) == int(current_pid):
+            existing_pid = None
         if is_pid_running(existing_pid):
             raise RuntimeError(f"Bot is already running with pid={existing_pid}")
     payload = {
-        "pid": os.getpid(),
+        "pid": current_pid,
         "created_at": _utc_now_iso(),
         "cwd": str(Path.cwd()),
     }

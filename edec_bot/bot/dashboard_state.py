@@ -86,6 +86,7 @@ class DashboardStateService:
             "session_by_coin": {},
             "recent_resolutions_by_coin": {},
             "paper_capital": (0.0, 0.0),
+            "open_paper_trades": [],
         }
         # Per-coin captured strike: {coin: (slug, strike_price)}. Sampled from
         # the live aggregator the first time we see each new market window so
@@ -212,11 +213,17 @@ class DashboardStateService:
         except Exception as exc:
             logger.debug("paper_capital query failed: %s", exc)
             paper_capital = self._slow_cache.get("paper_capital", (0.0, 0.0))
+        try:
+            open_paper_trades = self._reader.get_open_paper_trades()
+        except Exception as exc:
+            logger.debug("open_paper_trades query failed: %s", exc)
+            open_paper_trades = self._slow_cache.get("open_paper_trades", [])
         self._slow_cache = {
             "recent_signals": recent_signals,
             "session_by_coin": session_by_coin,
             "recent_resolutions_by_coin": resolutions_by_coin,
             "paper_capital": paper_capital,
+            "open_paper_trades": open_paper_trades,
         }
 
     # ------------------------------------------------------------------
@@ -241,16 +248,26 @@ class DashboardStateService:
         session_by_coin = slow.get("session_by_coin", {})
         resolutions_by_coin = slow.get("recent_resolutions_by_coin", {})
         paper_total, paper_balance = slow.get("paper_capital", (0.0, 0.0))
+        open_paper_trades = slow.get("open_paper_trades", [])
+        paper_adjustments = self._build_open_paper_adjustments(open_paper_trades)
+        paper_equity = float(paper_balance) + sum(
+            float(item.get("liquidation_value", 0.0))
+            for item in paper_adjustments.values()
+        )
 
         open_singles = list(self.executor.get_open_positions().values())
         open_swings = list(getattr(self.executor, "_open_swing_positions", {}).values())
 
         coins_payload: dict[str, Any] = {}
         for coin in self.config.coins:
+            base_session = session_by_coin.get(coin, {"wins": 0, "losses": 0, "open": 0, "pnl": 0.0})
             coins_payload[coin] = self._build_coin_payload(
                 coin,
                 recent_signals=recent_signals.get(coin, []),
-                session=session_by_coin.get(coin, {"wins": 0, "losses": 0, "open": 0, "pnl": 0.0}),
+                session=self._augment_session_payload(
+                    base_session,
+                    paper_adjustments.get(coin, {"open_count": 0, "unrealized_pnl": 0.0}),
+                ),
                 resolutions=resolutions_by_coin.get(coin, []),
                 open_singles=open_singles,
                 open_swings=open_swings,
@@ -266,11 +283,76 @@ class DashboardStateService:
             "summary": {
                 "paper": {
                     "total": float(paper_total),
-                    "balance": float(paper_balance),
-                    "pnl": float(paper_balance) - float(paper_total),
+                    "balance": float(paper_equity),
+                    "pnl": float(paper_equity) - float(paper_total),
                 },
             },
         }
+
+    def _build_open_paper_adjustments(self, open_trades: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
+        adjustments: dict[str, dict[str, float]] = {}
+        for trade in open_trades or []:
+            coin = str(trade.get("coin") or "").lower()
+            if not coin:
+                continue
+            liquidation_value, unrealized_pnl = self._estimate_open_paper_mark_to_market(trade)
+            bucket = adjustments.setdefault(
+                coin,
+                {"open_count": 0.0, "liquidation_value": 0.0, "unrealized_pnl": 0.0},
+            )
+            bucket["open_count"] += 1.0
+            bucket["liquidation_value"] += float(liquidation_value)
+            bucket["unrealized_pnl"] += float(unrealized_pnl)
+        return adjustments
+
+    def _augment_session_payload(self, session: dict[str, Any], adjustment: dict[str, float]) -> dict[str, Any]:
+        payload = {
+            "wins": int((session or {}).get("wins", 0) or 0),
+            "losses": int((session or {}).get("losses", 0) or 0),
+            "open": int((session or {}).get("open", 0) or 0),
+            "pnl": float((session or {}).get("pnl", 0.0) or 0.0),
+        }
+        open_count = int(adjustment.get("open_count", 0) or 0)
+        payload["open"] = max(payload["open"], open_count)
+        payload["realized_pnl"] = payload["pnl"]
+        payload["unrealized_pnl"] = float(adjustment.get("unrealized_pnl", 0.0) or 0.0)
+        payload["pnl"] = payload["realized_pnl"] + payload["unrealized_pnl"]
+        return payload
+
+    def _estimate_open_paper_mark_to_market(self, trade: dict[str, Any]) -> tuple[float, float]:
+        coin = str(trade.get("coin") or "").lower()
+        strategy_type = str(trade.get("strategy_type") or "").lower()
+        cost = float(trade.get("cost") or 0.0)
+        shares = float(trade.get("shares") or 0.0)
+        if not coin or shares <= 0:
+            return cost, 0.0
+
+        market = self.scanner.get_market(coin) if self.scanner else None
+        market_matches = bool(
+            market
+            and str(trade.get("market_slug") or "") == str(getattr(market, "slug", ""))
+        )
+        if not market_matches:
+            return cost, 0.0
+
+        if strategy_type == "dual_leg":
+            up_book, down_book = self.scanner.get_books(coin)
+            if not up_book or not down_book:
+                return cost, 0.0
+            combined_bid = float(up_book.best_bid) + float(down_book.best_bid)
+            liquidation_value = max(0.0, combined_bid * shares)
+            unrealized_pnl = liquidation_value - cost - float(trade.get("fee_total") or 0.0)
+            return max(0.0, cost + unrealized_pnl), unrealized_pnl
+
+        bid = self._current_bid_for_position(coin, str(trade.get("side") or ""))
+        if bid is None:
+            return cost, 0.0
+        entry_price = float(trade.get("entry_price") or 0.0)
+        fee_rate = float(getattr(market, "fee_rate", 0.0) or 0.0)
+        fee_buy = fee_rate * entry_price * (1.0 - entry_price)
+        fee_sell = fee_rate * bid * (1.0 - bid)
+        unrealized_pnl = (bid - entry_price - fee_buy - fee_sell) * shares
+        return max(0.0, cost + unrealized_pnl), unrealized_pnl
 
     def _build_controls_payload(self) -> dict[str, Any]:
         risk_status = self.risk_manager.get_status() if self.risk_manager else {}

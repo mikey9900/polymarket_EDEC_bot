@@ -56,6 +56,10 @@ class ReadOnlyTrackerProxy:
         with self._lock:
             return tracker_reports.get_coin_recent_resolutions(self, coin, limit)
 
+    def get_open_paper_trades(self):
+        with self._lock:
+            return tracker_ops.get_open_paper_trades(self)
+
 
 
 

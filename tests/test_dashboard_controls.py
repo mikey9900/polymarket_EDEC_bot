@@ -17,6 +17,7 @@ class _FakeTracker:
 
     def __init__(self):
         self.reset_calls = 0
+        self.open_paper_trades = []
 
     def get_recent_signals_by_coin(self, max_age_s=30.0):
         return {}
@@ -29,6 +30,9 @@ class _FakeTracker:
 
     def get_paper_capital(self):
         return (100.0, 115.0)
+
+    def get_open_paper_trades(self):
+        return list(self.open_paper_trades)
 
     def reset_paper_stats(self):
         self.reset_calls += 1
@@ -111,12 +115,14 @@ class _FakeExecutor:
 class _FakeScanner:
     def __init__(self):
         self.market = None
+        self.up_book = None
+        self.down_book = None
 
     def get_market(self, _coin: str):
         return self.market
 
     def get_books(self, _coin: str):
-        return (None, None)
+        return (self.up_book, self.down_book)
 
     def get_recent_resolutions(self, _coin: str, limit: int = 4):
         return [{"winner": "UP", "slug": "poly-1"}, {"winner": "DOWN", "slug": "poly-2"}][:limit]
@@ -277,6 +283,45 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         payload = service._build_market_payload("btc", live_price=84500.0)
 
         self.assertEqual(payload["strike"], 84500.0)
+
+    def test_snapshot_marks_open_paper_trades_to_market_for_pnl_pills(self):
+        service = self._build_service()
+        now = datetime.now(timezone.utc)
+        service._slow_cache["paper_capital"] = (100.0, 90.0)
+        service.scanner.market = MarketInfo(
+            event_id="evt-1",
+            condition_id="cond-1",
+            slug="btc-updown-5m-123",
+            coin="btc",
+            up_token_id="up",
+            down_token_id="down",
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(minutes=4),
+            fee_rate=0.0,
+            tick_size="0.01",
+            neg_risk=False,
+        )
+        service.scanner.up_book = SimpleNamespace(best_bid=0.60, best_ask=0.61)
+        service.scanner.down_book = SimpleNamespace(best_bid=0.40, best_ask=0.41)
+        service._slow_cache["open_paper_trades"] = [
+            {
+                "coin": "btc",
+                "market_slug": "btc-updown-5m-123",
+                "strategy_type": "single_leg",
+                "side": "up",
+                "entry_price": 0.50,
+                "shares": 20.0,
+                "cost": 10.0,
+                "fee_total": 0.0,
+            }
+        ]
+
+        snapshot = service._build_snapshot()
+
+        self.assertAlmostEqual(snapshot["summary"]["paper"]["balance"], 102.0)
+        self.assertAlmostEqual(snapshot["summary"]["paper"]["pnl"], 2.0)
+        self.assertEqual(snapshot["coins"]["btc"]["session"]["open"], 1)
+        self.assertAlmostEqual(snapshot["coins"]["btc"]["session"]["pnl"], 2.0)
 
 
 if __name__ == "__main__":

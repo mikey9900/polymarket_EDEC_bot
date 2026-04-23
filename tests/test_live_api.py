@@ -31,7 +31,7 @@ class _FakeDashboardState:
                 "last_heartbeat_at": "2026-04-22T12:00:00+00:00",
                 "last_run": {
                     "ok": True,
-                    "summary": "Daily refresh built 10 clusters; local candidate ready.",
+                    "summary": "Daily refresh built 10 clusters; warehouse fetched 42 fills; local candidate ready.",
                     "finished_at": "2026-04-22T11:59:00+00:00",
                 },
                 "next_queued_job": None,

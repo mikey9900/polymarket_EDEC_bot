@@ -9,11 +9,12 @@ from .codex_automation import CodexAutomationManager
 from .paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_POLICY_PATH,
+    DEFAULT_REPORT_JSON_PATH,
     LOCAL_TRACKER_DB,
     WAREHOUSE_PATH,
 )
 from .sources import GammaMarketSource, GoldskyFillSource
-from .sync import sync_fills, sync_markets, sync_recent_5m_fills
+from .sync import sync_daily_research_window, sync_fills, sync_markets, sync_recent_5m_fills, sync_recent_markets
 from .tuner import (
     build_weekly_ai_context,
     build_weekly_review_bundle,
@@ -56,6 +57,7 @@ def _add_build_artifact_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--warehouse-path", default=str(WAREHOUSE_PATH))
     parser.add_argument("--tracker-db", default=str(LOCAL_TRACKER_DB))
     parser.add_argument("--policy-path", default=str(DEFAULT_POLICY_PATH))
+    parser.add_argument("--report-json-path", default=str(DEFAULT_REPORT_JSON_PATH))
     parser.add_argument("--lookback-days", type=int, default=30)
 
 
@@ -66,11 +68,14 @@ def _add_config_path_arg(parser: argparse.ArgumentParser) -> None:
 def _recent_5m_sync_kwargs(args: argparse.Namespace) -> dict[str, object]:
     return {
         "lookback_hours": args.lookback_hours,
+        "history_lookback_days": args.history_lookback_days,
         "batch_size": args.batch_size,
         "asset_chunk_size": args.asset_chunk_size,
         "bucket_minutes": args.bucket_minutes,
+        "history_bucket_minutes": args.history_bucket_minutes,
         "bucket_buffer_seconds": args.bucket_buffer_seconds,
         "max_batches_per_chunk": args.max_batches_per_chunk,
+        "max_history_batches_per_chunk": args.max_history_batches_per_chunk,
     }
 
 
@@ -79,6 +84,7 @@ def _build_artifact_kwargs(args: argparse.Namespace) -> dict[str, object]:
         "warehouse_path": args.warehouse_path,
         "tracker_db": args.tracker_db,
         "policy_path": args.policy_path,
+        "report_json_path": args.report_json_path,
         "lookback_days": args.lookback_days,
     }
 
@@ -102,6 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
     sync_markets_parser.add_argument("--max-batches", type=int, default=None)
     _add_http_retry_args(sync_markets_parser)
 
+    sync_recent_markets_parser = subparsers.add_parser(
+        "sync-recent-markets",
+        help="Sync recent Gamma market metadata into the warehouse using a rolling lookback window",
+    )
+    sync_recent_markets_parser.add_argument("--warehouse-path", default=str(WAREHOUSE_PATH))
+    sync_recent_markets_parser.add_argument("--lookback-days", type=int, default=30)
+    sync_recent_markets_parser.add_argument("--batch-size", type=int, default=500)
+    sync_recent_markets_parser.add_argument("--max-batches", type=int, default=None)
+    _add_http_retry_args(sync_recent_markets_parser)
+
     sync_fills_parser = subparsers.add_parser("sync-fills", help="Sync Goldsky fills into the warehouse")
     sync_fills_parser.add_argument("--warehouse-path", default=str(WAREHOUSE_PATH))
     sync_fills_parser.add_argument("--batch-size", type=int, default=1000)
@@ -114,11 +130,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_recent_fills_parser.add_argument("--warehouse-path", default=str(WAREHOUSE_PATH))
     sync_recent_fills_parser.add_argument("--lookback-hours", type=int, default=24)
+    sync_recent_fills_parser.add_argument("--history-lookback-days", type=int, default=30)
     sync_recent_fills_parser.add_argument("--batch-size", type=int, default=1000)
     sync_recent_fills_parser.add_argument("--asset-chunk-size", type=int, default=50)
     sync_recent_fills_parser.add_argument("--bucket-minutes", type=int, default=60)
+    sync_recent_fills_parser.add_argument("--history-bucket-minutes", type=int, default=360)
     sync_recent_fills_parser.add_argument("--bucket-buffer-seconds", type=int, default=900)
     sync_recent_fills_parser.add_argument("--max-batches-per-chunk", type=int, default=None)
+    sync_recent_fills_parser.add_argument("--max-history-batches-per-chunk", type=int, default=1)
     _add_http_retry_args(sync_recent_fills_parser)
 
     build_artifacts_parser = subparsers.add_parser("build-artifacts", help="Build runtime policy and reports")
@@ -131,12 +150,18 @@ def build_parser() -> argparse.ArgumentParser:
         "daily-refresh",
         help="Run sync, rebuild research artifacts, propose local tuning, and refresh the weekly AI context",
     )
+    daily_refresh_parser.add_argument("--market-lookback-days", type=int, default=30)
+    daily_refresh_parser.add_argument("--market-batch-size", type=int, default=500)
+    daily_refresh_parser.add_argument("--market-max-batches", type=int, default=None)
     daily_refresh_parser.add_argument("--lookback-hours", type=int, default=24)
+    daily_refresh_parser.add_argument("--history-lookback-days", type=int, default=30)
     daily_refresh_parser.add_argument("--batch-size", type=int, default=1000)
     daily_refresh_parser.add_argument("--asset-chunk-size", type=int, default=20)
     daily_refresh_parser.add_argument("--bucket-minutes", type=int, default=60)
+    daily_refresh_parser.add_argument("--history-bucket-minutes", type=int, default=360)
     daily_refresh_parser.add_argument("--bucket-buffer-seconds", type=int, default=900)
     daily_refresh_parser.add_argument("--max-batches-per-chunk", type=int, default=2)
+    daily_refresh_parser.add_argument("--max-history-batches-per-chunk", type=int, default=1)
     _add_http_retry_args(daily_refresh_parser)
     _add_build_artifact_args(daily_refresh_parser)
     _add_config_path_arg(daily_refresh_parser)
@@ -146,12 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build a deterministic tuning candidate from the latest session exports",
     )
     _add_config_path_arg(propose_tuning_parser)
+    propose_tuning_parser.add_argument("--research-report-json-path", default=str(DEFAULT_REPORT_JSON_PATH))
 
     weekly_context_parser = subparsers.add_parser(
         "build-weekly-ai-context",
         help="Build the rolling compact weekly context file used by the weekly OpenAI tuning pass",
     )
     _add_config_path_arg(weekly_context_parser)
+    weekly_context_parser.add_argument("--report-json-path", default=str(DEFAULT_REPORT_JSON_PATH))
     weekly_context_parser.add_argument("--window-days", type=int, default=7)
 
     weekly_ai_parser = subparsers.add_parser(
@@ -217,6 +244,25 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 
+    if args.command == "sync-recent-markets":
+        from .warehouse import ResearchWarehouse
+
+        warehouse = ResearchWarehouse(args.warehouse_path)
+        source = GammaMarketSource(**_source_retry_kwargs(args))
+        try:
+            result = sync_recent_markets(
+                warehouse,
+                source,
+                lookback_days=args.lookback_days,
+                batch_size=args.batch_size,
+                max_batches=args.max_batches,
+            )
+        finally:
+            source.close()
+            warehouse.close()
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
     if args.command == "sync-fills":
         from .warehouse import ResearchWarehouse
 
@@ -236,16 +282,7 @@ def main(argv: list[str] | None = None) -> int:
         warehouse = ResearchWarehouse(args.warehouse_path)
         source = GoldskyFillSource(**_source_retry_kwargs(args))
         try:
-            result = sync_recent_5m_fills(
-                warehouse,
-                source,
-                lookback_hours=args.lookback_hours,
-                batch_size=args.batch_size,
-                asset_chunk_size=args.asset_chunk_size,
-                bucket_minutes=args.bucket_minutes,
-                bucket_buffer_seconds=args.bucket_buffer_seconds,
-                max_batches_per_chunk=args.max_batches_per_chunk,
-            )
+            result = sync_recent_5m_fills(warehouse, source, **_recent_5m_sync_kwargs(args))
         finally:
             source.close()
             warehouse.close()
@@ -257,17 +294,29 @@ def main(argv: list[str] | None = None) -> int:
         from .warehouse import ResearchWarehouse
 
         warehouse = ResearchWarehouse(args.warehouse_path)
-        source = GoldskyFillSource(**_source_retry_kwargs(args))
         sync_result: dict[str, object] | None = None
         sync_error: dict[str, str] | None = None
         build_result: dict[str, object] | None = None
         build_error: dict[str, str] | None = None
         try:
-            sync_result = sync_recent_5m_fills(warehouse, source, **_recent_5m_sync_kwargs(args))
+            market_source = GammaMarketSource(**_source_retry_kwargs(args))
+            fill_source = GoldskyFillSource(**_source_retry_kwargs(args))
+            try:
+                sync_result = sync_daily_research_window(
+                    warehouse,
+                    market_source,
+                    fill_source,
+                    market_lookback_days=args.market_lookback_days,
+                    market_batch_size=args.market_batch_size,
+                    market_max_batches=args.market_max_batches,
+                    **_recent_5m_sync_kwargs(args),
+                )
+            finally:
+                _close_quietly(market_source)
+                _close_quietly(fill_source)
         except Exception as exc:  # noqa: BLE001
             sync_error = _exception_payload(exc)
         finally:
-            _close_quietly(source)
             _close_quietly(warehouse)
         try:
             build_result = build_artifacts(**_build_artifact_kwargs(args))
@@ -278,11 +327,17 @@ def main(argv: list[str] | None = None) -> int:
         weekly_context_result: dict[str, object] | None = None
         weekly_context_error: dict[str, str] | None = None
         try:
-            local_tuning_result = propose_tuning(config_path=args.config_path)
+            local_tuning_result = propose_tuning(
+                config_path=args.config_path,
+                research_report_json_path=args.report_json_path,
+            )
         except Exception as exc:  # noqa: BLE001
             local_tuning_error = _exception_payload(exc)
         try:
-            weekly_context_result = build_weekly_ai_context(config_path=args.config_path)
+            weekly_context_result = build_weekly_ai_context(
+                config_path=args.config_path,
+                report_json_path=args.report_json_path,
+            )
         except Exception as exc:  # noqa: BLE001
             weekly_context_error = _exception_payload(exc)
 
@@ -314,12 +369,19 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if build_error is not None or local_tuning_error is not None or weekly_context_error is not None else 0
 
     if args.command == "propose-tuning":
-        result = propose_tuning(config_path=args.config_path)
+        result = propose_tuning(
+            config_path=args.config_path,
+            research_report_json_path=args.research_report_json_path,
+        )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 
     if args.command == "build-weekly-ai-context":
-        result = build_weekly_ai_context(config_path=args.config_path, window_days=args.window_days)
+        result = build_weekly_ai_context(
+            config_path=args.config_path,
+            report_json_path=args.report_json_path,
+            window_days=args.window_days,
+        )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 

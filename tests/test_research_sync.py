@@ -1,6 +1,7 @@
 import shutil
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 from uuid import uuid4
@@ -15,16 +16,57 @@ from research.sources import FillCursor
 from research.sources import GammaMarketSource
 from research.sources import GoldskyFillSource
 from research.sources import build_goldsky_query
-from research.sync import sync_fills, sync_markets, sync_recent_5m_fills
+from research.sync import sync_fills, sync_markets, sync_recent_5m_fills, sync_recent_markets
 from research.warehouse import ResearchWarehouse
 
 
 class _FakeMarketSource:
     def __init__(self):
         self.calls = 0
+        self.asc_calls = []
 
-    def fetch_markets(self, *, offset: int, limit: int):
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True):
         self.calls += 1
+        self.asc_calls.append(ascending)
+        if not ascending:
+            if offset > 0:
+                return []
+            return [
+                {
+                    "id": "m2",
+                    "createdAt": "2026-04-22T00:00:00Z",
+                    "slug": "eth-updown-5m-1713744000",
+                    "question": "Will ETH go up in 5 minutes?",
+                    "outcomes": ["Up", "Down"],
+                    "clobTokenIds": ["tok-eth-up", "tok-eth-down"],
+                    "conditionId": "cond-2",
+                    "volume": "4321.0",
+                    "closedTime": "2026-04-22T00:05:00Z",
+                    "eventStartTime": "2026-04-22T00:00:00Z",
+                    "endDate": "2026-04-22T00:05:00Z",
+                    "acceptingOrders": True,
+                    "negRisk": False,
+                    "feeSchedule": {"rate": 0.072},
+                    "events": [{"ticker": "ETH"}],
+                },
+                {
+                    "id": "old-market",
+                    "createdAt": "2025-01-01T00:00:00Z",
+                    "slug": "old-updown-5m-1",
+                    "question": "Old market",
+                    "outcomes": ["Up", "Down"],
+                    "clobTokenIds": ["old-up", "old-down"],
+                    "conditionId": "cond-old",
+                    "volume": "1.0",
+                    "closedTime": "2025-01-01T00:05:00Z",
+                    "eventStartTime": "2025-01-01T00:00:00Z",
+                    "endDate": "2025-01-01T00:05:00Z",
+                    "acceptingOrders": False,
+                    "negRisk": False,
+                    "feeSchedule": {"rate": 0.072},
+                    "events": [{"ticker": "OLD"}],
+                },
+            ]
         if offset > 0:
             return []
         return [
@@ -117,6 +159,50 @@ class _FakeRecentFillSource:
         return [], cursor
 
 
+class _FakeRollingFillSource:
+    def __init__(self):
+        self.seen_assets: list[tuple[str, ...]] = []
+
+    def fetch_fills_for_assets(self, *, asset_ids, cursor: FillCursor, limit: int, until_timestamp=None):
+        ordered = tuple(sorted(asset_ids))
+        self.seen_assets.append(ordered)
+        if ordered == ("tok-old-down", "tok-old-up") and int(cursor.last_timestamp or 0) > 0 and cursor.last_id is None:
+            return (
+                [
+                    {
+                        "id": "history-fill-1",
+                        "timestamp": "150",
+                        "maker": "maker-old",
+                        "makerAmountFilled": "1000000",
+                        "makerAssetId": "tok-old-up",
+                        "taker": "taker-old",
+                        "takerAmountFilled": "600000",
+                        "takerAssetId": "0",
+                        "transactionHash": "tx-old-1",
+                    }
+                ],
+                FillCursor(last_timestamp=150, last_id=None, sticky_timestamp=None),
+            )
+        if ordered == ("tok-recent-down", "tok-recent-up") and int(cursor.last_timestamp or 0) > 0 and cursor.last_id is None:
+            return (
+                [
+                    {
+                        "id": "recent-fill-rolling-1",
+                        "timestamp": "250",
+                        "maker": "maker-recent",
+                        "makerAmountFilled": "1000000",
+                        "makerAssetId": "tok-recent-up",
+                        "taker": "taker-recent",
+                        "takerAmountFilled": "700000",
+                        "takerAssetId": "0",
+                        "transactionHash": "tx-recent-rolling-1",
+                    }
+                ],
+                FillCursor(last_timestamp=250, last_id=None, sticky_timestamp=None),
+            )
+        return [], cursor
+
+
 class _FlakyHttpClient:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -178,6 +264,23 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertTrue(Path(fill_result["parquet"]["markets"]).exists())
         self.assertTrue(Path(fill_result["parquet"]["fills_enriched"]).exists())
 
+    def test_recent_market_sync_fetches_descending_until_cutoff(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_markets_recent.duckdb")
+        self.addCleanup(warehouse.close)
+        source = _FakeMarketSource()
+
+        result = sync_recent_markets(
+            warehouse,
+            source,
+            lookback_days=30,
+            batch_size=50,
+        )
+
+        self.assertEqual(result["inserted"], 1)
+        self.assertIn(False, source.asc_calls)
+        rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
+        self.assertEqual([row[0] for row in rows], ["eth-updown-5m-1713744000"])
+
     def test_recent_5m_fill_sync_filters_by_registry_tokens(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent.duckdb")
         self.addCleanup(warehouse.close)
@@ -224,6 +327,78 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(enriched[0][0], "btc-updown-5m-1713577200")
         self.assertEqual(enriched[0][1], "up")
         self.assertAlmostEqual(enriched[0][2], 0.65, places=6)
+
+    def test_recent_5m_fill_sync_maintains_recent_and_history_windows(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_history.duckdb")
+        self.addCleanup(warehouse.close)
+        warehouse.insert_markets(
+            [
+                {
+                    "market_id": "m-old",
+                    "created_at": "2026-04-01T00:00:00Z",
+                    "market_slug": "btc-updown-5m-old",
+                    "question": "Old BTC market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-old-up",
+                    "token2": "tok-old-down",
+                    "condition_id": "cond-old",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": "2026-04-01T00:05:00Z",
+                    "start_time": "2026-04-01T00:00:00Z",
+                    "end_time": "2026-04-01T00:05:00Z",
+                    "active": False,
+                    "accepting_orders": False,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+                {
+                    "market_id": "m-recent",
+                    "created_at": "2026-04-22T00:00:00Z",
+                    "market_slug": "btc-updown-5m-recent",
+                    "question": "Recent BTC market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-recent-up",
+                    "token2": "tok-recent-down",
+                    "condition_id": "cond-recent",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": "2026-04-22T00:05:00Z",
+                    "start_time": "2026-04-22T00:00:00Z",
+                    "end_time": "2026-04-22T00:05:00Z",
+                    "active": True,
+                    "accepting_orders": True,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+            ]
+        )
+        warehouse.rebuild_market_5m_registry()
+
+        with mock.patch("research.sync.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime.fromisoformat("2026-04-22T12:00:00+00:00")
+            dt_mock.side_effect = datetime
+            result = sync_recent_5m_fills(
+                warehouse,
+                _FakeRollingFillSource(),
+                lookback_hours=24,
+                history_lookback_days=30,
+                batch_size=1000,
+                asset_chunk_size=10,
+                bucket_minutes=60,
+                history_bucket_minutes=720,
+                max_batches_per_chunk=1,
+                max_history_batches_per_chunk=1,
+            )
+
+        self.assertEqual(result["recent"]["fetched"], 1)
+        self.assertEqual(result["history"]["fetched"], 1)
+        self.assertEqual(result["fills_enriched_rows"], 2)
+        self.assertEqual(result["history_lookback_days"], 30)
 
     def test_goldsky_query_can_target_asset_ids(self):
         query = build_goldsky_query(

@@ -455,14 +455,28 @@ class ResearchWarehouse:
         bucket_minutes: int = 60,
     ) -> list[dict[str, object]]:
         cutoff = _utc_now() - _hours(lookback_hours)
+        return self.asset_windows_between(since=cutoff, until=None, bucket_minutes=bucket_minutes)
+
+    def asset_windows_between(
+        self,
+        *,
+        since: datetime,
+        until: datetime | None = None,
+        bucket_minutes: int = 60,
+    ) -> list[dict[str, object]]:
         rows = self.conn.execute(
-            """
-            SELECT window_start, window_end, up_token_id, down_token_id
-            FROM market_5m_registry
-            WHERE window_end >= ?
-            ORDER BY window_start ASC
-            """,
-            [cutoff],
+            (
+                """
+                SELECT window_start, COALESCE(window_end, window_start) AS effective_window_end, up_token_id, down_token_id
+                FROM market_5m_registry
+                WHERE COALESCE(window_end, window_start) >= ?
+                """
+                + (" AND COALESCE(window_end, window_start) < ?" if until is not None else "")
+                + """
+                ORDER BY window_start ASC
+                """
+            ),
+            [since] + ([until] if until is not None else []),
         ).fetchall()
         if bucket_minutes <= 0:
             raise ValueError("bucket_minutes must be positive")

@@ -43,7 +43,7 @@ _RETRYABLE_REQUEST_ERRORS = (
 
 
 class MarketSource(Protocol):
-    def fetch_markets(self, *, offset: int, limit: int) -> list[dict[str, Any]]:
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True) -> list[dict[str, Any]]:
         """Fetch one page of market metadata."""
 
 
@@ -176,14 +176,14 @@ class GammaMarketSource(_RetryingHttpSource):
         )
         self.base_url = base_url or os.getenv(ENV_GAMMA_MARKETS_URL, GAMMA_MARKETS_URL)
 
-    def fetch_markets(self, *, offset: int, limit: int) -> list[dict[str, Any]]:
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True) -> list[dict[str, Any]]:
         payload = self._request_json(
             method="GET",
             url=self.base_url,
             label="Gamma markets",
             params={
                 "order": "createdAt",
-                "ascending": "true",
+                "ascending": "true" if ascending else "false",
                 "limit": limit,
                 "offset": offset,
             },

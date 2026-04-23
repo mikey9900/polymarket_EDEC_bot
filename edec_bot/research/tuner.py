@@ -128,6 +128,7 @@ def propose_tuning(
     report_md_path: str | Path = TUNER_REPORT_MD_PATH,
     patch_path: str | Path = TUNER_ACTIVE_PATCH_PATH,
     candidates_root: str | Path = CONFIG_CANDIDATES_ROOT,
+    research_report_json_path: str | Path = DEFAULT_REPORT_JSON_PATH,
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
@@ -136,13 +137,14 @@ def propose_tuning(
     report_md_path = resolve_repo_path(report_md_path)
     patch_path = resolve_repo_path(patch_path)
     candidates_root = resolve_repo_path(candidates_root)
+    research_report = _load_json_file(research_report_json_path, default={})
 
     bundle = _discover_latest_session_bundle()
     analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
     current_config = _load_yaml(config_path)
     candidate_config = _deep_copy(current_config)
 
-    changes, advisories, no_change = _recommend_changes(candidate_config, analysis)
+    changes, advisories, no_change = _recommend_changes(candidate_config, analysis, research_report=research_report)
     _enforce_safe_change_surface(changes)
 
     candidate_id = now.strftime("%Y%m%dT%H%M%SZ")
@@ -175,6 +177,7 @@ def propose_tuning(
             "signals_file": bundle.signals_path.name,
         },
         "data": analysis["overall"],
+        "research_rollups": _compact_research_report(research_report),
         "changes": [change.as_dict() for change in changes],
         "advisories": advisories,
         "no_change": no_change,
@@ -1069,6 +1072,7 @@ def _analyze_rows(trades: list[dict[str, str]], signals: list[dict[str, str]], *
 def _recommend_changes(
     config: dict[str, Any],
     analysis: dict[str, Any],
+    research_report: dict[str, Any] | None = None,
 ) -> tuple[list[ProposedChange], list[str], list[str]]:
     changes: list[ProposedChange] = []
     advisories: list[str] = []
@@ -1111,9 +1115,51 @@ def _recommend_changes(
                 f"Losses have p75 depth ratio {drt_p75:.2f} - consider tightening min_book_depth_usd."
             )
 
+    _add_research_context_advisories(advisories, no_change, research_report or {})
+
     if not changes:
         no_change.append("No config changes met the evidence thresholds in the latest session export.")
     return changes, advisories, no_change
+
+
+def _add_research_context_advisories(
+    advisories: list[str],
+    no_change: list[str],
+    research_report: dict[str, Any],
+) -> None:
+    if not research_report:
+        no_change.append("Warehouse context unavailable for this tuning pass.")
+        return
+    policy = dict(research_report.get("policy") or {})
+    cluster_count = int(policy.get("cluster_count") or 0)
+    outcome_count = int(policy.get("outcome_count") or 0)
+    if cluster_count <= 0 or outcome_count <= 0:
+        no_change.append("Warehouse context is present but has no recent cluster rollups.")
+    blocked = [
+        f"{str(item.get('name') or '').upper()} ({int(item.get('paper_blocked_clusters') or 0)})"
+        for item in (research_report.get("by_coin") or [])
+        if int(item.get("paper_blocked_clusters") or 0) > 0
+    ]
+    if blocked:
+        advisories.append(f"Warehouse paper-blocked clusters: {', '.join(blocked[:4])}.")
+    flow_rows = research_report.get("fill_flow_5m_1d") or []
+    if flow_rows:
+        top_flow = ", ".join(
+            f"{str(item.get('coin') or '').upper()} {int(item.get('fill_count') or 0)} fills / ${float(item.get('usd_volume') or 0.0):.2f}"
+            for item in flow_rows[:3]
+        )
+        advisories.append(f"Warehouse 24h 5m flow: {top_flow}.")
+    crowded = [
+        item
+        for item in (research_report.get("trader_concentration_5m_1d") or [])
+        if float(item.get("top_3_share_pct") or 0.0) >= 80.0 or float(item.get("top_trader_share_pct") or 0.0) >= 50.0
+    ]
+    if crowded:
+        summary = ", ".join(
+            f"{str(item.get('coin') or '').upper()} top-3 {float(item.get('top_3_share_pct') or 0.0):.1f}%"
+            for item in crowded[:3]
+        )
+        advisories.append(f"Warehouse crowding is elevated: {summary}.")
 
 
 def _recommend_velocity(
@@ -1612,6 +1658,7 @@ def _parse_weekly_ai_output(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _render_tuner_markdown(report: dict[str, Any]) -> str:
+    research_rollups = report.get("research_rollups") or {}
     lines = [
         f"# Daily Local Tuning Proposal - {report['inputs']['export_id']}",
         "",
@@ -1620,6 +1667,10 @@ def _render_tuner_markdown(report: dict[str, Any]) -> str:
         f"- Session win rate: {report['data']['win_pct']:.1f}%",
         f"- Session PnL: ${report['data']['total_pnl']:.4f}",
         f"- Config file: {report['config_name']}",
+        "",
+        "## Warehouse Context",
+        f"- Research clusters: {int(research_rollups.get('cluster_count') or 0)}",
+        f"- Research outcomes: {int(research_rollups.get('outcome_count') or 0)}",
         "",
         "## Proposed Config Changes",
     ]

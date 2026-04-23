@@ -51,6 +51,57 @@ def sync_markets(
     }
 
 
+def sync_recent_markets(
+    warehouse: ResearchWarehouse,
+    source: GammaMarketSource,
+    *,
+    lookback_days: int = 30,
+    batch_size: int = 500,
+    max_batches: int | None = None,
+) -> dict[str, object]:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=int(lookback_days))
+    fetched = 0
+    inserted = 0
+    batches = 0
+    offset = 0
+    reached_cutoff = False
+    while True:
+        rows = source.fetch_markets(offset=offset, limit=batch_size, ascending=False)
+        if not rows:
+            break
+        normalized: list[dict[str, object]] = []
+        for row in rows:
+            market = normalize_gamma_market(row)
+            created_at = _parse_iso_ts(market.get("created_at"))
+            if created_at is not None and created_at < cutoff:
+                reached_cutoff = True
+                break
+            if market.get("market_id"):
+                normalized.append(market)
+        inserted += warehouse.insert_markets(normalized)
+        fetched += len(rows)
+        offset += len(rows)
+        batches += 1
+        if reached_cutoff or len(rows) < batch_size:
+            break
+        if max_batches is not None and batches >= max_batches:
+            break
+    registry_rows = warehouse.rebuild_market_5m_registry()
+    enriched_rows = warehouse.rebuild_fills_enriched()
+    parquet_paths = warehouse.export_parquet()
+    return {
+        "dataset": "recent_markets",
+        "lookback_days": int(lookback_days),
+        "cutoff": cutoff.isoformat(),
+        "fetched": fetched,
+        "inserted": inserted,
+        "batches": batches,
+        "market_5m_registry_rows": registry_rows,
+        "fills_enriched_rows": enriched_rows,
+        "parquet": parquet_paths,
+    }
+
+
 def sync_fills(
     warehouse: ResearchWarehouse,
     source: FillSource,
@@ -99,17 +150,131 @@ def sync_recent_5m_fills(
     source: GoldskyFillSource,
     *,
     lookback_hours: int = 24,
+    history_lookback_days: int = 30,
     batch_size: int = 1000,
     asset_chunk_size: int = 50,
     bucket_minutes: int = 60,
+    history_bucket_minutes: int = 360,
     bucket_buffer_seconds: int = 900,
     max_batches_per_chunk: int | None = None,
+    max_history_batches_per_chunk: int | None = 1,
 ) -> dict[str, object]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=int(lookback_hours))
-    asset_windows = warehouse.recent_5m_asset_windows(
-        lookback_hours=lookback_hours,
+    now = datetime.now(timezone.utc)
+    recent_cutoff = now - timedelta(hours=int(lookback_hours))
+    history_cutoff = now - timedelta(days=int(history_lookback_days))
+    recent_windows = warehouse.asset_windows_between(
+        since=recent_cutoff,
+        until=None,
         bucket_minutes=bucket_minutes,
     )
+    history_windows: list[dict[str, object]] = []
+    if int(history_lookback_days) > 0 and history_cutoff < recent_cutoff:
+        history_windows = warehouse.asset_windows_between(
+            since=history_cutoff,
+            until=recent_cutoff,
+            bucket_minutes=history_bucket_minutes,
+        )
+    recent_stats = _sync_asset_windows(
+        warehouse,
+        source,
+        asset_windows=recent_windows,
+        batch_size=batch_size,
+        asset_chunk_size=asset_chunk_size,
+        bucket_buffer_seconds=bucket_buffer_seconds,
+        max_batches_per_chunk=max_batches_per_chunk,
+    )
+    history_stats = _sync_asset_windows(
+        warehouse,
+        source,
+        asset_windows=history_windows,
+        batch_size=batch_size,
+        asset_chunk_size=asset_chunk_size,
+        bucket_buffer_seconds=bucket_buffer_seconds,
+        max_batches_per_chunk=max_history_batches_per_chunk,
+    )
+    registry_rows = warehouse.rebuild_market_5m_registry()
+    enriched_rows = warehouse.rebuild_fills_enriched()
+    parquet_paths = warehouse.export_parquet()
+    return {
+        "dataset": "recent_5m_fills",
+        "window_end": now.isoformat(),
+        "lookback_hours": int(lookback_hours),
+        "history_lookback_days": int(history_lookback_days),
+        "recent_since_timestamp": int(recent_cutoff.timestamp()) - 1,
+        "history_since_timestamp": int(history_cutoff.timestamp()) - 1 if int(history_lookback_days) > 0 else None,
+        "asset_window_count": int(recent_stats["asset_window_count"]) + int(history_stats["asset_window_count"]),
+        "asset_count": int(recent_stats["asset_count"]) + int(history_stats["asset_count"]),
+        "asset_chunk_size": int(asset_chunk_size),
+        "bucket_minutes": int(bucket_minutes),
+        "history_bucket_minutes": int(history_bucket_minutes),
+        "bucket_buffer_seconds": int(bucket_buffer_seconds),
+        "chunks_processed": int(recent_stats["chunks_processed"]) + int(history_stats["chunks_processed"]),
+        "batches": int(recent_stats["batches"]) + int(history_stats["batches"]),
+        "fetched": int(recent_stats["fetched"]) + int(history_stats["fetched"]),
+        "inserted": int(recent_stats["inserted"]) + int(history_stats["inserted"]),
+        "recent": recent_stats,
+        "history": history_stats,
+        "market_5m_registry_rows": registry_rows,
+        "fills_enriched_rows": enriched_rows,
+        "parquet": parquet_paths,
+    }
+
+
+def sync_daily_research_window(
+    warehouse: ResearchWarehouse,
+    market_source: GammaMarketSource,
+    fill_source: GoldskyFillSource,
+    *,
+    market_lookback_days: int = 30,
+    market_batch_size: int = 500,
+    market_max_batches: int | None = None,
+    lookback_hours: int = 24,
+    history_lookback_days: int = 30,
+    batch_size: int = 1000,
+    asset_chunk_size: int = 50,
+    bucket_minutes: int = 60,
+    history_bucket_minutes: int = 360,
+    bucket_buffer_seconds: int = 900,
+    max_batches_per_chunk: int | None = None,
+    max_history_batches_per_chunk: int | None = 1,
+) -> dict[str, object]:
+    market_result = sync_recent_markets(
+        warehouse,
+        market_source,
+        lookback_days=market_lookback_days,
+        batch_size=market_batch_size,
+        max_batches=market_max_batches,
+    )
+    fill_result = sync_recent_5m_fills(
+        warehouse,
+        fill_source,
+        lookback_hours=lookback_hours,
+        history_lookback_days=history_lookback_days,
+        batch_size=batch_size,
+        asset_chunk_size=asset_chunk_size,
+        bucket_minutes=bucket_minutes,
+        history_bucket_minutes=history_bucket_minutes,
+        bucket_buffer_seconds=bucket_buffer_seconds,
+        max_batches_per_chunk=max_batches_per_chunk,
+        max_history_batches_per_chunk=max_history_batches_per_chunk,
+    )
+    return {
+        "dataset": "daily_research_sync",
+        "markets": market_result,
+        "fills": fill_result,
+    }
+
+
+def _sync_asset_windows(
+    warehouse: ResearchWarehouse,
+    source: GoldskyFillSource,
+    *,
+    asset_windows: list[dict[str, object]],
+    batch_size: int,
+    asset_chunk_size: int,
+    bucket_buffer_seconds: int,
+    max_batches_per_chunk: int | None,
+) -> dict[str, int]:
     fetched = 0
     inserted = 0
     total_batches = 0
@@ -118,7 +283,7 @@ def sync_recent_5m_fills(
     for asset_window in asset_windows:
         bucket_start = asset_window["bucket_start"]
         bucket_end = asset_window["bucket_end"]
-        window_asset_ids = asset_window["asset_ids"]
+        window_asset_ids = list(asset_window["asset_ids"])
         asset_count += len(window_asset_ids)
         since_timestamp = int((bucket_start - timedelta(seconds=bucket_buffer_seconds)).timestamp()) - 1
         until_timestamp = int((bucket_end + timedelta(seconds=bucket_buffer_seconds)).timestamp())
@@ -148,26 +313,26 @@ def sync_recent_5m_fills(
                 if len(rows) < batch_size and prior.sticky_timestamp is None and cursor.sticky_timestamp is None:
                     break
             chunks_processed += 1
-    registry_rows = warehouse.rebuild_market_5m_registry()
-    enriched_rows = warehouse.rebuild_fills_enriched()
-    parquet_paths = warehouse.export_parquet()
     return {
-        "dataset": "recent_5m_fills",
-        "lookback_hours": int(lookback_hours),
-        "since_timestamp": int(cutoff.timestamp()) - 1,
         "asset_window_count": len(asset_windows),
         "asset_count": asset_count,
-        "asset_chunk_size": int(asset_chunk_size),
-        "bucket_minutes": int(bucket_minutes),
-        "bucket_buffer_seconds": int(bucket_buffer_seconds),
         "chunks_processed": chunks_processed,
         "batches": total_batches,
         "fetched": fetched,
         "inserted": inserted,
-        "market_5m_registry_rows": registry_rows,
-        "fills_enriched_rows": enriched_rows,
-        "parquet": parquet_paths,
     }
+
+
+def _parse_iso_ts(value: object) -> datetime | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def _chunked(values: list[str], chunk_size: int) -> list[list[str]]:

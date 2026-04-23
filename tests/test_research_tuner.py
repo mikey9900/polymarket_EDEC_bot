@@ -104,6 +104,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
                 candidates_root=self.candidates_root,
+                research_report_json_path=self.research_report_json_path,
             )
 
         self.assertTrue(result["ok"])
@@ -124,6 +125,8 @@ class ResearchTunerTests(unittest.TestCase):
         report_payload = json.loads(self.report_json_path.read_text(encoding="utf-8"))
         self.assertEqual(report_payload["candidate_status"], "ready")
         self.assertIn("depth_check", "\n".join(report_payload["advisories"]))
+        self.assertEqual(report_payload["research_rollups"]["cluster_count"], 4)
+        self.assertIn("Warehouse", self.report_md_path.read_text(encoding="utf-8"))
 
     def test_build_weekly_ai_context_compacts_exports_without_paths(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):

@@ -58,6 +58,12 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
                 "9",
                 "--lookback-hours",
                 "1",
+                "--history-lookback-days",
+                "14",
+                "--history-bucket-minutes",
+                "180",
+                "--max-history-batches-per-chunk",
+                "2",
             ]
         )
 
@@ -66,6 +72,9 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertEqual(args.http_retry_attempts, 4)
         self.assertEqual(args.http_retry_backoff_seconds, 0.75)
         self.assertEqual(args.http_retry_max_backoff_seconds, 9.0)
+        self.assertEqual(args.history_lookback_days, 14)
+        self.assertEqual(args.history_bucket_minutes, 180)
+        self.assertEqual(args.max_history_batches_per_chunk, 2)
 
     def test_build_parser_exposes_tuning_and_runner_commands(self):
         with mock.patch.object(optional_duckdb, "_duckdb", None):
@@ -144,6 +153,12 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
                     "0.75",
                     "--http-retry-max-backoff-seconds",
                     "9",
+                    "--history-lookback-days",
+                    "30",
+                    "--history-bucket-minutes",
+                    "360",
+                    "--max-history-batches-per-chunk",
+                    "1",
                 ]
             )
 
@@ -159,25 +174,31 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
             fake_warehouse,
             fake_source,
             lookback_hours=24,
+            history_lookback_days=30,
             batch_size=1000,
             asset_chunk_size=20,
             bucket_minutes=60,
+            history_bucket_minutes=360,
             bucket_buffer_seconds=900,
             max_batches_per_chunk=2,
+            max_history_batches_per_chunk=1,
         )
         fake_source.close.assert_called_once()
         fake_warehouse.close.assert_called_once()
 
     def test_daily_refresh_runs_build_even_if_sync_fails(self):
         fake_warehouse = mock.MagicMock()
-        fake_source = mock.MagicMock()
-        fake_source.close = mock.MagicMock()
+        fake_market_source = mock.MagicMock()
+        fake_market_source.close = mock.MagicMock()
+        fake_fill_source = mock.MagicMock()
+        fake_fill_source.close = mock.MagicMock()
         fake_warehouse.close = mock.MagicMock()
 
         with (
             mock.patch("research.warehouse.ResearchWarehouse", return_value=fake_warehouse),
-            mock.patch("research.cli.GoldskyFillSource", return_value=fake_source),
-            mock.patch("research.cli.sync_recent_5m_fills", side_effect=RuntimeError("boom")),
+            mock.patch("research.cli.GammaMarketSource", return_value=fake_market_source),
+            mock.patch("research.cli.GoldskyFillSource", return_value=fake_fill_source),
+            mock.patch("research.cli.sync_daily_research_window", side_effect=RuntimeError("boom")),
             mock.patch("research.artifacts.build_artifacts", return_value={"cluster_count": 1, "outcome_count": 2}),
             mock.patch("research.cli.propose_tuning", return_value={"candidate_status": "ready", "candidate_source": "daily_local"}),
             mock.patch("research.cli.build_weekly_ai_context", return_value={"context_path": "data/research/weekly_ai_context.json"}),
@@ -211,5 +232,6 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertTrue(payload["daily_local_tuning"]["ok"])
         self.assertEqual(payload["daily_local_tuning"]["result"]["candidate_status"], "ready")
         self.assertTrue(payload["weekly_ai_context"]["ok"])
-        fake_source.close.assert_called_once()
+        fake_market_source.close.assert_called_once()
+        fake_fill_source.close.assert_called_once()
         fake_warehouse.close.assert_called_once()

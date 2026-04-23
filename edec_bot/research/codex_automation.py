@@ -25,8 +25,8 @@ from .paths import (
     ensure_codex_dirs,
     resolve_repo_path,
 )
-from .sources import GoldskyFillSource
-from .sync import sync_recent_5m_fills
+from .sources import GammaMarketSource, GoldskyFillSource
+from .sync import sync_daily_research_window
 from .tuner import (
     TuningError,
     build_weekly_ai_context,
@@ -426,7 +426,13 @@ class CodexAutomationManager:
 
     def _run_daily_refresh(self, args: dict[str, Any]) -> dict[str, Any]:
         warehouse = ResearchWarehouse(args.get("warehouse_path", WAREHOUSE_PATH))
-        source = GoldskyFillSource(
+        market_source = GammaMarketSource(
+            timeout_seconds=float(args.get("http_timeout_seconds", 30.0)),
+            retry_attempts=int(args.get("http_retry_attempts", 3)),
+            retry_backoff_seconds=float(args.get("http_retry_backoff_seconds", 1.5)),
+            retry_max_backoff_seconds=float(args.get("http_retry_max_backoff_seconds", 10.0)),
+        )
+        fill_source = GoldskyFillSource(
             timeout_seconds=float(args.get("http_timeout_seconds", 30.0)),
             retry_attempts=int(args.get("http_retry_attempts", 3)),
             retry_backoff_seconds=float(args.get("http_retry_backoff_seconds", 1.5)),
@@ -441,20 +447,28 @@ class CodexAutomationManager:
         weekly_context_result: dict[str, Any] | None = None
         weekly_context_error: dict[str, str] | None = None
         try:
-            sync_result = sync_recent_5m_fills(
+            sync_result = sync_daily_research_window(
                 warehouse,
-                source,
+                market_source,
+                fill_source,
+                market_lookback_days=int(args.get("market_lookback_days", 30)),
+                market_batch_size=int(args.get("market_batch_size", 500)),
+                market_max_batches=self._optional_int(args.get("market_max_batches")),
                 lookback_hours=int(args.get("lookback_hours", 24)),
+                history_lookback_days=int(args.get("history_lookback_days", 30)),
                 batch_size=int(args.get("batch_size", 1000)),
                 asset_chunk_size=int(args.get("asset_chunk_size", 20)),
                 bucket_minutes=int(args.get("bucket_minutes", 60)),
+                history_bucket_minutes=int(args.get("history_bucket_minutes", 360)),
                 bucket_buffer_seconds=int(args.get("bucket_buffer_seconds", 900)),
-                max_batches_per_chunk=int(args.get("max_batches_per_chunk", 2)),
+                max_batches_per_chunk=self._optional_int(args.get("max_batches_per_chunk", 2)),
+                max_history_batches_per_chunk=self._optional_int(args.get("max_history_batches_per_chunk", 1)),
             )
         except Exception as exc:  # noqa: BLE001
             sync_error = {"type": exc.__class__.__name__, "message": str(exc)}
         finally:
-            self._close_quietly(source)
+            self._close_quietly(market_source)
+            self._close_quietly(fill_source)
             self._close_quietly(warehouse)
         try:
             build_result = build_artifacts(
@@ -469,6 +483,7 @@ class CodexAutomationManager:
             local_tuning_result = propose_tuning(
                 config_path=args.get("config_path", self.config_path),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
+                research_report_json_path=args.get("report_json_path", "data/research/research_report.json"),
             )
         except Exception as exc:  # noqa: BLE001
             local_tuning_error = {"type": exc.__class__.__name__, "message": str(exc)}
@@ -476,6 +491,7 @@ class CodexAutomationManager:
             weekly_context_result = build_weekly_ai_context(
                 config_path=args.get("config_path", self.config_path),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
+                report_json_path=args.get("report_json_path", "data/research/research_report.json"),
                 window_days=int(args.get("weekly_context_days", 7)),
             )
         except Exception as exc:  # noqa: BLE001
@@ -695,9 +711,12 @@ class CodexAutomationManager:
             return f"{job_type} failed: {error.get('message', 'unknown error')}"
         if job_type == "daily_research_refresh":
             build_result = payload["result"].get("build", {}).get("result") or {}
+            sync_result = payload["result"].get("sync", {}).get("result") or {}
+            fill_result = (sync_result.get("fills") or {}) if isinstance(sync_result, dict) else {}
             local = payload["result"].get("daily_local_tuning", {}).get("result") or {}
             return (
                 f"Daily refresh built {int(build_result.get('cluster_count', 0))} clusters; "
+                f"warehouse fetched {int(fill_result.get('fetched', 0))} fills; "
                 f"local candidate {str(local.get('candidate_status') or 'unknown')}."
             )
         if job_type == "tuning_proposal":
@@ -734,6 +753,15 @@ class CodexAutomationManager:
         except (FileNotFoundError, json.JSONDecodeError):
             return dict(default)
         return payload if isinstance(payload, dict) else dict(default)
+
+    @staticmethod
+    def _optional_int(value: Any) -> int | None:
+        if value in (None, "", False):
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
 
     @staticmethod
     def _parse_dt(value: Any) -> datetime | None:

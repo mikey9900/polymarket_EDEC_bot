@@ -1253,6 +1253,10 @@
   function describeResearchWarehouse(codex, runtime) {
     const metrics = (codex && codex.daily_research_metrics) || {};
     const fetched = Number(metrics.fetched_fill_count || 0);
+    const marketFetched = Number(metrics.market_fetched_count || 0);
+    const openFetched = Number(metrics.open_market_fetched_count || 0);
+    const closedFetched = Number(metrics.closed_market_fetched_count || 0);
+    const registryRows = Number(metrics.market_5m_registry_rows || 0);
     const recentWindows = Number(metrics.recent_window_count || 0);
     const recentAssets = Number(metrics.recent_asset_count || 0);
     const recentFetched = Number(metrics.recent_fetched_fill_count || 0);
@@ -1267,7 +1271,7 @@
     }
     if (recentWindows <= 0) {
       return {
-        text: "WAREHOUSE: NO RECENT 5M MARKET WINDOWS FOUND.",
+        text: `WAREHOUSE: OPEN ${openFetched} | CLOSED ${closedFetched} | REGISTRY ${registryRows} | 0 RECENT 5M WINDOWS`,
         state: "pending",
       };
     }
@@ -1283,7 +1287,7 @@
         state: "pending",
       };
     }
-    const text = `WAREHOUSE USED ${rows} FLOW ROWS | ${coinFeatures} COIN FEATURES | FETCHED ${fetched} NEW FILLS`;
+    const text = `WAREHOUSE USED ${rows} FLOW ROWS | ${coinFeatures} COIN FEATURES | FETCHED ${fetched} NEW FILLS | MARKETS ${marketFetched}`;
     if (rows > 0 || coinFeatures > 0 || fetched > 0) {
       return { text, state: "ready" };
     }

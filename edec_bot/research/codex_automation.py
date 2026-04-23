@@ -600,6 +600,9 @@ class CodexAutomationManager:
         result = payload.get("result") or {}
         build = (result.get("build") or {}).get("result") or {}
         sync = (result.get("sync") or {}).get("result") or {}
+        markets = (sync.get("markets") or {}) if isinstance(sync, dict) else {}
+        open_markets = (markets.get("open_markets") or {}) if isinstance(markets, dict) else {}
+        closed_markets = (markets.get("closed_markets") or {}) if isinstance(markets, dict) else {}
         fills = (sync.get("fills") or {}) if isinstance(sync, dict) else {}
         recent = (fills.get("recent") or {}) if isinstance(fills, dict) else {}
         history = (fills.get("history") or {}) if isinstance(fills, dict) else {}
@@ -611,6 +614,12 @@ class CodexAutomationManager:
             "cluster_count": int(build.get("cluster_count", 0) or 0),
             "outcome_count": int(build.get("outcome_count", 0) or 0),
             "fill_flow_rows": int(build.get("fill_flow_rows", 0) or 0),
+            "market_fetched_count": int(markets.get("fetched", 0) or 0),
+            "market_inserted_count": int(markets.get("inserted", 0) or 0),
+            "open_market_fetched_count": int(open_markets.get("fetched", 0) or 0),
+            "open_market_inserted_count": int(open_markets.get("inserted", 0) or 0),
+            "closed_market_fetched_count": int(closed_markets.get("fetched", 0) or 0),
+            "closed_market_inserted_count": int(closed_markets.get("inserted", 0) or 0),
             "fetched_fill_count": int(fills.get("fetched", 0) or 0),
             "inserted_fill_count": int(fills.get("inserted", 0) or 0),
             "recent_window_count": int(recent.get("asset_window_count", 0) or 0),

@@ -50,6 +50,7 @@ class MarketSource(Protocol):
         limit: int,
         ascending: bool = True,
         closed: bool | None = None,
+        order: str = "createdAt",
     ) -> list[dict[str, Any]]:
         """Fetch one page of market metadata."""
 
@@ -190,9 +191,10 @@ class GammaMarketSource(_RetryingHttpSource):
         limit: int,
         ascending: bool = True,
         closed: bool | None = None,
+        order: str = "createdAt",
     ) -> list[dict[str, Any]]:
         params = {
-            "order": "createdAt",
+            "order": str(order or "createdAt"),
             "ascending": "true" if ascending else "false",
             "limit": limit,
             "offset": offset,

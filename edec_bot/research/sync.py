@@ -67,6 +67,7 @@ def sync_recent_markets(
         batch_size=batch_size,
         max_batches=max_batches,
         closed=None,
+        order="createdAt",
     )
     closed_stats = _sync_recent_market_feed(
         warehouse,
@@ -75,6 +76,7 @@ def sync_recent_markets(
         batch_size=batch_size,
         max_batches=max_batches,
         closed=True,
+        order="closedTime",
     )
     registry_rows = warehouse.rebuild_market_5m_registry()
     enriched_rows = warehouse.rebuild_fills_enriched()
@@ -323,6 +325,7 @@ def _sync_recent_market_feed(
     batch_size: int,
     max_batches: int | None,
     closed: bool | None,
+    order: str,
 ) -> dict[str, int | bool]:
     fetched = 0
     inserted = 0
@@ -330,14 +333,23 @@ def _sync_recent_market_feed(
     offset = 0
     reached_cutoff = False
     while True:
-        rows = source.fetch_markets(offset=offset, limit=batch_size, ascending=False, closed=closed)
+        rows = source.fetch_markets(
+            offset=offset,
+            limit=batch_size,
+            ascending=False,
+            closed=closed,
+            order=order,
+        )
         if not rows:
             break
         normalized: list[dict[str, object]] = []
         for row in rows:
             market = normalize_gamma_market(row)
             created_at = _parse_iso_ts(market.get("created_at"))
-            if created_at is not None and created_at < cutoff:
+            closed_at = _parse_iso_ts(market.get("closed_time"))
+            end_at = _parse_iso_ts(market.get("end_time"))
+            comparison_ts = closed_at or end_at or created_at
+            if comparison_ts is not None and comparison_ts < cutoff:
                 reached_cutoff = True
                 break
             if market.get("market_id"):
@@ -352,6 +364,7 @@ def _sync_recent_market_feed(
             break
     return {
         "closed": bool(closed),
+        "order": str(order or "createdAt"),
         "fetched": fetched,
         "inserted": inserted,
         "batches": batches,

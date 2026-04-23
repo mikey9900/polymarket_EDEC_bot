@@ -1,7 +1,7 @@
 import shutil
 import sys
 import unittest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from uuid import uuid4
@@ -25,11 +25,13 @@ class _FakeMarketSource:
         self.calls = 0
         self.asc_calls = []
         self.closed_calls = []
+        self.order_calls = []
 
-    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True, closed=None):
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True, closed=None, order="createdAt"):
         self.calls += 1
         self.asc_calls.append(ascending)
         self.closed_calls.append(closed)
+        self.order_calls.append(order)
         if not ascending and closed is True:
             if offset > 0:
                 return []
@@ -312,8 +314,73 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(result["inserted"], 2)
         self.assertIn(False, source.asc_calls)
         self.assertIn(True, source.closed_calls)
+        self.assertIn("closedTime", source.order_calls)
         rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
         self.assertEqual([row[0] for row in rows], ["btc-updown-5m-1713577200", "eth-updown-5m-1713744000"])
+
+    def test_recent_market_sync_uses_closed_time_cutoff_for_closed_feed(self):
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        recent_closed = now - timedelta(days=1)
+        recent_start = recent_closed - timedelta(minutes=5)
+        stale_created = now - timedelta(days=45)
+        old_closed = now - timedelta(days=40)
+        old_start = old_closed - timedelta(minutes=5)
+
+        class _ClosedTimeMarketSource:
+            def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True, closed=None, order="createdAt"):
+                if closed is True and offset == 0:
+                    return [
+                        {
+                            "id": "m-closed-recent",
+                            "createdAt": stale_created.isoformat().replace("+00:00", "Z"),
+                            "slug": "btc-updown-5m-closed-recent",
+                            "question": "Recently closed BTC market",
+                            "outcomes": ["Up", "Down"],
+                            "clobTokenIds": ["tok-closed-up", "tok-closed-down"],
+                            "conditionId": "cond-closed-recent",
+                            "volume": "42.0",
+                            "closedTime": recent_closed.isoformat().replace("+00:00", "Z"),
+                            "eventStartTime": recent_start.isoformat().replace("+00:00", "Z"),
+                            "endDate": recent_closed.isoformat().replace("+00:00", "Z"),
+                            "acceptingOrders": False,
+                            "negRisk": False,
+                            "feeSchedule": {"rate": 0.072},
+                            "events": [{"ticker": "BTC"}],
+                        },
+                        {
+                            "id": "m-closed-old",
+                            "createdAt": stale_created.isoformat().replace("+00:00", "Z"),
+                            "slug": "btc-updown-5m-closed-old",
+                            "question": "Old closed BTC market",
+                            "outcomes": ["Up", "Down"],
+                            "clobTokenIds": ["tok-old-up", "tok-old-down"],
+                            "conditionId": "cond-closed-old",
+                            "volume": "10.0",
+                            "closedTime": old_closed.isoformat().replace("+00:00", "Z"),
+                            "eventStartTime": old_start.isoformat().replace("+00:00", "Z"),
+                            "endDate": old_closed.isoformat().replace("+00:00", "Z"),
+                            "acceptingOrders": False,
+                            "negRisk": False,
+                            "feeSchedule": {"rate": 0.072},
+                            "events": [{"ticker": "BTC"}],
+                        },
+                    ]
+                return []
+
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_markets_closed_cutoff.duckdb")
+        self.addCleanup(warehouse.close)
+        source = _ClosedTimeMarketSource()
+
+        result = sync_recent_markets(
+            warehouse,
+            source,
+            lookback_days=30,
+            batch_size=50,
+        )
+
+        self.assertEqual(result["closed_markets"]["inserted"], 1)
+        rows = warehouse.conn.execute("SELECT market_slug FROM markets").fetchall()
+        self.assertEqual([row[0] for row in rows], ["btc-updown-5m-closed-recent"])
 
     def test_recent_5m_fill_sync_filters_by_registry_tokens(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent.duckdb")

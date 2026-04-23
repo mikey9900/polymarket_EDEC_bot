@@ -135,6 +135,12 @@ class CodexAutomationManagerTests(unittest.TestCase):
                         "sync": {
                             "ok": True,
                             "result": {
+                                "markets": {
+                                    "fetched": 1200,
+                                    "inserted": 1200,
+                                    "open_markets": {"fetched": 600, "inserted": 600},
+                                    "closed_markets": {"fetched": 600, "inserted": 600},
+                                },
                                 "fills": {
                                     "fetched": 42,
                                     "inserted": 42,
@@ -184,6 +190,8 @@ class CodexAutomationManagerTests(unittest.TestCase):
         snapshot = self.manager.snapshot()
 
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 3)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["market_fetched_count"], 1200)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["closed_market_fetched_count"], 600)
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fetched_fill_count"], 42)
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["recent_window_count"], 5)
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["recent_fetched_fill_count"], 12)

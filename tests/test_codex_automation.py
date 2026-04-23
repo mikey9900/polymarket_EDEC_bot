@@ -99,6 +99,23 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertFalse(self.manager.lock_path.exists())
         self.assertIsNone(snapshot["codex"]["active_run"])
 
+    def test_run_once_clears_stale_active_run_even_without_lock_cleanup(self):
+        state = self.manager.read_state()
+        state["active_run"] = {
+            "run_id": "stale-run",
+            "job_type": "daily_research_refresh",
+            "request_id": "stale-request",
+            "started_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(),
+        }
+        self.manager.save_state(state)
+
+        result = self.manager.run_once()
+        snapshot = self.manager.snapshot()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "idle")
+        self.assertIsNone(snapshot["codex"]["active_run"])
+
     def test_tuner_schedule_controls_update_snapshot(self):
         pause = self.manager.pause_tuner_schedule()
         self.assertTrue(pause["ok"])

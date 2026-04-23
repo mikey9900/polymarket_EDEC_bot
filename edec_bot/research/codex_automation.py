@@ -50,6 +50,7 @@ JOB_TYPES = {
 }
 DEFAULT_TUNER_REASON = "Rejected by operator."
 STALE_RUNNER_LOCK_SECONDS = 600
+STALE_ACTIVE_RUN_SECONDS = 1800
 SCHEDULE_DEFAULTS = {
     "daily_research_refresh": {
         "schedule_enabled": True,
@@ -273,7 +274,7 @@ class CodexAutomationManager:
         ensure_codex_dirs()
         self._clear_stale_lock()
         state = self.read_state()
-        if self._clear_orphaned_active_run(state):
+        if self._clear_orphaned_active_run(state) or self._clear_stale_active_run(state):
             state = self.read_state()
         now = self._utcnow()
         self._queue_due_jobs(state, now)
@@ -647,6 +648,31 @@ class CodexAutomationManager:
             return False
         if self.lock_path.exists():
             return False
+        state["active_run"] = None
+        self.save_state(state)
+        return True
+
+    def _clear_stale_active_run(self, state: dict[str, Any]) -> bool:
+        active = state.get("active_run") or {}
+        if not active:
+            return False
+        started_at = self._parse_dt(active.get("started_at"))
+        progress_at = self._parse_dt(active.get("progress_at"))
+        last_activity = progress_at or started_at
+        if last_activity is None:
+            return False
+        age_s = (self._utcnow() - last_activity).total_seconds()
+        if age_s < STALE_ACTIVE_RUN_SECONDS:
+            return False
+        if self.lock_path.exists():
+            payload = self._read_json(self.lock_path, default={})
+            pid = self._optional_int((payload or {}).get("pid"))
+            if pid is not None and self._pid_is_running(pid):
+                return False
+            try:
+                self.lock_path.unlink()
+            except FileNotFoundError:
+                pass
         state["active_run"] = None
         self.save_state(state)
         return True

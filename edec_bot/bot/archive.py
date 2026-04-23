@@ -2613,13 +2613,6 @@ def run_session_export(
     finally:
         conn.close()
 
-    dropbox_auth = _build_dropbox_auth(
-        dropbox_token=dropbox_token,
-        dropbox_refresh_token=dropbox_refresh_token,
-        dropbox_app_key=dropbox_app_key,
-        dropbox_app_secret=dropbox_app_secret,
-    )
-
     trades_path, trade_count, oldest_id, newest_id = export_session_trades_csv_gz(
         db_path=db_path, output_dir=str(session_output_path), label=label, since_utc=reset_at, now_utc=now_utc,
     )
@@ -2659,6 +2652,7 @@ def run_session_export(
             "session_index_json": index_filename,
         },
         "dropbox_uploads": None,
+        "dropbox_error": None,
         "github_pushes": None,
     }
     index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
@@ -2674,29 +2668,53 @@ def run_session_export(
         "signal_count": signal_count,
         "session_since_utc": reset_at,
         "dropbox_uploads": None,
+        "dropbox_error": None,
         "github_pushes": None,
     }
 
+    dropbox_auth = None
+    dropbox_error = None
+    try:
+        dropbox_auth = _build_dropbox_auth(
+            dropbox_token=dropbox_token,
+            dropbox_refresh_token=dropbox_refresh_token,
+            dropbox_app_key=dropbox_app_key,
+            dropbox_app_secret=dropbox_app_secret,
+        )
+    except Exception as exc:  # noqa: BLE001
+        dropbox_error = str(exc)
+
     if dropbox_auth:
-        root = _normalize_dropbox_root(dropbox_root)
-        folder = f"{root}/session-exports/{session_folder}"
-        uploads = {
-            "session_excel_xlsx": _dropbox_upload_file(
-                excel_path, f"{folder}/{Path(excel_path).name}", dropbox_auth
-            ),
-            "session_trades_csv_gz": _dropbox_upload_file(
-                trades_path, f"{folder}/{Path(trades_path).name}", dropbox_auth
-            ),
-            "session_signals_csv_gz": _dropbox_upload_file(
-                signals_path, f"{folder}/{Path(signals_path).name}", dropbox_auth
-            ),
-            "session_index_json": _dropbox_upload_file(
-                str(index_path), f"{folder}/{index_filename}", dropbox_auth
-            ),
-        }
-        index["dropbox_uploads"] = uploads
-        index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
-        result["dropbox_uploads"] = uploads
+        try:
+            root = _normalize_dropbox_root(dropbox_root)
+            folder = f"{root}/session-exports/{session_folder}"
+            uploads = {
+                "session_excel_xlsx": _dropbox_upload_file(
+                    excel_path, f"{folder}/{Path(excel_path).name}", dropbox_auth
+                ),
+                "session_trades_csv_gz": _dropbox_upload_file(
+                    trades_path, f"{folder}/{Path(trades_path).name}", dropbox_auth
+                ),
+                "session_signals_csv_gz": _dropbox_upload_file(
+                    signals_path, f"{folder}/{Path(signals_path).name}", dropbox_auth
+                ),
+                "session_index_json": _dropbox_upload_file(
+                    str(index_path), f"{folder}/{index_filename}", dropbox_auth
+                ),
+            }
+            index["dropbox_uploads"] = uploads
+            index_path.write_text(json.dumps(index, indent=2), encoding="utf-8")
+            result["dropbox_uploads"] = uploads
+        except Exception as exc:  # noqa: BLE001
+            dropbox_error = str(exc)
+    elif any(
+        str(value or "").strip()
+        for value in (dropbox_token, dropbox_refresh_token, dropbox_app_key, dropbox_app_secret)
+    ):
+        dropbox_error = dropbox_error or "Dropbox is configured incompletely."
+
+    if dropbox_error:
+        result["dropbox_error"] = dropbox_error
 
     if github_token and github_repo:
         export_folder = github_export_path.strip("/")

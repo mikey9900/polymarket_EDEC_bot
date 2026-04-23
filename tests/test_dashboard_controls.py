@@ -404,6 +404,21 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             session_result["message"],
         )
 
+    async def test_apply_control_async_reports_session_export_failure_reason(self):
+        service = self._build_service(with_callbacks=True)
+
+        def _boom():
+            raise RuntimeError("dropbox app secret missing")
+
+        service.control_plane.session_export_fn = _boom
+
+        session_result = await service._apply_control_async("session_export")
+
+        self.assertFalse(session_result["ok"])
+        self.assertEqual(session_result["status"], 400)
+        self.assertIn("Session export failed", session_result["message"])
+        self.assertIn("dropbox app secret missing", session_result["message"])
+
     async def test_apply_control_async_handles_codex_actions(self):
         service = self._build_service(with_codex=True)
 

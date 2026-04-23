@@ -270,20 +270,44 @@ class ControlPlane:
                 request,
                 ControlResult(ok=False, status=400, message="Session export is not configured.", action=request.action),
             )
-        result = await run_blocking(self.session_export_fn)
+        try:
+            result = await run_blocking(self.session_export_fn)
+        except Exception as exc:  # noqa: BLE001
+            return self._record_message(
+                request,
+                ControlResult(
+                    ok=False,
+                    status=400,
+                    message=f"Session export failed: {exc}",
+                    action=request.action,
+                ),
+            )
         session_folder = Path(str(result.get("session_dir") or "")).name or str(
             result.get("session_folder") or ""
         ).strip()
+        warning_parts: list[str] = []
+        dropbox_error = str(result.get("dropbox_error") or "").strip()
+        if dropbox_error:
+            warning_parts.append(dropbox_error)
+        github_pushes = result.get("github_pushes") or {}
+        github_failures = [
+            key for key, payload in github_pushes.items() if isinstance(payload, dict) and not bool(payload.get("ok"))
+        ]
+        if github_failures:
+            warning_parts.append(f"GitHub push issues for {len(github_failures)} file(s).")
+        message = (
+            f"Session export ready: {int(result.get('trade_count', 0))} trades, "
+            f"{int(result.get('signal_count', 0))} signals, "
+            f"folder {session_folder or 'ready'}."
+        )
+        if warning_parts:
+            message = f"{message} Warning: {' '.join(warning_parts[:2])}"
         return self._record_message(
             request,
             ControlResult(
                 ok=True,
                 status=200,
-                message=(
-                    f"Session export ready: {int(result.get('trade_count', 0))} trades, "
-                    f"{int(result.get('signal_count', 0))} signals, "
-                    f"folder {session_folder or 'ready'}."
-                ),
+                message=message,
                 action=request.action,
             ),
         )

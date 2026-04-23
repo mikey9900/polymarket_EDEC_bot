@@ -24,11 +24,13 @@ class _FakeMarketSource:
     def __init__(self):
         self.calls = 0
         self.asc_calls = []
+        self.closed_calls = []
 
-    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True):
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True, closed=None):
         self.calls += 1
         self.asc_calls.append(ascending)
-        if not ascending:
+        self.closed_calls.append(closed)
+        if not ascending and closed is True:
             if offset > 0:
                 return []
             return [
@@ -66,6 +68,28 @@ class _FakeMarketSource:
                     "feeSchedule": {"rate": 0.072},
                     "events": [{"ticker": "OLD"}],
                 },
+            ]
+        if not ascending:
+            if offset > 0:
+                return []
+            return [
+                {
+                    "id": "m1",
+                    "createdAt": "2026-04-20T00:00:00Z",
+                    "slug": "btc-updown-5m-1713577200",
+                    "question": "Will BTC go up in 5 minutes?",
+                    "outcomes": ["Up", "Down"],
+                    "clobTokenIds": ["tok-up", "tok-down"],
+                    "conditionId": "cond-1",
+                    "volume": "1234.5",
+                    "closedTime": "2026-04-20T00:05:00Z",
+                    "eventStartTime": "2026-04-20T00:00:00Z",
+                    "endDate": "2026-04-20T00:05:00Z",
+                    "acceptingOrders": True,
+                    "negRisk": False,
+                    "feeSchedule": {"rate": 0.072},
+                    "events": [{"ticker": "BTC"}],
+                }
             ]
         if offset > 0:
             return []
@@ -285,10 +309,11 @@ class ResearchSyncTests(unittest.TestCase):
             batch_size=50,
         )
 
-        self.assertEqual(result["inserted"], 1)
+        self.assertEqual(result["inserted"], 2)
         self.assertIn(False, source.asc_calls)
+        self.assertIn(True, source.closed_calls)
         rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
-        self.assertEqual([row[0] for row in rows], ["eth-updown-5m-1713744000"])
+        self.assertEqual([row[0] for row in rows], ["btc-updown-5m-1713577200", "eth-updown-5m-1713744000"])
 
     def test_recent_5m_fill_sync_filters_by_registry_tokens(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent.duckdb")

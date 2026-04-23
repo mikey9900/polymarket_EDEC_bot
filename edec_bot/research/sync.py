@@ -60,32 +60,22 @@ def sync_recent_markets(
     max_batches: int | None = None,
 ) -> dict[str, object]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=int(lookback_days))
-    fetched = 0
-    inserted = 0
-    batches = 0
-    offset = 0
-    reached_cutoff = False
-    while True:
-        rows = source.fetch_markets(offset=offset, limit=batch_size, ascending=False)
-        if not rows:
-            break
-        normalized: list[dict[str, object]] = []
-        for row in rows:
-            market = normalize_gamma_market(row)
-            created_at = _parse_iso_ts(market.get("created_at"))
-            if created_at is not None and created_at < cutoff:
-                reached_cutoff = True
-                break
-            if market.get("market_id"):
-                normalized.append(market)
-        inserted += warehouse.insert_markets(normalized)
-        fetched += len(rows)
-        offset += len(rows)
-        batches += 1
-        if reached_cutoff or len(rows) < batch_size:
-            break
-        if max_batches is not None and batches >= max_batches:
-            break
+    open_stats = _sync_recent_market_feed(
+        warehouse,
+        source,
+        cutoff=cutoff,
+        batch_size=batch_size,
+        max_batches=max_batches,
+        closed=None,
+    )
+    closed_stats = _sync_recent_market_feed(
+        warehouse,
+        source,
+        cutoff=cutoff,
+        batch_size=batch_size,
+        max_batches=max_batches,
+        closed=True,
+    )
     registry_rows = warehouse.rebuild_market_5m_registry()
     enriched_rows = warehouse.rebuild_fills_enriched()
     parquet_paths = warehouse.export_parquet()
@@ -93,9 +83,11 @@ def sync_recent_markets(
         "dataset": "recent_markets",
         "lookback_days": int(lookback_days),
         "cutoff": cutoff.isoformat(),
-        "fetched": fetched,
-        "inserted": inserted,
-        "batches": batches,
+        "fetched": int(open_stats["fetched"]) + int(closed_stats["fetched"]),
+        "inserted": int(open_stats["inserted"]) + int(closed_stats["inserted"]),
+        "batches": int(open_stats["batches"]) + int(closed_stats["batches"]),
+        "open_markets": open_stats,
+        "closed_markets": closed_stats,
         "market_5m_registry_rows": registry_rows,
         "fills_enriched_rows": enriched_rows,
         "parquet": parquet_paths,
@@ -320,6 +312,49 @@ def _sync_asset_windows(
         "batches": total_batches,
         "fetched": fetched,
         "inserted": inserted,
+    }
+
+
+def _sync_recent_market_feed(
+    warehouse: ResearchWarehouse,
+    source: GammaMarketSource,
+    *,
+    cutoff: datetime,
+    batch_size: int,
+    max_batches: int | None,
+    closed: bool | None,
+) -> dict[str, int | bool]:
+    fetched = 0
+    inserted = 0
+    batches = 0
+    offset = 0
+    reached_cutoff = False
+    while True:
+        rows = source.fetch_markets(offset=offset, limit=batch_size, ascending=False, closed=closed)
+        if not rows:
+            break
+        normalized: list[dict[str, object]] = []
+        for row in rows:
+            market = normalize_gamma_market(row)
+            created_at = _parse_iso_ts(market.get("created_at"))
+            if created_at is not None and created_at < cutoff:
+                reached_cutoff = True
+                break
+            if market.get("market_id"):
+                normalized.append(market)
+        inserted += warehouse.insert_markets(normalized)
+        fetched += len(rows)
+        offset += len(rows)
+        batches += 1
+        if reached_cutoff or len(rows) < batch_size:
+            break
+        if max_batches is not None and batches >= max_batches:
+            break
+    return {
+        "closed": bool(closed),
+        "fetched": fetched,
+        "inserted": inserted,
+        "batches": batches,
     }
 
 

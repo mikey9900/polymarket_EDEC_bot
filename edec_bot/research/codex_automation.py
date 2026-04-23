@@ -49,6 +49,7 @@ JOB_TYPES = {
     "repo_task",
 }
 DEFAULT_TUNER_REASON = "Rejected by operator."
+STALE_RUNNER_LOCK_SECONDS = 600
 SCHEDULE_DEFAULTS = {
     "daily_research_refresh": {
         "schedule_enabled": True,
@@ -270,6 +271,7 @@ class CodexAutomationManager:
 
     def run_once(self) -> dict[str, Any]:
         ensure_codex_dirs()
+        self._clear_stale_lock()
         state = self.read_state()
         if self._clear_orphaned_active_run(state):
             state = self.read_state()
@@ -649,6 +651,24 @@ class CodexAutomationManager:
         self.save_state(state)
         return True
 
+    def _clear_stale_lock(self) -> bool:
+        if not self.lock_path.exists():
+            return False
+        payload = self._read_json(self.lock_path, default={})
+        pid = self._optional_int((payload or {}).get("pid"))
+        if pid is not None and self._pid_is_running(pid):
+            return False
+        created_at = self._parse_dt((payload or {}).get("created_at"))
+        if pid is None and created_at is not None:
+            age_s = (self._utcnow() - created_at).total_seconds()
+            if age_s < STALE_RUNNER_LOCK_SECONDS:
+                return False
+        try:
+            self.lock_path.unlink()
+        except FileNotFoundError:
+            return False
+        return True
+
     def _latest_daily_refresh_metrics(self) -> dict[str, Any]:
         latest_payload = self._read_json(self.latest_path, default={})
         daily_refresh = latest_payload.get("daily_research_refresh") or {}
@@ -809,7 +829,7 @@ class CodexAutomationManager:
         except FileExistsError:
             return False
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(json.dumps({"created_at": self._utcnow().isoformat()}))
+            fh.write(json.dumps({"created_at": self._utcnow().isoformat(), "pid": os.getpid()}))
         return True
 
     def _release_lock(self) -> None:
@@ -817,6 +837,13 @@ class CodexAutomationManager:
             self.lock_path.unlink()
         except FileNotFoundError:
             pass
+
+    def _pid_is_running(self, pid: int) -> bool:
+        try:
+            os.kill(int(pid), 0)
+        except (OSError, ValueError):
+            return False
+        return True
 
     def _result_summary(self, job_type: str, payload: dict[str, Any]) -> str:
         if not payload.get("ok"):

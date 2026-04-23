@@ -2,6 +2,7 @@ import json
 import shutil
 import sys
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 from uuid import uuid4
@@ -76,6 +77,26 @@ class CodexAutomationManagerTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "idle")
+        self.assertIsNone(snapshot["codex"]["active_run"])
+
+    def test_run_once_clears_stale_legacy_lock_and_active_run(self):
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+        self.manager.lock_path.write_text(json.dumps({"created_at": stale_at}), encoding="utf-8")
+        state = self.manager.read_state()
+        state["active_run"] = {
+            "run_id": "stale-run",
+            "job_type": "daily_research_refresh",
+            "request_id": "stale-request",
+            "started_at": "2026-04-23T19:06:00+00:00",
+        }
+        self.manager.save_state(state)
+
+        result = self.manager.run_once()
+        snapshot = self.manager.snapshot()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "idle")
+        self.assertFalse(self.manager.lock_path.exists())
         self.assertIsNone(snapshot["codex"]["active_run"])
 
     def test_tuner_schedule_controls_update_snapshot(self):

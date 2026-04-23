@@ -49,7 +49,8 @@
       "Bash(python -m pytest -v)",
       "Bash(python -m pytest -v --ignore=tests/test_research_artifacts.py --ignore=tests/test_research_sync.py)",
       "Bash(python -m py_compile edec_bot/bot/config.py edec_bot/bot/strategy.py edec_bot/bot/execution.py edec_bot/bot/models.py edec_bot/bot/strategies/single_leg.py edec_bot/bot/strategies/lead_lag.py edec_bot/bot/strategies/swing_leg.py edec_bot/bot/strategies/dual_leg.py edec_bot/bot/execution_flows/single_leg.py edec_bot/bot/tracker.py edec_bot/bot/market_scanner.py edec_bot/bot/risk_manager.py)",
-      "Bash(python -c \"import duckdb; print\\('duckdb OK'\\)\")"
+      "Bash(python -c \"import duckdb; print\\('duckdb OK'\\)\")",
+      "Bash(.venv/Scripts/python -m pytest tests/ -v --tb=short)"
     ]
   }
 }

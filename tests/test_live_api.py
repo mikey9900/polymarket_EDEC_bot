@@ -189,6 +189,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("function describeCodexRunner(codex)", html)
         self.assertIn("function describeResearchRuntime(runtime)", html)
         self.assertIn("function describeResearchWarehouse(codex, runtime)", html)
+        self.assertIn("RUNNER HEARTBEAT STALE DURING", html)
         self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
         self.assertIn("WAREHOUSE USED", html)
         self.assertIn("0 RECENT 5M WINDOWS", html)

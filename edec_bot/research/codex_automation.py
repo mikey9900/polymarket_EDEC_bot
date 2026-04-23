@@ -27,7 +27,7 @@ from .paths import (
     resolve_repo_path,
 )
 from .sources import GammaMarketSource, GoldskyFillSource
-from .sync import sync_daily_research_window
+from .sync import sync_recent_5m_fills, sync_recent_markets
 from .tuner import (
     TuningError,
     build_weekly_ai_context,
@@ -272,11 +272,8 @@ class CodexAutomationManager:
         ensure_codex_dirs()
         state = self.read_state()
         now = self._utcnow()
-        state["runner"]["healthy"] = True
-        state["runner"]["last_heartbeat_at"] = now.isoformat()
         self._queue_due_jobs(state, now)
-        state["runner"]["queue_depth"] = self.queue_depth()
-        self.save_state(state)
+        self._update_runner_status(state=state, healthy=True)
 
         next_job = self._next_job_path()
         if next_job is None:
@@ -339,9 +336,10 @@ class CodexAutomationManager:
             "request_id": job["request_id"],
             "requested_by": job.get("requested_by"),
             "started_at": now.isoformat(),
+            "phase": "starting",
+            "detail": "Preparing job workspace.",
         }
-        state["runner"]["queue_depth"] = self.queue_depth()
-        self.save_state(state)
+        self._update_runner_status(state=state, healthy=True)
 
         ok = False
         result: dict[str, Any]
@@ -451,13 +449,18 @@ class CodexAutomationManager:
         weekly_context_result: dict[str, Any] | None = None
         weekly_context_error: dict[str, str] | None = None
         try:
-            sync_result = sync_daily_research_window(
+            self._refresh_active_run(phase="syncing markets", detail="Refreshing recent Gamma markets.")
+            market_result = sync_recent_markets(
                 warehouse,
                 market_source,
+                lookback_days=int(args.get("market_lookback_days", 30)),
+                batch_size=int(args.get("market_batch_size", 500)),
+                max_batches=self._optional_int(args.get("market_max_batches")),
+            )
+            self._refresh_active_run(phase="syncing fills", detail="Refreshing recent Goldsky 5m fills.")
+            fill_result = sync_recent_5m_fills(
+                warehouse,
                 fill_source,
-                market_lookback_days=int(args.get("market_lookback_days", 30)),
-                market_batch_size=int(args.get("market_batch_size", 500)),
-                market_max_batches=self._optional_int(args.get("market_max_batches")),
                 lookback_hours=int(args.get("lookback_hours", 24)),
                 history_lookback_days=int(args.get("history_lookback_days", 30)),
                 batch_size=int(args.get("batch_size", 1000)),
@@ -468,6 +471,11 @@ class CodexAutomationManager:
                 max_batches_per_chunk=self._optional_int(args.get("max_batches_per_chunk", 2)),
                 max_history_batches_per_chunk=self._optional_int(args.get("max_history_batches_per_chunk", 1)),
             )
+            sync_result = {
+                "dataset": "daily_research_sync",
+                "markets": market_result,
+                "fills": fill_result,
+            }
         except Exception as exc:  # noqa: BLE001
             sync_error = {"type": exc.__class__.__name__, "message": str(exc)}
         finally:
@@ -475,6 +483,7 @@ class CodexAutomationManager:
             self._close_quietly(fill_source)
             self._close_quietly(warehouse)
         try:
+            self._refresh_active_run(phase="building artifacts", detail="Rebuilding runtime policy and research report.")
             build_result = build_artifacts(
                 warehouse_path=args.get("warehouse_path", WAREHOUSE_PATH),
                 tracker_db=args.get("tracker_db", LOCAL_TRACKER_DB),
@@ -484,6 +493,7 @@ class CodexAutomationManager:
         except Exception as exc:  # noqa: BLE001
             build_error = {"type": exc.__class__.__name__, "message": str(exc)}
         try:
+            self._refresh_active_run(phase="local tuning", detail="Evaluating deterministic tuning candidate.")
             local_tuning_result = propose_tuning(
                 config_path=args.get("config_path", self.config_path),
                 tracker_db_path=args.get("tracker_db", LOCAL_TRACKER_DB),
@@ -493,6 +503,7 @@ class CodexAutomationManager:
         except Exception as exc:  # noqa: BLE001
             local_tuning_error = {"type": exc.__class__.__name__, "message": str(exc)}
         try:
+            self._refresh_active_run(phase="weekly context", detail="Refreshing weekly desktop review context.")
             weekly_context_result = build_weekly_ai_context(
                 config_path=args.get("config_path", self.config_path),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
@@ -564,7 +575,7 @@ class CodexAutomationManager:
 
     def queue_depth(self) -> int:
         ensure_codex_dirs()
-        return len(list(self.queue_root.glob("*.json")))
+        return len(self._visible_queue_paths())
 
     def _find_duplicate_job(self, job_type: str) -> dict[str, Any] | None:
         state = self.read_state()
@@ -582,11 +593,49 @@ class CodexAutomationManager:
         return queue_files[0] if queue_files else None
 
     def _next_queued_job_payload(self) -> dict[str, Any] | None:
-        next_job_path = self._next_job_path()
+        queue_files = self._visible_queue_paths()
+        next_job_path = queue_files[0] if queue_files else None
         if next_job_path is None:
             return None
         payload = self._read_json(next_job_path, default={})
         return payload or None
+
+    def _visible_queue_paths(self, *, active_request_id: str | None = None) -> list[Path]:
+        queue_files = sorted(self.queue_root.glob("*.json"))
+        if active_request_id is None:
+            active = self.read_state().get("active_run") or {}
+            active_request_id = str(active.get("request_id") or "").strip()
+        if not active_request_id:
+            return queue_files
+        visible: list[Path] = []
+        skipped_active = False
+        for path in queue_files:
+            payload = self._read_json(path, default={})
+            if not skipped_active and str(payload.get("request_id") or "") == active_request_id:
+                skipped_active = True
+                continue
+            visible.append(path)
+        return visible
+
+    def _update_runner_status(self, *, state: dict[str, Any] | None = None, healthy: bool = True) -> None:
+        state = state or self.read_state()
+        active = state.get("active_run") or {}
+        active_request_id = str(active.get("request_id") or "").strip()
+        state["runner"]["healthy"] = bool(healthy)
+        state["runner"]["last_heartbeat_at"] = self._utcnow().isoformat()
+        state["runner"]["queue_depth"] = len(self._visible_queue_paths(active_request_id=active_request_id))
+        self.save_state(state)
+
+    def _refresh_active_run(self, *, phase: str, detail: str) -> None:
+        state = self.read_state()
+        active = dict(state.get("active_run") or {})
+        if not active:
+            return
+        active["phase"] = str(phase or "").strip()
+        active["detail"] = str(detail or "").strip()
+        active["progress_at"] = self._utcnow().isoformat()
+        state["active_run"] = active
+        self._update_runner_status(state=state, healthy=True)
 
     def _latest_daily_refresh_metrics(self) -> dict[str, Any]:
         latest_payload = self._read_json(self.latest_path, default={})

@@ -43,6 +43,24 @@ class CodexAutomationManagerTests(unittest.TestCase):
         snapshot = self.manager.snapshot()
         self.assertEqual(snapshot["codex"]["next_queued_job"]["job_type"], "daily_research_refresh")
 
+    def test_snapshot_excludes_active_job_from_queue_depth(self):
+        queued = self.manager.enqueue_daily_refresh(requested_by="test")
+        state = self.manager.read_state()
+        state["active_run"] = {
+            "run_id": "run-1",
+            "job_type": "daily_research_refresh",
+            "request_id": queued["request_id"],
+            "started_at": "2026-04-23T19:06:00+00:00",
+            "phase": "syncing fills",
+            "detail": "Refreshing recent Goldsky 5m fills.",
+        }
+        self.manager.save_state(state)
+
+        snapshot = self.manager.snapshot()
+
+        self.assertEqual(snapshot["codex"]["queue_depth"], 0)
+        self.assertIsNone(snapshot["codex"]["next_queued_job"])
+
     def test_tuner_schedule_controls_update_snapshot(self):
         pause = self.manager.pause_tuner_schedule()
         self.assertTrue(pause["ok"])

@@ -20,7 +20,12 @@ class _FakeDashboardState:
         return {
             "controls": {
                 "state": "running",
-                "available_actions": {"start": True, "research_run_now": True, "tuner_run_now": True},
+                "available_actions": {
+                    "start": True,
+                    "research_run_now": True,
+                    "research_reset_runner": True,
+                    "tuner_run_now": True,
+                },
                 "last_message": "CONTROL LINK STANDBY",
                 "last_ok": None,
             },
@@ -135,6 +140,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('data-action="reset_stats"', html)
         self.assertIn('data-action="session_export"', html)
         self.assertIn('data-action="research_run_now"', html)
+        self.assertIn('data-action="research_reset_runner"', html)
         self.assertIn('data-action="tuner_run_now"', html)
         self.assertIn('data-action="tuner_schedule_pause"', html)
         self.assertIn('data-action="tuner_schedule_resume"', html)
@@ -146,6 +152,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('CLEAR STATS', html)
         self.assertIn('EXPORT SESSION', html)
         self.assertIn('RUN RESEARCH', html)
+        self.assertIn('RESET RESEARCH', html)
         self.assertIn('PROMOTE', html)
         self.assertIn('REJECT', html)
         self.assertIn('class="topbar-meta"', html)

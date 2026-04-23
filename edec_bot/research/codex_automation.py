@@ -167,6 +167,7 @@ class CodexAutomationManager:
     def available_actions(self) -> dict[str, bool]:
         return {
             "research_run_now": True,
+            "research_reset_runner": True,
             "tuner_run_now": True,
             "tuner_schedule_pause": True,
             "tuner_schedule_resume": True,
@@ -178,6 +179,21 @@ class CodexAutomationManager:
 
     def enqueue_daily_refresh(self, *, requested_by: str = "dashboard", args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.enqueue_job("daily_research_refresh", requested_by=requested_by, args=args)
+
+    def reset_runner_state(self) -> dict[str, Any]:
+        state = self.read_state()
+        state["active_run"] = None
+        try:
+            self.lock_path.unlink()
+            lock_removed = True
+        except FileNotFoundError:
+            lock_removed = False
+        state["runner"]["queue_depth"] = len(self._visible_queue_paths(active_request_id=""))
+        self.save_state(state)
+        message = "Research runner state reset."
+        if lock_removed:
+            message = "Research runner state reset and stale lock cleared."
+        return {"ok": True, "message": message, "lock_removed": lock_removed}
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.enqueue_job("tuning_proposal", requested_by=requested_by, args=args)

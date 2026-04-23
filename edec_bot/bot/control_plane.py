@@ -88,6 +88,7 @@ class ControlPlane:
             "reset_stats": bool(self.tracker or self.risk_manager),
             "session_export": callable(self.session_export_fn),
             "research_run_now": self.codex_manager is not None,
+            "research_reset_runner": self.codex_manager is not None,
             "tuner_run_now": self.codex_manager is not None,
             "tuner_schedule_pause": self.codex_manager is not None,
             "tuner_schedule_resume": self.codex_manager is not None,
@@ -240,6 +241,7 @@ class ControlPlane:
     async def apply_async(self, request: ControlRequest, run_blocking: RunBlocking) -> ControlResult:
         if request.action in {
             "research_run_now",
+            "research_reset_runner",
             "tuner_run_now",
             "tuner_schedule_pause",
             "tuner_schedule_resume",
@@ -322,6 +324,13 @@ class ControlPlane:
                     "ok": True,
                     "status": 200,
                     "message": "Daily research + local tuning queued." if result.get("queued") else "Daily research + local tuning is already queued.",
+                }
+            if action == "research_reset_runner":
+                result = self.codex_manager.reset_runner_state()
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": str(result.get("message") or "Research runner state reset."),
                 }
             if action == "tuner_run_now":
                 result = self.codex_manager.enqueue_tuning_proposal(requested_by="dashboard")

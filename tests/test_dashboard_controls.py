@@ -297,6 +297,10 @@ class _FakeCodexManager:
         self.calls.append(("research_run_now", requested_by, args))
         return {"queued": True}
 
+    def reset_runner_state(self):
+        self.calls.append(("research_reset_runner",))
+        return {"ok": True, "message": "Research runner state reset."}
+
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args=None):
         self.calls.append(("tuner_run_now", requested_by, args))
         return {"queued": True}
@@ -396,6 +400,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             "data/research/weekly_desktop_prompt.txt",
         )
         self.assertTrue(snapshot["controls"]["available_actions"]["research_run_now"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_runner"])
 
     async def test_apply_control_async_updates_mode_and_budget(self):
         service = self._build_service()
@@ -493,10 +498,13 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         service = self._build_service(with_codex=True)
 
         research_result = await service._apply_control_async("research_run_now")
+        reset_result = await service._apply_control_async("research_reset_runner")
         cadence_result = await service._apply_control_async("tuner_set_cadence", "manual")
 
         self.assertTrue(research_result["ok"])
         self.assertIn("queued", research_result["message"].lower())
+        self.assertTrue(reset_result["ok"])
+        self.assertIn("reset", reset_result["message"].lower())
         self.assertIn("manual", cadence_result["message"].lower())
         self.assertTrue(cadence_result["ok"])
         self.assertEqual(cadence_result["state"]["tuner"]["cadence"], "manual")

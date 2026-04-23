@@ -138,6 +138,20 @@ class CodexAutomationManagerTests(unittest.TestCase):
                                 "fills": {
                                     "fetched": 42,
                                     "inserted": 42,
+                                    "fills_enriched_rows": 19,
+                                    "market_5m_registry_rows": 2070,
+                                    "recent": {
+                                        "asset_window_count": 5,
+                                        "asset_count": 10,
+                                        "fetched": 12,
+                                        "inserted": 12,
+                                    },
+                                    "history": {
+                                        "asset_window_count": 8,
+                                        "asset_count": 16,
+                                        "fetched": 30,
+                                        "inserted": 30,
+                                    },
                                 }
                             },
                         },
@@ -171,6 +185,9 @@ class CodexAutomationManagerTests(unittest.TestCase):
 
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 3)
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fetched_fill_count"], 42)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["recent_window_count"], 5)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["recent_fetched_fill_count"], 12)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fills_enriched_rows"], 19)
         self.assertEqual(snapshot["tuner"]["daily_research_metrics"]["candidate_status"], "none")
 
     def test_run_once_processes_repo_task(self):

@@ -601,6 +601,8 @@ class CodexAutomationManager:
         build = (result.get("build") or {}).get("result") or {}
         sync = (result.get("sync") or {}).get("result") or {}
         fills = (sync.get("fills") or {}) if isinstance(sync, dict) else {}
+        recent = (fills.get("recent") or {}) if isinstance(fills, dict) else {}
+        history = (fills.get("history") or {}) if isinstance(fills, dict) else {}
         local = (result.get("daily_local_tuning") or {}).get("result") or {}
         return {
             "run_id": payload.get("run_id"),
@@ -611,6 +613,16 @@ class CodexAutomationManager:
             "fill_flow_rows": int(build.get("fill_flow_rows", 0) or 0),
             "fetched_fill_count": int(fills.get("fetched", 0) or 0),
             "inserted_fill_count": int(fills.get("inserted", 0) or 0),
+            "recent_window_count": int(recent.get("asset_window_count", 0) or 0),
+            "recent_asset_count": int(recent.get("asset_count", 0) or 0),
+            "recent_fetched_fill_count": int(recent.get("fetched", 0) or 0),
+            "recent_inserted_fill_count": int(recent.get("inserted", 0) or 0),
+            "history_window_count": int(history.get("asset_window_count", 0) or 0),
+            "history_asset_count": int(history.get("asset_count", 0) or 0),
+            "history_fetched_fill_count": int(history.get("fetched", 0) or 0),
+            "history_inserted_fill_count": int(history.get("inserted", 0) or 0),
+            "fills_enriched_rows": int(fills.get("fills_enriched_rows", 0) or 0),
+            "market_5m_registry_rows": int(fills.get("market_5m_registry_rows", 0) or 0),
             "candidate_status": str(local.get("candidate_status") or "none"),
         }
 

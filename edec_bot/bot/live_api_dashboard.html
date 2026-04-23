@@ -1253,11 +1253,33 @@
   function describeResearchWarehouse(codex, runtime) {
     const metrics = (codex && codex.daily_research_metrics) || {};
     const fetched = Number(metrics.fetched_fill_count || 0);
+    const recentWindows = Number(metrics.recent_window_count || 0);
+    const recentAssets = Number(metrics.recent_asset_count || 0);
+    const recentFetched = Number(metrics.recent_fetched_fill_count || 0);
+    const enrichedRows = Number(metrics.fills_enriched_rows || 0);
     const rows = Number(metrics.fill_flow_rows || 0);
     const coinFeatures = Number((runtime && runtime.coin_feature_count) || 0);
     if (!metrics || Object.keys(metrics).length === 0) {
       return {
         text: "WAREHOUSE: WAITING FOR DAILY REFRESH METRICS.",
+        state: "pending",
+      };
+    }
+    if (recentWindows <= 0) {
+      return {
+        text: "WAREHOUSE: NO RECENT 5M MARKET WINDOWS FOUND.",
+        state: "pending",
+      };
+    }
+    if (recentFetched <= 0) {
+      return {
+        text: `WAREHOUSE: SCANNED ${recentWindows} WINDOWS | ${recentAssets} ASSETS | GOLDSKY RETURNED 0 FILLS`,
+        state: "pending",
+      };
+    }
+    if (rows <= 0 && coinFeatures <= 0) {
+      return {
+        text: `WAREHOUSE: FETCHED ${recentFetched} RECENT FILLS | 0 FLOW ROWS | ${enrichedRows} ENRICHED TOTAL`,
         state: "pending",
       };
     }

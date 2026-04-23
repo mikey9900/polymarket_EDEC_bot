@@ -44,6 +44,16 @@ class _FakeDashboardState:
                     "fill_flow_rows": 3,
                     "fetched_fill_count": 42,
                     "inserted_fill_count": 42,
+                    "recent_window_count": 2,
+                    "recent_asset_count": 4,
+                    "recent_fetched_fill_count": 8,
+                    "recent_inserted_fill_count": 8,
+                    "history_window_count": 6,
+                    "history_asset_count": 12,
+                    "history_fetched_fill_count": 34,
+                    "history_inserted_fill_count": 34,
+                    "fills_enriched_rows": 15,
+                    "market_5m_registry_rows": 2070,
                     "candidate_status": "ready",
                 },
             },
@@ -61,6 +71,16 @@ class _FakeDashboardState:
                     "fill_flow_rows": 3,
                     "fetched_fill_count": 42,
                     "inserted_fill_count": 42,
+                    "recent_window_count": 2,
+                    "recent_asset_count": 4,
+                    "recent_fetched_fill_count": 8,
+                    "recent_inserted_fill_count": 8,
+                    "history_window_count": 6,
+                    "history_asset_count": 12,
+                    "history_fetched_fill_count": 34,
+                    "history_inserted_fill_count": 34,
+                    "fills_enriched_rows": 15,
+                    "market_5m_registry_rows": 2070,
                     "candidate_status": "ready",
                 },
                 "daily_local_candidate": {"status": "ready"},
@@ -171,6 +191,9 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("function describeResearchWarehouse(codex, runtime)", html)
         self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
         self.assertIn("WAREHOUSE USED", html)
+        self.assertIn("NO RECENT 5M MARKET WINDOWS FOUND", html)
+        self.assertIn("GOLDSKY RETURNED 0 FILLS", html)
+        self.assertIn("ENRICHED TOTAL", html)
         self.assertIn("DESKTOP REVIEW READY: OPEN", html)
         self.assertIn('data-field="session-inline"', html)
         self.assertNotIn('data-field="pred-copy"', html)

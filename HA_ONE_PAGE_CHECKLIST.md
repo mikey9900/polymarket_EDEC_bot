@@ -31,9 +31,9 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 
 ## Verify Shared State
 
-- [ ] Confirm `/data/edec/codex/state.json` exists
-- [ ] Confirm `/data/edec/codex/queue/` exists
-- [ ] Confirm `/data/edec/codex/runs/` exists
+- [ ] Confirm `/share/edec/codex/state.json` exists
+- [ ] Confirm `/share/edec/codex/queue/` exists
+- [ ] Confirm `/share/edec/codex/runs/` exists
 
 ## Install Bot
 
@@ -54,6 +54,6 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 
 ## Final Success Check
 
-- [ ] Daily research runs appear under `/data/edec/codex/runs/`
+- [ ] Daily research runs appear under `/share/edec/codex/runs/`
 - [ ] Weekly review bundles write compact bundle artifacts for desktop Codex review
 - [ ] The dashboard shows live `codex` queue depth and tuner status

@@ -4,7 +4,7 @@ Home Assistant sidecar/add-on for the HA-local Codex workflow runner.
 
 ## What it runs
 
-It mounts your repo workspace, points shared orchestration state at `/data/edec`, and runs:
+It mounts your repo workspace, points shared orchestration state at `/share/edec`, and runs:
 
 ```bash
 python -m edec_bot.research codex-runner
@@ -29,12 +29,12 @@ The runner owns:
    - `timezone`: your local zone, for example `America/Edmonton`
    - `codex_home`: `/data/codex`
 5. Start the Codex Runner add-on.
-6. Confirm it creates `/data/edec/codex/state.json`.
+6. Confirm it creates `/share/edec/codex/state.json`.
 7. Start the bot add-on and use the dashboard controls to queue research/tuner jobs.
 
 ## Notes
 
 - The sidecar caches a Python venv under `/data/codex/venv`, so it does not reinstall dependencies on every boot.
-- Shared queue/state/results live under `/data/edec/codex`.
+- Shared queue/state/results live under `/share/edec/codex`.
 - Weekly desktop review bundles are written under `data/research/` for Codex desktop review.
 - The runner does not rewrite live config automatically. Promotion still requires the explicit HA control action.

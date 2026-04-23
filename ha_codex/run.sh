@@ -51,14 +51,14 @@ if [ ! -f "${WORKSPACE_PATH}/edec_bot/requirements.txt" ]; then
   exit 1
 fi
 
-mkdir -p /data/edec
+mkdir -p /share/edec
 mkdir -p "${CODEX_HOME_VALUE}"
 VENV_DIR="${CODEX_HOME_VALUE}/venv"
 REQ_HASH_FILE="${CODEX_HOME_VALUE}/requirements.sha256"
 REQ_FILE="${WORKSPACE_PATH}/edec_bot/requirements.txt"
 
 export PYTHONPATH="${WORKSPACE_PATH}"
-export EDEC_SHARED_DATA_ROOT="/data/edec"
+export EDEC_SHARED_DATA_ROOT="/share/edec"
 export EDEC_LOCAL_TIMEZONE="${TIMEZONE_NAME}"
 export CODEX_HOME="${CODEX_HOME_VALUE}"
 export EDEC_CONFIG_PATH="${CONFIG_PATH}"

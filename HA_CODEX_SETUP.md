@@ -18,7 +18,7 @@ This repo now contains two Home Assistant add-ons:
    - `timezone`: your local timezone
    - `codex_home`: `/data/codex`
 6. Start `EDEC Codex Runner`.
-7. Verify `/data/edec/codex/state.json` appears.
+7. Verify `/share/edec/codex/state.json` appears.
 8. Start `EDEC Polymarket Bot`.
 9. Use the HA dashboard controls to:
    - queue a daily research refresh
@@ -30,10 +30,10 @@ This repo now contains two Home Assistant add-ons:
 
 ## Shared storage layout
 
-- `/data/edec/codex/state.json`
-- `/data/edec/codex/latest.json`
-- `/data/edec/codex/queue/*.json`
-- `/data/edec/codex/runs/<run_id>/`
+- `/share/edec/codex/state.json`
+- `/share/edec/codex/latest.json`
+- `/share/edec/codex/queue/*.json`
+- `/share/edec/codex/runs/<run_id>/`
 
 ## Important behavior
 

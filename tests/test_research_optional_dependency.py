@@ -1,6 +1,8 @@
 import json
 import io
+import os
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +12,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
+import main as app_main
 from research import artifacts
+from research import paths as research_paths
 from research import _duckdb as optional_duckdb
 from research.cli import build_parser, main
 
@@ -79,6 +83,31 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertEqual(review_args.command, "build-weekly-review-bundle")
         self.assertEqual(runner_args.command, "codex-runner")
         self.assertTrue(runner_args.run_once)
+
+    def test_default_archive_output_dir_moves_to_shared_root_when_available(self):
+        with mock.patch.dict(os.environ, {"EDEC_SHARED_DATA_ROOT": "/share/edec"}, clear=False):
+            self.assertEqual(app_main._resolve_archive_output_dir("data/exports"), str(Path("/share/edec") / "exports"))
+
+    def test_discover_session_export_roots_includes_local_and_shared_exports(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            repo_root = tmp_root / "repo"
+            data_root = repo_root / "data"
+            shared_root = tmp_root / "shared"
+            local_exports = data_root / "exports"
+            shared_exports = shared_root / "exports"
+            local_exports.mkdir(parents=True, exist_ok=True)
+            shared_exports.mkdir(parents=True, exist_ok=True)
+
+            with (
+                mock.patch.object(research_paths, "REPO_ROOT", repo_root),
+                mock.patch.object(research_paths, "DATA_ROOT", data_root),
+                mock.patch.object(research_paths, "SHARED_DATA_ROOT", shared_root),
+            ):
+                roots = research_paths.discover_session_export_roots()
+
+        self.assertIn(local_exports.resolve(), roots)
+        self.assertIn(shared_exports.resolve(), roots)
 
     def test_sync_recent_main_passes_http_retry_flags(self):
         fake_warehouse = mock.MagicMock()

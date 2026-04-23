@@ -69,11 +69,23 @@ def ensure_tuner_dirs() -> None:
 
 def discover_session_export_roots() -> list[Path]:
     candidates = [
+        SHARED_DATA_ROOT / "exports",
+        DATA_ROOT / "exports",
+        REPO_ROOT / "edec_bot" / "data" / "exports",
+        SHARED_DATA_ROOT / "github_exports",
         DATA_ROOT / "github_exports",
         REPO_ROOT / ".tmp_edec_data_repo" / "session_exports",
         REPO_ROOT / "edec_bot" / "data" / "github_exports",
     ]
-    return [path for path in candidates if path.exists()]
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        resolved = path.resolve()
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
 
 
 def discover_session_export_files() -> list[Path]:

@@ -98,6 +98,16 @@ def _parse_hhmm(hhmm: str, default_h: int = 0, default_m: int = 5) -> tuple[int,
         return default_h, default_m
 
 
+def _resolve_archive_output_dir(path_value: str) -> str:
+    value = str(path_value or "data/exports").strip() or "data/exports"
+    if value.replace("\\", "/").strip("/") != "data/exports":
+        return value
+    shared_root = str(os.getenv("EDEC_SHARED_DATA_ROOT") or "").strip()
+    if not shared_root:
+        return value
+    return str(Path(shared_root) / "exports")
+
+
 def setup_logging(config) -> None:
     log_level = getattr(logging, config.logging.level.upper(), logging.INFO)
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -210,7 +220,9 @@ async def main():
     archive_builders = ArchiveBuilderService(db_path="data/decisions.db", data_dir="data")
 
     archive_enabled = _as_bool(os.getenv("EDEC_ARCHIVE_ENABLED", ha_options.get("archive_enabled")), True)
-    archive_output_dir = os.getenv("EDEC_ARCHIVE_OUTPUT_DIR", str(ha_options.get("archive_output_dir", "data/exports")))
+    archive_output_dir = _resolve_archive_output_dir(
+        os.getenv("EDEC_ARCHIVE_OUTPUT_DIR", str(ha_options.get("archive_output_dir", "data/exports")))
+    )
     archive_label = os.getenv("EDEC_ARCHIVE_LABEL", str(ha_options.get("archive_label", "EDEC-BOT")))
     archive_recent_limit = _as_int(os.getenv("EDEC_ARCHIVE_RECENT_LIMIT", ha_options.get("archive_recent_limit")), 100)
     archive_hhmm = os.getenv("EDEC_ARCHIVE_TIME", str(ha_options.get("archive_time", "00:05")))

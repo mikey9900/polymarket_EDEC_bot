@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from .paths import (
     CONFIG_CANDIDATES_ROOT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_REPORT_JSON_PATH,
+    LOCAL_TRACKER_DB,
     TUNER_ACTIVE_PATCH_PATH,
     TUNER_REPORT_JSON_PATH,
     TUNER_REPORT_MD_PATH,
@@ -88,6 +90,16 @@ class SessionBundle:
     bundle_time: datetime | None
 
 
+@dataclass(frozen=True)
+class TuningInputBundle:
+    source: str
+    export_id: str
+    trades_path: Path | None
+    signals_path: Path | None
+    tracker_db_path: Path | None
+    analysis: dict[str, Any]
+
+
 def load_tuner_state(path: str | Path = TUNER_STATE_PATH) -> dict[str, Any]:
     tuner_path = resolve_repo_path(path)
     if not tuner_path.exists():
@@ -123,6 +135,7 @@ def tuner_status(
 def propose_tuning(
     *,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
     report_json_path: str | Path = TUNER_REPORT_JSON_PATH,
     report_md_path: str | Path = TUNER_REPORT_MD_PATH,
@@ -139,8 +152,8 @@ def propose_tuning(
     candidates_root = resolve_repo_path(candidates_root)
     research_report = _load_json_file(research_report_json_path, default={})
 
-    bundle = _discover_latest_session_bundle()
-    analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
+    input_bundle = _build_tuning_input_bundle(tracker_db_path)
+    analysis = input_bundle.analysis
     current_config = _load_yaml(config_path)
     candidate_config = _deep_copy(current_config)
 
@@ -172,9 +185,11 @@ def propose_tuning(
         "candidate_status": "ready" if changes else "none",
         "config_name": config_path.name,
         "inputs": {
-            "export_id": bundle.export_id,
-            "trades_file": bundle.trades_path.name,
-            "signals_file": bundle.signals_path.name,
+            "source": input_bundle.source,
+            "export_id": input_bundle.export_id,
+            "trades_file": input_bundle.trades_path.name if input_bundle.trades_path else "",
+            "signals_file": input_bundle.signals_path.name if input_bundle.signals_path else "",
+            "tracker_db": str(input_bundle.tracker_db_path) if input_bundle.tracker_db_path else "",
         },
         "data": analysis["overall"],
         "research_rollups": _compact_research_report(research_report),
@@ -215,7 +230,8 @@ def propose_tuning(
         "candidate_status": state["daily_local_candidate"]["status"],
         "candidate_source": "daily_local",
         "config_path": str(config_path),
-        "export_id": bundle.export_id,
+        "input_source": input_bundle.source,
+        "export_id": input_bundle.export_id,
         "change_count": len(changes),
         "report_json_path": str(report_json_path),
         "report_md_path": str(report_md_path),
@@ -944,6 +960,43 @@ def _discover_latest_session_bundle() -> SessionBundle:
     return bundles[0]
 
 
+def _build_tuning_input_bundle(tracker_db_path: str | Path) -> TuningInputBundle:
+    tracker_path = resolve_repo_path(tracker_db_path)
+    if tracker_path.exists():
+        try:
+            analysis = _analyze_tracker_db(tracker_path)
+        except sqlite3.DatabaseError:
+            analysis = {}
+        if analysis:
+            closed = int(((analysis.get("overall") or {}).get("closed")) or 0)
+            signal_count = int(((analysis.get("filter_analysis") or {}).get("total_signals")) or 0)
+            if closed > 0 or signal_count > 0:
+                return TuningInputBundle(
+                    source="tracker_db",
+                    export_id=f"tracker_db:{tracker_path.name}",
+                    trades_path=None,
+                    signals_path=None,
+                    tracker_db_path=tracker_path,
+                    analysis=analysis,
+                )
+    try:
+        bundle = _discover_latest_session_bundle()
+    except TuningError:
+        if tracker_path.exists():
+            raise TuningError(
+                f"No usable tracker DB outcomes or paired session exports were found for {tracker_path}."
+            )
+        raise TuningError("No usable tracker DB or paired session exports were found.")
+    return TuningInputBundle(
+        source="session_export",
+        export_id=bundle.export_id,
+        trades_path=bundle.trades_path,
+        signals_path=bundle.signals_path,
+        tracker_db_path=tracker_path if tracker_path.exists() else None,
+        analysis=_analyze_session_exports(bundle.trades_path, bundle.signals_path),
+    )
+
+
 def _discover_session_bundles() -> list[SessionBundle]:
     bundles: list[SessionBundle] = []
     seen_export_ids: set[str] = set()
@@ -1018,6 +1071,114 @@ def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str,
     trades = _read_csv_rows(trades_path)
     signals = _read_csv_rows(signals_path)
     return _analyze_rows(trades, signals, folder_ts=trades_path.parent.name)
+
+
+def _analyze_tracker_db(db_path: Path) -> dict[str, Any]:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        reset_at = _tracker_reset_at(conn)
+        trades_rows = conn.execute(
+            """
+            SELECT
+                p.timestamp,
+                p.coin,
+                p.strategy_type,
+                p.status,
+                p.pnl,
+                p.exit_reason,
+                p.depth_ratio,
+                p.entry_price,
+                p.max_bid_seen,
+                p.mae,
+                d.coin_velocity_30s,
+                d.coin_velocity_60s
+            FROM paper_trades p
+            LEFT JOIN decisions d ON d.id = p.decision_id
+            WHERE p.timestamp >= ?
+            ORDER BY p.timestamp DESC
+            """,
+            (reset_at,),
+        ).fetchall()
+        signal_rows = conn.execute(
+            """
+            SELECT
+                timestamp,
+                coin,
+                strategy_type,
+                action,
+                entry_price,
+                coin_velocity_30s,
+                coin_velocity_60s,
+                time_remaining_s,
+                entry_depth_side_usd,
+                opposite_depth_usd,
+                signal_score,
+                filter_passed,
+                filter_failed,
+                reason
+            FROM decisions
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC
+            """,
+            (reset_at,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    trades = [
+        {
+            "ts": row["timestamp"],
+            "c": row["coin"],
+            "st": row["strategy_type"],
+            "status": row["status"],
+            "pnl": row["pnl"],
+            "er": row["exit_reason"],
+            "drt": row["depth_ratio"],
+            "ep": row["entry_price"],
+            "maxb": row["max_bid_seen"],
+            "mae": row["mae"],
+            "v30": row["coin_velocity_30s"],
+            "v60": row["coin_velocity_60s"],
+        }
+        for row in trades_rows
+    ]
+    signals = [
+        {
+            "ts": row["timestamp"],
+            "c": row["coin"],
+            "st": row["strategy_type"],
+            "act": row["action"],
+            "ep": row["entry_price"],
+            "v30": row["coin_velocity_30s"],
+            "v60": row["coin_velocity_60s"],
+            "te": row["time_remaining_s"],
+            "eds": row["entry_depth_side_usd"],
+            "ods": row["opposite_depth_usd"],
+            "sg": row["signal_score"],
+            "fp": row["filter_passed"],
+            "ff": row["filter_failed"],
+            "why": row["reason"],
+        }
+        for row in signal_rows
+    ]
+    latest_ts = max(
+        [str(item.get("ts") or "") for item in trades] + [str(item.get("ts") or "") for item in signals],
+        default="",
+    )
+    folder_ts = latest_ts or f"tracker_db:{db_path.name}"
+    return _analyze_rows(trades, signals, folder_ts=folder_ts)
+
+
+def _tracker_reset_at(conn: sqlite3.Connection) -> str:
+    try:
+        row = conn.execute("SELECT reset_at FROM paper_capital WHERE id = 1").fetchone()
+    except sqlite3.DatabaseError:
+        return "1970-01-01"
+    if not row:
+        return "1970-01-01"
+    value = row["reset_at"] if isinstance(row, sqlite3.Row) else row[0]
+    return str(value or "1970-01-01")
 
 
 def _analyze_rows(trades: list[dict[str, str]], signals: list[dict[str, str]], *, folder_ts: str) -> dict[str, Any]:
@@ -1118,7 +1279,7 @@ def _recommend_changes(
     _add_research_context_advisories(advisories, no_change, research_report or {})
 
     if not changes:
-        no_change.append("No config changes met the evidence thresholds in the latest session export.")
+        no_change.append("No config changes met the evidence thresholds in the latest local tuning inputs.")
     return changes, advisories, no_change
 
 
@@ -1271,7 +1432,7 @@ def _recommend_loss_cut(
     mae_p75 = _ptile(mae_as_pct, 75)
     current = float(_get_nested(config, path) or 0.0)
     if mae_p75 is None:
-        no_change.append(f"{path}: MAE distribution is incomplete in the latest export.")
+        no_change.append(f"{path}: MAE distribution is incomplete in the latest local inputs.")
         return
     calibrated = round(mae_p75 + 0.02, 2)
     if abs(calibrated - current) >= 0.02:
@@ -1302,7 +1463,7 @@ def _recommend_high_confidence_bid(
     maxb_p50 = _ptile(maxb, 50)
     current = float(_get_nested(config, path) or 0.0)
     if maxb_p50 is None:
-        no_change.append(f"{path}: max bid distribution is incomplete in the latest export.")
+        no_change.append(f"{path}: max bid distribution is incomplete in the latest local inputs.")
         return
     if maxb_p50 > current + 0.04:
         recommended = round(current + 0.02, 2)

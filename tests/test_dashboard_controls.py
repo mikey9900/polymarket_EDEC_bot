@@ -84,6 +84,18 @@ class _FakeStrategyEngine:
         self.is_active = True
         self.start_calls = 0
         self.stop_calls = 0
+        self.research_provider = SimpleNamespace(
+            status=lambda: {
+                "artifact_path": "data/research/runtime_policy.json",
+                "artifact_exists": True,
+                "last_loaded_at": "2026-04-22T12:01:00+00:00",
+                "last_source_modified_at": "2026-04-22T12:00:55+00:00",
+                "reload_count": 3,
+                "cluster_count": 12,
+                "coin_feature_count": 5,
+                "last_error": None,
+            }
+        )
 
     def start_scanning(self):
         self.start_calls += 1
@@ -319,6 +331,8 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["codex"]["queue_depth"], 1)
         self.assertEqual(snapshot["codex"]["latest_candidate"]["status"], "ready")
         self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
+        self.assertEqual(snapshot["research_runtime"]["reload_count"], 3)
+        self.assertEqual(snapshot["research_runtime"]["cluster_count"], 12)
         self.assertEqual(snapshot["tuner"]["cadence"], "weekly")
         self.assertEqual(snapshot["tuner"]["primary_candidate_source"], "weekly_ai")
         self.assertEqual(

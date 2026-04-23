@@ -139,6 +139,13 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["research_liquidity_score_1d"], 82.5)
         self.assertEqual(payload["research_signal_score_adjustment"], 2.15)
 
+        status = provider.status()
+        self.assertTrue(status["artifact_exists"])
+        self.assertEqual(status["reload_count"], 1)
+        self.assertEqual(status["coin_feature_count"], 1)
+        self.assertEqual(status["cluster_count"], 0)
+        self.assertIsNotNone(status["last_loaded_at"])
+
     def test_single_leg_paper_gate_suppresses_dry_run_signal(self):
         tracker = _CapturingTracker()
         config = replace(

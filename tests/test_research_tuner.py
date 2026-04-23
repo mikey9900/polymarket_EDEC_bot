@@ -13,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
+from bot.tracker import DecisionTracker
 from research.tuner import TuningError
 from research.tuner import build_weekly_ai_context
 from research.tuner import build_weekly_review_bundle
@@ -94,11 +95,13 @@ class ResearchTunerTests(unittest.TestCase):
         )
         self.candidates_root = self.tmpdir / "config_candidates"
         self.candidates_root.mkdir(parents=True, exist_ok=True)
+        self.tracker_db_path = self.tmpdir / "decisions.db"
 
     def test_propose_tuning_builds_candidate_and_reports(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
             result = propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -132,6 +135,7 @@ class ResearchTunerTests(unittest.TestCase):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
             propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -179,6 +183,7 @@ class ResearchTunerTests(unittest.TestCase):
         ):
             propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -227,6 +232,7 @@ class ResearchTunerTests(unittest.TestCase):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
             propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -288,6 +294,7 @@ class ResearchTunerTests(unittest.TestCase):
         ):
             propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -331,6 +338,7 @@ class ResearchTunerTests(unittest.TestCase):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
             proposal = propose_tuning(
                 config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
@@ -346,6 +354,84 @@ class ResearchTunerTests(unittest.TestCase):
                 config_path=self.config_path,
                 tuner_state_path=self.tuner_state_path,
             )
+
+    def test_propose_tuning_prefers_tracker_db_when_shared_db_has_recent_outcomes(self):
+        tracker = DecisionTracker(str(self.tracker_db_path))
+        try:
+            tracker.conn.execute(
+                "INSERT OR REPLACE INTO paper_capital (id, total_capital, current_balance, reset_at) VALUES (1, 5000.0, 5000.0, ?)",
+                ("2026-04-21T00:00:00+00:00",),
+            )
+            tracker.conn.execute(
+                """
+                INSERT INTO decisions (
+                    timestamp, market_slug, coin, strategy_type, market_end_time,
+                    action, coin_velocity_30s, coin_velocity_60s, filter_failed, entry_price
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "2026-04-21T17:00:00+00:00",
+                    "btc-updown-5m-1",
+                    "btc",
+                    "single_leg",
+                    "2026-04-21T17:05:00+00:00",
+                    "TRADE",
+                    0.16,
+                    0.18,
+                    "depth_check",
+                    0.57,
+                ),
+            )
+            decision_id = tracker.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            tracker.conn.execute(
+                """
+                INSERT INTO paper_trades (
+                    decision_id, timestamp, market_slug, coin, strategy_type, side,
+                    entry_price, target_price, shares, cost, fee_total, status, pnl,
+                    exit_reason, depth_ratio, max_bid_seen, mae
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    decision_id,
+                    "2026-04-21T17:01:00+00:00",
+                    "btc-updown-5m-1",
+                    "btc",
+                    "single_leg",
+                    "up",
+                    0.57,
+                    0.64,
+                    20.0,
+                    11.4,
+                    0.1,
+                    "closed_win",
+                    1.2,
+                    "profit_target",
+                    1.4,
+                    0.84,
+                    -0.03,
+                ),
+            )
+            tracker.conn.commit()
+        finally:
+            tracker.close()
+
+        result = propose_tuning(
+            config_path=self.config_path,
+            tracker_db_path=self.tracker_db_path,
+            tuner_state_path=self.tuner_state_path,
+            report_json_path=self.report_json_path,
+            report_md_path=self.report_md_path,
+            patch_path=self.patch_path,
+            candidates_root=self.candidates_root,
+            research_report_json_path=self.research_report_json_path,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["input_source"], "tracker_db")
+        self.assertEqual(result["export_id"], f"tracker_db:{self.tracker_db_path.name}")
+        payload = json.loads(self.report_json_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["inputs"]["source"], "tracker_db")
+        self.assertEqual(payload["inputs"]["tracker_db"], str(self.tracker_db_path))
 
     def _write_trades_csv(self) -> None:
         rows = [

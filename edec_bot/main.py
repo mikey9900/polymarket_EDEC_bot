@@ -40,6 +40,7 @@ from bot.strategy import StrategyEngine
 from bot.telegram_bot import TelegramBot
 from bot.tracker import DecisionTracker
 from research.codex_automation import CodexAutomationManager
+from research.paths import LOCAL_TRACKER_DB
 from research.runtime import ResearchSnapshotProvider
 
 _dashboard_api_import_error = None
@@ -145,7 +146,9 @@ async def main():
     runtime_lock = acquire_pid_lock(default_lock_path())
     logger.info("Runtime PID lock acquired: %s", runtime_lock.path)
 
-    tracker = DecisionTracker("data/decisions.db")
+    tracker_db_path = str(LOCAL_TRACKER_DB)
+    tracker = DecisionTracker(tracker_db_path)
+    logger.info("Tracker DB path: %s", tracker_db_path)
     ha_options = _load_ha_options()
     total, _ = tracker.get_paper_capital()
     if total == 0:
@@ -217,7 +220,7 @@ async def main():
 
     executor = ExecutionEngine(config, clob_client, risk_manager, tracker, scanner=scanner)
 
-    archive_builders = ArchiveBuilderService(db_path="data/decisions.db", data_dir="data")
+    archive_builders = ArchiveBuilderService(db_path=tracker_db_path, data_dir="data")
 
     archive_enabled = _as_bool(os.getenv("EDEC_ARCHIVE_ENABLED", ha_options.get("archive_enabled")), True)
     archive_output_dir = _resolve_archive_output_dir(
@@ -265,7 +268,7 @@ async def main():
         output_dir=archive_output_dir,
     )
     archive_workflows = ArchiveWorkflowService(
-        db_path="data/decisions.db",
+        db_path=tracker_db_path,
         output_dir=archive_output_dir,
         label=archive_label,
         recent_limit=archive_recent_limit,

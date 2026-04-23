@@ -146,6 +146,7 @@ class DashboardSnapshotBuilder:
             "mode": getattr(self.strategy_engine, "mode", "unknown"),
             "controls": self.control_plane.build_controls_payload(),
             **self._build_codex_payload(),
+            "research_runtime": self._build_research_runtime_payload(),
             "coins_order": list(self.config.coins),
             "coins": coins_payload,
             "summary": {
@@ -166,6 +167,17 @@ class DashboardSnapshotBuilder:
         except Exception as exc:
             logger.debug("codex snapshot failed: %s", exc)
             return {"codex": {}, "tuner": {}}
+
+    def _build_research_runtime_payload(self) -> dict[str, Any]:
+        provider = getattr(self.strategy_engine, "research_provider", None)
+        if provider is None or not hasattr(provider, "status"):
+            return {}
+        try:
+            payload = provider.status()
+        except Exception as exc:
+            logger.debug("research runtime status failed: %s", exc)
+            return {}
+        return dict(payload) if isinstance(payload, dict) else {}
 
     def _build_open_paper_adjustments(self, open_trades: list[dict[str, Any]]) -> dict[str, dict[str, float]]:
         adjustments: dict[str, dict[str, float]] = {}

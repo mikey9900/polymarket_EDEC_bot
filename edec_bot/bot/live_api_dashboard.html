@@ -270,6 +270,18 @@
     font-size: 12px;
     overflow-wrap: anywhere;
   }
+  .control-path.ready {
+    color: #bfffb3;
+    text-shadow: 0 0 4px rgba(57,255,20,0.35);
+  }
+  .control-path.err {
+    color: #ffd0d0;
+    text-shadow: 0 0 4px rgba(255,59,59,0.35);
+  }
+  .control-path.pending {
+    color: #ffe3a6;
+    text-shadow: 0 0 4px rgba(255,176,0,0.3);
+  }
   .codex-led-cluster {
     display: inline-flex;
     align-items: center;
@@ -945,6 +957,7 @@
           </div>
           <div id="codex-note" class="control-note pending">RESEARCH RUNNER STATUS UNKNOWN</div>
           <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
+          <div id="codex-live" class="control-path">LIVE POLICY: -</div>
         </div>
         <div class="control-block">
           <span class="head">TUNER</span>
@@ -1201,6 +1214,38 @@
       note: "CODEx RUNNER OFFLINE. QUEUED RESEARCH WILL NOT START.",
       meta: heartbeatMs != null ? `LAST HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO` : "LAST HEARTBEAT: NEVER SEEN",
       noteClass: "err",
+    };
+  }
+
+  function describeResearchRuntime(runtime) {
+    if (!runtime || Object.keys(runtime).length === 0) {
+      return {
+        text: "LIVE POLICY: RESEARCH OVERLAY DISABLED OR NOT EXPOSED.",
+        state: "pending",
+        pulseToken: null,
+      };
+    }
+    if (runtime.last_error) {
+      return {
+        text: `LIVE POLICY ISSUE: ${String(runtime.last_error).toUpperCase()}`,
+        state: "err",
+        pulseToken: null,
+      };
+    }
+    if (!runtime.artifact_exists) {
+      return {
+        text: "LIVE POLICY WAITING FOR FIRST ARTIFACT.",
+        state: "pending",
+        pulseToken: null,
+      };
+    }
+    const loadedStamp = runtime.last_loaded_at ? fmtShortStamp(runtime.last_loaded_at) : "—";
+    const reloads = Number(runtime.reload_count || 0);
+    const clusters = Number(runtime.cluster_count || 0);
+    return {
+      text: `LIVE POLICY APPLIED ${loadedStamp} | RELOADS ${reloads} | CLUSTERS ${clusters}`,
+      state: "ready",
+      pulseToken: runtime.last_loaded_at ? `${runtime.last_loaded_at}:${reloads}` : null,
     };
   }
 
@@ -1640,6 +1685,7 @@
   function renderControls(state) {
     const controls = state.controls || {};
     const codex = state.codex || {};
+    const researchRuntime = state.research_runtime || {};
     const tuner = state.tuner || {};
     const stateName = String(controls.state || "unknown").toUpperCase();
     setText($("ctrl-state"), stateName);
@@ -1670,20 +1716,28 @@
     const codexLedLabel = $("codex-led-label");
     const codexNote = $("codex-note");
     const codexMeta = $("codex-meta");
+    const codexLive = $("codex-live");
     const codexStatus = describeCodexRunner(codex);
+    const researchStatus = describeResearchRuntime(researchRuntime);
     if (codexLedCluster) {
       codexLedCluster.className = `codex-led-cluster ${codexStatus.state}`;
-      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}`);
-      if (codexStatus.pulseToken) {
+      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${researchStatus.text}`);
+      if (researchStatus.pulseToken) {
+        pulseCodexLed(codexLedCluster, researchStatus.pulseToken);
+      } else if (codexStatus.pulseToken) {
         pulseCodexLed(codexLedCluster, codexStatus.pulseToken);
       }
     }
     setText(codexLedLabel, codexStatus.label);
     setText(codexNote, codexStatus.note);
     setText(codexMeta, codexStatus.meta);
+    setText(codexLive, researchStatus.text);
     setClassList(codexNote, "ready", codexStatus.noteClass === "ready");
     setClassList(codexNote, "pending", codexStatus.noteClass === "pending");
     setClassList(codexNote, "err", codexStatus.noteClass === "err");
+    if (codexLive) {
+      codexLive.className = `control-path ${researchStatus.state}`;
+    }
     setText($("tuner-cadence"), String(tuner.cadence || "—").toUpperCase());
     setText($("tuner-next"), tuner.next_auto_run_at ? String(tuner.next_auto_run_at).slice(5, 16).replace("T", " ") : "—");
     setText($("tuner-primary"), String(tuner.primary_candidate_source || "none").replaceAll("_", " ").toUpperCase());

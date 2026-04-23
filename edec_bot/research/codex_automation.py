@@ -20,6 +20,7 @@ from .paths import (
     CODEX_RUNS_ROOT,
     CODEX_STATE_PATH,
     DEFAULT_CONFIG_PATH,
+    LOCAL_TRACKER_DB,
     SHARED_DATA_ROOT,
     WAREHOUSE_PATH,
     ensure_codex_dirs,
@@ -473,7 +474,7 @@ class CodexAutomationManager:
         try:
             build_result = build_artifacts(
                 warehouse_path=args.get("warehouse_path", WAREHOUSE_PATH),
-                tracker_db=args.get("tracker_db", "data/decisions.db"),
+                tracker_db=args.get("tracker_db", LOCAL_TRACKER_DB),
                 policy_path=args.get("policy_path", "data/research/runtime_policy.json"),
                 lookback_days=int(args.get("lookback_days", 30)),
             )
@@ -482,6 +483,7 @@ class CodexAutomationManager:
         try:
             local_tuning_result = propose_tuning(
                 config_path=args.get("config_path", self.config_path),
+                tracker_db_path=args.get("tracker_db", LOCAL_TRACKER_DB),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
                 research_report_json_path=args.get("report_json_path", "data/research/research_report.json"),
             )

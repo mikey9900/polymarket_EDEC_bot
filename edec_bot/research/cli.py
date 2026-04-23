@@ -168,9 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     propose_tuning_parser = subparsers.add_parser(
         "propose-tuning",
-        help="Build a deterministic tuning candidate from the latest session exports",
+        help="Build a deterministic tuning candidate from the shared tracker DB with export fallback",
     )
     _add_config_path_arg(propose_tuning_parser)
+    propose_tuning_parser.add_argument("--tracker-db", default=str(LOCAL_TRACKER_DB))
     propose_tuning_parser.add_argument("--research-report-json-path", default=str(DEFAULT_REPORT_JSON_PATH))
 
     weekly_context_parser = subparsers.add_parser(
@@ -329,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             local_tuning_result = propose_tuning(
                 config_path=args.config_path,
+                tracker_db_path=args.tracker_db,
                 research_report_json_path=args.report_json_path,
             )
         except Exception as exc:  # noqa: BLE001
@@ -371,6 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "propose-tuning":
         result = propose_tuning(
             config_path=args.config_path,
+            tracker_db_path=args.tracker_db,
             research_report_json_path=args.research_report_json_path,
         )
         print(json.dumps(result, indent=2, sort_keys=True))

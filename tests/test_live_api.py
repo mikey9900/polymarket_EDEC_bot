@@ -54,6 +54,16 @@ class _FakeDashboardState:
                 "weekly_ai_last_result": "success",
                 "candidate_summary": "Weekly AI candidate ready.",
             },
+            "research_runtime": {
+                "artifact_path": "data/research/runtime_policy.json",
+                "artifact_exists": True,
+                "last_loaded_at": "2026-04-22T12:01:00+00:00",
+                "last_source_modified_at": "2026-04-22T12:00:55+00:00",
+                "reload_count": 2,
+                "cluster_count": 12,
+                "coin_feature_count": 5,
+                "last_error": None,
+            },
             "coins": {},
             "coins_order": [],
         }
@@ -122,6 +132,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('id="codex-led-cluster"', html)
         self.assertIn('id="codex-note"', html)
         self.assertIn('id="codex-meta"', html)
+        self.assertIn('id="codex-live"', html)
         self.assertIn('id="tuner-cadence"', html)
         self.assertIn('id="tuner-next"', html)
         self.assertIn('id="tuner-primary"', html)
@@ -133,6 +144,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("function apiUrl(path)", html)
         self.assertIn("const baseName = (value) =>", html)
         self.assertIn("function describeCodexRunner(codex)", html)
+        self.assertIn("function describeResearchRuntime(runtime)", html)
         self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
         self.assertIn("DESKTOP REVIEW READY: OPEN", html)
         self.assertIn('data-field="session-inline"', html)

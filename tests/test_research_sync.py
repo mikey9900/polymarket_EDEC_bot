@@ -203,6 +203,15 @@ class _FakeRollingFillSource:
         return [], cursor
 
 
+class _RecordingFillSource:
+    def __init__(self):
+        self.seen_assets: list[tuple[str, ...]] = []
+
+    def fetch_fills_for_assets(self, *, asset_ids, cursor: FillCursor, limit: int, until_timestamp=None):
+        self.seen_assets.append(tuple(sorted(asset_ids)))
+        return [], cursor
+
+
 class _FlakyHttpClient:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
@@ -399,6 +408,80 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(result["history"]["fetched"], 1)
         self.assertEqual(result["fills_enriched_rows"], 2)
         self.assertEqual(result["history_lookback_days"], 30)
+
+    def test_recent_5m_fill_sync_excludes_future_windows_from_recent_pass(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_future.duckdb")
+        self.addCleanup(warehouse.close)
+        warehouse.insert_markets(
+            [
+                {
+                    "market_id": "m-past",
+                    "created_at": "2026-04-22T04:59:00Z",
+                    "market_slug": "btc-updown-5m-1776831600",
+                    "question": "Past BTC 5m market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-past-up",
+                    "token2": "tok-past-down",
+                    "condition_id": "cond-past",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": None,
+                    "start_time": "2026-04-23T05:15:00Z",
+                    "end_time": "2026-04-23T05:20:00Z",
+                    "active": True,
+                    "accepting_orders": True,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+                {
+                    "market_id": "m-future",
+                    "created_at": "2026-04-23T05:32:00Z",
+                    "market_slug": "btc-updown-5m-1777008300",
+                    "question": "Future BTC 5m market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-future-up",
+                    "token2": "tok-future-down",
+                    "condition_id": "cond-future",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": None,
+                    "start_time": "2026-04-24T05:25:00Z",
+                    "end_time": "2026-04-24T05:30:00Z",
+                    "active": True,
+                    "accepting_orders": True,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+            ]
+        )
+        warehouse.rebuild_market_5m_registry()
+        source = _RecordingFillSource()
+
+        with mock.patch("research.sync.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime.fromisoformat("2026-04-23T05:23:00+00:00")
+            dt_mock.side_effect = datetime
+            result = sync_recent_5m_fills(
+                warehouse,
+                source,
+                lookback_hours=24,
+                history_lookback_days=0,
+                batch_size=1000,
+                asset_chunk_size=10,
+                bucket_minutes=60,
+                max_batches_per_chunk=1,
+                max_history_batches_per_chunk=0,
+            )
+
+        self.assertEqual(result["recent"]["asset_window_count"], 1)
+        queried_assets = {asset for chunk in source.seen_assets for asset in chunk}
+        self.assertIn("tok-past-up", queried_assets)
+        self.assertIn("tok-past-down", queried_assets)
+        self.assertNotIn("tok-future-up", queried_assets)
+        self.assertNotIn("tok-future-down", queried_assets)
 
     def test_goldsky_query_can_target_asset_ids(self):
         query = build_goldsky_query(

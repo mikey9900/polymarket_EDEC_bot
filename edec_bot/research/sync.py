@@ -164,7 +164,7 @@ def sync_recent_5m_fills(
     history_cutoff = now - timedelta(days=int(history_lookback_days))
     recent_windows = warehouse.asset_windows_between(
         since=recent_cutoff,
-        until=None,
+        until=now,
         bucket_minutes=bucket_minutes,
     )
     history_windows: list[dict[str, object]] = []

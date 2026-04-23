@@ -1,10 +1,12 @@
 import json
 import sys
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +14,7 @@ sys.path.insert(0, str(ROOT / "edec_bot"))
 
 from bot.config import load_config
 from bot.models import AggregatedPrice, MarketInfo, OrderBookSnapshot
+from research import paths as research_paths
 from bot.strategy import StrategyEngine
 from research.runtime import ResearchSnapshotProvider
 
@@ -145,6 +148,26 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(status["coin_feature_count"], 1)
         self.assertEqual(status["cluster_count"], 0)
         self.assertIsNotNone(status["last_loaded_at"])
+
+    def test_snapshot_provider_resolves_data_relative_artifact_path_to_shared_root(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            repo_root = tmp_root / "repo"
+            shared_root = tmp_root / "share" / "edec"
+            policy_path = shared_root / "research" / "runtime_policy.json"
+            policy_path.parent.mkdir(parents=True, exist_ok=True)
+            policy_path.write_text(json.dumps({"clusters": {}, "coin_features": {}}), encoding="utf-8")
+
+            with (
+                mock.patch.object(research_paths, "REPO_ROOT", repo_root),
+                mock.patch.object(research_paths, "SHARED_DATA_ROOT", shared_root),
+            ):
+                provider = ResearchSnapshotProvider("data/research/runtime_policy.json")
+                status = provider.status()
+
+        self.assertEqual(status["artifact_path"], str(policy_path))
+        self.assertTrue(status["artifact_exists"])
+        self.assertEqual(status["reload_count"], 1)
 
     def test_single_leg_paper_gate_suppresses_dry_run_signal(self):
         tracker = _CapturingTracker()

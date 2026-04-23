@@ -8,7 +8,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = REPO_ROOT / "data"
-RESEARCH_ROOT = DATA_ROOT / "research"
+SHARED_DATA_ROOT = (
+    Path(os.getenv("EDEC_SHARED_DATA_ROOT", str(DATA_ROOT)))
+    if os.getenv("EDEC_SHARED_DATA_ROOT")
+    else DATA_ROOT
+)
+if not SHARED_DATA_ROOT.is_absolute():
+    SHARED_DATA_ROOT = REPO_ROOT / SHARED_DATA_ROOT
+RESEARCH_ROOT = SHARED_DATA_ROOT / "research"
 PARQUET_ROOT = RESEARCH_ROOT / "parquet"
 WAREHOUSE_PATH = RESEARCH_ROOT / "warehouse.duckdb"
 DEFAULT_POLICY_PATH = RESEARCH_ROOT / "runtime_policy.json"
@@ -27,13 +34,6 @@ WEEKLY_AI_REPORT_MD_PATH = RESEARCH_ROOT / "weekly_ai_tuner_report.md"
 WEEKLY_AI_PROMPT_BUNDLE_PATH = RESEARCH_ROOT / "weekly_ai_prompt_bundle.json"
 WEEKLY_AI_RESPONSE_PATH = RESEARCH_ROOT / "weekly_ai_response.json"
 WEEKLY_AI_PATCH_PATH = RESEARCH_ROOT / "weekly_ai_patch.diff"
-SHARED_DATA_ROOT = (
-    Path(os.getenv("EDEC_SHARED_DATA_ROOT", str(DATA_ROOT)))
-    if os.getenv("EDEC_SHARED_DATA_ROOT")
-    else DATA_ROOT
-)
-if not SHARED_DATA_ROOT.is_absolute():
-    SHARED_DATA_ROOT = REPO_ROOT / SHARED_DATA_ROOT
 LOCAL_TRACKER_DB = SHARED_DATA_ROOT / "decisions.db"
 DEFAULT_CONFIG_PATH = REPO_ROOT / "edec_bot" / "config_phase_a_single.yaml"
 CONFIG_CANDIDATES_ROOT = REPO_ROOT / "edec_bot" / "config_candidates"
@@ -49,11 +49,15 @@ def resolve_repo_path(path_value: str | Path) -> Path:
     path = Path(path_value)
     if path.is_absolute():
         return path
+    if path.parts and path.parts[0] == "data":
+        if len(path.parts) == 1:
+            return SHARED_DATA_ROOT
+        return SHARED_DATA_ROOT.joinpath(*path.parts[1:])
     return REPO_ROOT / path
 
 
 def ensure_research_dirs() -> None:
-    for path in (DATA_ROOT, RESEARCH_ROOT, PARQUET_ROOT):
+    for path in (SHARED_DATA_ROOT, RESEARCH_ROOT, PARQUET_ROOT):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -63,7 +67,7 @@ def ensure_codex_dirs() -> None:
 
 
 def ensure_tuner_dirs() -> None:
-    for path in (RESEARCH_ROOT, CONFIG_CANDIDATES_ROOT):
+    for path in (SHARED_DATA_ROOT, RESEARCH_ROOT, CONFIG_CANDIDATES_ROOT):
         path.mkdir(parents=True, exist_ok=True)
 
 

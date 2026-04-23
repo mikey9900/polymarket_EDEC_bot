@@ -118,6 +118,22 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertIn(local_exports.resolve(), roots)
         self.assertIn(shared_exports.resolve(), roots)
 
+    def test_resolve_repo_path_routes_data_paths_to_shared_root(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            repo_root = tmp_root / "repo"
+            shared_root = tmp_root / "shared"
+
+            with (
+                mock.patch.object(research_paths, "REPO_ROOT", repo_root),
+                mock.patch.object(research_paths, "SHARED_DATA_ROOT", shared_root),
+            ):
+                resolved_data = research_paths.resolve_repo_path("data/research/runtime_policy.json")
+                resolved_repo = research_paths.resolve_repo_path("edec_bot/version.py")
+
+        self.assertEqual(resolved_data, shared_root / "research" / "runtime_policy.json")
+        self.assertEqual(resolved_repo, repo_root / "edec_bot" / "version.py")
+
     def test_sync_recent_main_passes_http_retry_flags(self):
         fake_warehouse = mock.MagicMock()
         fake_source = mock.MagicMock()

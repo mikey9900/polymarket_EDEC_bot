@@ -957,6 +957,7 @@
           </div>
           <div id="codex-note" class="control-note pending">RESEARCH RUNNER STATUS UNKNOWN</div>
           <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
+          <div id="codex-warehouse" class="control-path">WAREHOUSE: -</div>
           <div id="codex-live" class="control-path">LIVE POLICY: -</div>
         </div>
         <div class="control-block">
@@ -1247,6 +1248,24 @@
       state: "ready",
       pulseToken: runtime.last_loaded_at ? `${runtime.last_loaded_at}:${reloads}` : null,
     };
+  }
+
+  function describeResearchWarehouse(codex, runtime) {
+    const metrics = (codex && codex.daily_research_metrics) || {};
+    const fetched = Number(metrics.fetched_fill_count || 0);
+    const rows = Number(metrics.fill_flow_rows || 0);
+    const coinFeatures = Number((runtime && runtime.coin_feature_count) || 0);
+    if (!metrics || Object.keys(metrics).length === 0) {
+      return {
+        text: "WAREHOUSE: WAITING FOR DAILY REFRESH METRICS.",
+        state: "pending",
+      };
+    }
+    const text = `WAREHOUSE USED ${rows} FLOW ROWS | ${coinFeatures} COIN FEATURES | FETCHED ${fetched} NEW FILLS`;
+    if (rows > 0 || coinFeatures > 0 || fetched > 0) {
+      return { text, state: "ready" };
+    }
+    return { text, state: "pending" };
   }
 
   // ----- Card rendering -----
@@ -1716,12 +1735,14 @@
     const codexLedLabel = $("codex-led-label");
     const codexNote = $("codex-note");
     const codexMeta = $("codex-meta");
+    const codexWarehouse = $("codex-warehouse");
     const codexLive = $("codex-live");
     const codexStatus = describeCodexRunner(codex);
+    const warehouseStatus = describeResearchWarehouse(codex, researchRuntime);
     const researchStatus = describeResearchRuntime(researchRuntime);
     if (codexLedCluster) {
       codexLedCluster.className = `codex-led-cluster ${codexStatus.state}`;
-      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${researchStatus.text}`);
+      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${warehouseStatus.text}\n${researchStatus.text}`);
       if (researchStatus.pulseToken) {
         pulseCodexLed(codexLedCluster, researchStatus.pulseToken);
       } else if (codexStatus.pulseToken) {
@@ -1731,10 +1752,14 @@
     setText(codexLedLabel, codexStatus.label);
     setText(codexNote, codexStatus.note);
     setText(codexMeta, codexStatus.meta);
+    setText(codexWarehouse, warehouseStatus.text);
     setText(codexLive, researchStatus.text);
     setClassList(codexNote, "ready", codexStatus.noteClass === "ready");
     setClassList(codexNote, "pending", codexStatus.noteClass === "pending");
     setClassList(codexNote, "err", codexStatus.noteClass === "err");
+    if (codexWarehouse) {
+      codexWarehouse.className = `control-path ${warehouseStatus.state}`;
+    }
     if (codexLive) {
       codexLive.className = `control-path ${researchStatus.state}`;
     }

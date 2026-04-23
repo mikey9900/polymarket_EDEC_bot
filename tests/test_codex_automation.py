@@ -112,6 +112,67 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertEqual(snapshot["tuner"]["daily_local_candidate"]["candidate_id"], "local-1")
         self.assertEqual(snapshot["tuner"]["candidate_summary"], "Weekly AI candidate ready.")
 
+    def test_snapshot_surfaces_latest_daily_research_metrics(self):
+        run_dir = self.tmpdir / "runs" / "20260422T180000Z-daily"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        result_path = run_dir / "result.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "run_id": "run-1",
+                    "job_type": "daily_research_refresh",
+                    "finished_at": "2026-04-22T18:00:00+00:00",
+                    "ok": True,
+                    "result": {
+                        "build": {
+                            "ok": True,
+                            "result": {
+                                "cluster_count": 48,
+                                "outcome_count": 235,
+                                "fill_flow_rows": 3,
+                            },
+                        },
+                        "sync": {
+                            "ok": True,
+                            "result": {
+                                "fills": {
+                                    "fetched": 42,
+                                    "inserted": 42,
+                                }
+                            },
+                        },
+                        "daily_local_tuning": {
+                            "ok": True,
+                            "result": {
+                                "candidate_status": "none",
+                            },
+                        },
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        (self.tmpdir / "latest.json").write_text(
+            json.dumps(
+                {
+                    "daily_research_refresh": {
+                        "run_id": "run-1",
+                        "finished_at": "2026-04-22T18:00:00+00:00",
+                        "result_path": str(result_path),
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        snapshot = self.manager.snapshot()
+
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 3)
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fetched_fill_count"], 42)
+        self.assertEqual(snapshot["tuner"]["daily_research_metrics"]["candidate_status"], "none")
+
     def test_run_once_processes_repo_task(self):
         self.manager.enqueue_job(
             "repo_task",

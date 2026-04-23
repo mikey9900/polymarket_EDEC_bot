@@ -118,6 +118,7 @@ class CodexAutomationManager:
         active_run = state.get("active_run")
         last_run = state.get("last_run")
         next_queued_job = self._next_queued_job_payload()
+        daily_research_metrics = self._latest_daily_refresh_metrics()
         tuner_schedule = dict((state.get("schedules") or {}).get("tuning_proposal") or {})
         latest_candidate = dict(state.get("latest_candidate") or {})
         daily_local_candidate = dict(state.get("daily_local_candidate") or {})
@@ -131,6 +132,7 @@ class CodexAutomationManager:
                 "active_run": active_run,
                 "last_run": last_run,
                 "next_queued_job": next_queued_job,
+                "daily_research_metrics": daily_research_metrics,
                 "latest_candidate": latest_candidate,
                 "daily_local_candidate": daily_local_candidate,
                 "weekly_ai_candidate": weekly_ai_candidate,
@@ -145,6 +147,7 @@ class CodexAutomationManager:
                 "next_auto_run_at": tuner_schedule.get("next_auto_run_at"),
                 "last_run_at": tuner_schedule.get("last_run_at"),
                 "last_result": tuner_schedule.get("last_result"),
+                "daily_research_metrics": daily_research_metrics,
                 "daily_local_last_run_at": ((state.get("schedules") or {}).get("daily_research_refresh") or {}).get("last_run_at"),
                 "daily_local_last_result": ((state.get("schedules") or {}).get("daily_research_refresh") or {}).get("last_result"),
                 "weekly_ai_last_run_at": tuner_schedule.get("last_run_at"),
@@ -584,6 +587,32 @@ class CodexAutomationManager:
             return None
         payload = self._read_json(next_job_path, default={})
         return payload or None
+
+    def _latest_daily_refresh_metrics(self) -> dict[str, Any]:
+        latest_payload = self._read_json(self.latest_path, default={})
+        daily_refresh = latest_payload.get("daily_research_refresh") or {}
+        result_path = daily_refresh.get("result_path")
+        if not result_path:
+            return {}
+        payload = self._read_json(resolve_repo_path(result_path), default={})
+        if not payload:
+            return {}
+        result = payload.get("result") or {}
+        build = (result.get("build") or {}).get("result") or {}
+        sync = (result.get("sync") or {}).get("result") or {}
+        fills = (sync.get("fills") or {}) if isinstance(sync, dict) else {}
+        local = (result.get("daily_local_tuning") or {}).get("result") or {}
+        return {
+            "run_id": payload.get("run_id"),
+            "finished_at": payload.get("finished_at"),
+            "ok": bool(payload.get("ok", False)),
+            "cluster_count": int(build.get("cluster_count", 0) or 0),
+            "outcome_count": int(build.get("outcome_count", 0) or 0),
+            "fill_flow_rows": int(build.get("fill_flow_rows", 0) or 0),
+            "fetched_fill_count": int(fills.get("fetched", 0) or 0),
+            "inserted_fill_count": int(fills.get("inserted", 0) or 0),
+            "candidate_status": str(local.get("candidate_status") or "none"),
+        }
 
     def _sync_tuner_state(self, state: dict[str, Any]) -> None:
         tuner = load_tuner_state(self.tuner_state_path or "data/research/tuner_state.json")

@@ -35,12 +35,34 @@ class _FakeDashboardState:
                     "finished_at": "2026-04-22T11:59:00+00:00",
                 },
                 "next_queued_job": None,
+                "daily_research_metrics": {
+                    "run_id": "run-1",
+                    "finished_at": "2026-04-22T11:59:00+00:00",
+                    "ok": True,
+                    "cluster_count": 10,
+                    "outcome_count": 48,
+                    "fill_flow_rows": 3,
+                    "fetched_fill_count": 42,
+                    "inserted_fill_count": 42,
+                    "candidate_status": "ready",
+                },
             },
             "tuner": {
                 "cadence": "weekly",
                 "candidate_status": "ready",
                 "schedule_enabled": True,
                 "primary_candidate_source": "weekly_ai",
+                "daily_research_metrics": {
+                    "run_id": "run-1",
+                    "finished_at": "2026-04-22T11:59:00+00:00",
+                    "ok": True,
+                    "cluster_count": 10,
+                    "outcome_count": 48,
+                    "fill_flow_rows": 3,
+                    "fetched_fill_count": 42,
+                    "inserted_fill_count": 42,
+                    "candidate_status": "ready",
+                },
                 "daily_local_candidate": {"status": "ready"},
                 "weekly_ai_candidate": {"status": "ready"},
                 "weekly_review_bundle": {
@@ -132,6 +154,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('id="codex-led-cluster"', html)
         self.assertIn('id="codex-note"', html)
         self.assertIn('id="codex-meta"', html)
+        self.assertIn('id="codex-warehouse"', html)
         self.assertIn('id="codex-live"', html)
         self.assertIn('id="tuner-cadence"', html)
         self.assertIn('id="tuner-next"', html)
@@ -145,7 +168,9 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("const baseName = (value) =>", html)
         self.assertIn("function describeCodexRunner(codex)", html)
         self.assertIn("function describeResearchRuntime(runtime)", html)
+        self.assertIn("function describeResearchWarehouse(codex, runtime)", html)
         self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
+        self.assertIn("WAREHOUSE USED", html)
         self.assertIn("DESKTOP REVIEW READY: OPEN", html)
         self.assertIn('data-field="session-inline"', html)
         self.assertNotIn('data-field="pred-copy"', html)

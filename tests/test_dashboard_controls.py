@@ -174,6 +174,17 @@ class _FakeCodexManager:
                     "job_type": "daily_research_refresh",
                     "requested_at": "2026-04-22T11:59:00+00:00",
                 },
+                "daily_research_metrics": {
+                    "run_id": "run-1",
+                    "finished_at": "2026-04-22T12:00:00+00:00",
+                    "ok": True,
+                    "cluster_count": 12,
+                    "outcome_count": 48,
+                    "fill_flow_rows": 4,
+                    "fetched_fill_count": 42,
+                    "inserted_fill_count": 42,
+                    "candidate_status": "ready",
+                },
                 "latest_candidate": {
                     "candidate_id": "cand-1",
                     "status": "ready",
@@ -210,6 +221,17 @@ class _FakeCodexManager:
                 "next_auto_run_at": "2026-04-27T12:30:00+00:00",
                 "last_run_at": "2026-04-21T12:30:00+00:00",
                 "last_result": "success",
+                "daily_research_metrics": {
+                    "run_id": "run-1",
+                    "finished_at": "2026-04-22T12:00:00+00:00",
+                    "ok": True,
+                    "cluster_count": 12,
+                    "outcome_count": 48,
+                    "fill_flow_rows": 4,
+                    "fetched_fill_count": 42,
+                    "inserted_fill_count": 42,
+                    "candidate_status": "ready",
+                },
                 "daily_local_last_run_at": "2026-04-22T12:15:00+00:00",
                 "daily_local_last_result": "success",
                 "weekly_ai_last_run_at": "2026-04-21T12:30:00+00:00",
@@ -331,9 +353,11 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["codex"]["queue_depth"], 1)
         self.assertEqual(snapshot["codex"]["latest_candidate"]["status"], "ready")
         self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
+        self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 4)
         self.assertEqual(snapshot["research_runtime"]["reload_count"], 3)
         self.assertEqual(snapshot["research_runtime"]["cluster_count"], 12)
         self.assertEqual(snapshot["tuner"]["cadence"], "weekly")
+        self.assertEqual(snapshot["tuner"]["daily_research_metrics"]["fetched_fill_count"], 42)
         self.assertEqual(snapshot["tuner"]["primary_candidate_source"], "weekly_ai")
         self.assertEqual(
             snapshot["tuner"]["weekly_review_bundle"]["paths"]["desktop_prompt"],

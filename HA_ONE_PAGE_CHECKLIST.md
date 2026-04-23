@@ -6,7 +6,6 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 
 - [ ] Home Assistant OS is running
 - [ ] This repo is cloned on the HA machine at `/share/polymarket_EDEC_bot`
-- [ ] You have your OpenAI API key
 - [ ] You have bot secrets ready for the main `EDEC Polymarket Bot` add-on
 
 ## Add-on Repository
@@ -27,7 +26,6 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
   - [ ] `poll_seconds=15`
   - [ ] `timezone=America/Edmonton` or your local timezone
   - [ ] `codex_home=/data/codex`
-  - [ ] `openai_api_key=<your key>`
 - [ ] Start the add-on
 - [ ] Confirm the add-on stays healthy after first boot
 
@@ -47,7 +45,7 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 ## Dashboard Checks
 
 - [ ] `RUN RESEARCH` queues a daily refresh
-- [ ] `RUN NOW` under `TUNER` queues a proposal
+- [ ] `RUN NOW` under `TUNER` queues a weekly desktop review bundle
 - [ ] `PAUSE` and `RESUME` change weekly tuning state
 - [ ] `WEEKLY` and `MANUAL` change cadence
 - [ ] `SKIP NEXT` sets the next weekly run to skip
@@ -57,5 +55,5 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 ## Final Success Check
 
 - [ ] Daily research runs appear under `/data/edec/codex/runs/`
-- [ ] Weekly tuning proposals write candidate/report artifacts
+- [ ] Weekly review bundles write compact bundle artifacts for desktop Codex review
 - [ ] The dashboard shows live `codex` queue depth and tuner status

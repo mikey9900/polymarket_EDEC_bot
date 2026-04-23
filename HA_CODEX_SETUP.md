@@ -17,13 +17,12 @@ This repo now contains two Home Assistant add-ons:
    - `poll_seconds`: `15`
    - `timezone`: your local timezone
    - `codex_home`: `/data/codex`
-   - `openai_api_key`: your OpenAI API key
 6. Start `EDEC Codex Runner`.
 7. Verify `/data/edec/codex/state.json` appears.
 8. Start `EDEC Polymarket Bot`.
 9. Use the HA dashboard controls to:
    - queue a daily research refresh
-   - queue a tuning proposal
+   - queue a weekly desktop review bundle
    - pause/resume weekly tuning
    - switch weekly/manual cadence
    - skip next weekly run
@@ -40,5 +39,6 @@ This repo now contains two Home Assistant add-ons:
 
 - The Codex runner becomes the primary automation engine for research/tuning.
 - Daily and weekly timing are computed locally by the runner.
-- Tuning proposals are deterministic repo code.
+- Daily tuning proposals are deterministic repo code.
+- Weekly runs prepare a compact desktop review bundle instead of calling an API from HA.
 - Promotion remains manual.

@@ -31,10 +31,10 @@ For app-folder Dropbox apps, `/` maps to `Apps/<your-app-name>/`.
 
 ## Manual Run
 
-From `edec_bot/`:
+From repo root:
 
 ```powershell
-python archive_daily.py --recent-limit 500 --label EDEC-BOT
+.\scripts\venv_python.cmd edec_bot/archive_daily.py --recent-limit 500 --label EDEC-BOT
 ```
 
 Optional args:
@@ -78,10 +78,10 @@ The bot will prefer refresh-token auth when those fields are present, and fall b
 
 Use this when you want local workspace access to the latest files for AI analysis.
 
-From `edec_bot/`:
+From repo root:
 
 ```powershell
-python sync_dropbox_to_repo_latest.py
+.\scripts\venv_python.cmd edec_bot/sync_dropbox_to_repo_latest.py
 ```
 
 This pulls from Dropbox `/latest/` into:

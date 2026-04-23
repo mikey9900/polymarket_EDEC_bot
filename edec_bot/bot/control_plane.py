@@ -297,14 +297,14 @@ class ControlPlane:
                 return {
                     "ok": True,
                     "status": 200,
-                    "message": "Daily research refresh queued." if result.get("queued") else "Daily research refresh is already queued.",
+                    "message": "Daily research + local tuning queued." if result.get("queued") else "Daily research + local tuning is already queued.",
                 }
             if action == "tuner_run_now":
                 result = self.codex_manager.enqueue_tuning_proposal(requested_by="dashboard")
                 return {
                     "ok": True,
                     "status": 200,
-                    "message": "Tuning proposal queued." if result.get("queued") else "Tuning proposal is already queued.",
+                    "message": "Weekly desktop review bundle queued." if result.get("queued") else "Weekly desktop review bundle is already queued.",
                 }
             if action == "tuner_schedule_pause":
                 result = self.codex_manager.pause_tuner_schedule()

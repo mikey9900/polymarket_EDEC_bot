@@ -31,6 +31,16 @@ Use recent EDEC session exports to:
 - Treat telemetry integrity issues as blockers, not footnotes.
 - Present config changes, advisories, and data-quality issues as separate outputs.
 
+## Local command rule
+
+For local runs on this Windows workstation, execute Python through the repo venv helper:
+
+```powershell
+.\scripts\venv_python.cmd ...
+```
+
+Do not use bare `python` for local repo commands. Home Assistant and CI keep using their own environments.
+
 ## Primary data source
 
 Preferred source order is:
@@ -63,8 +73,8 @@ If GitHub credentials are missing, do not stop there. Fall back to local mirror 
 
 From repo root:
 
-```bash
-python edec_bot/sync_dropbox_to_repo_latest.py
+```powershell
+.\scripts\venv_python.cmd edec_bot/sync_dropbox_to_repo_latest.py
 ```
 
 Expected synced outputs:
@@ -110,16 +120,16 @@ Optional keys:
 
 From repo root:
 
-```bash
-python edec_bot/fetch_github_data.py --limit 3
+```powershell
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 3
 ```
 
 Useful variants:
 
-```bash
-python edec_bot/fetch_github_data.py --limit 5
-python edec_bot/fetch_github_data.py --output-dir data/github_exports
-python edec_bot/fetch_github_data.py --github-repo owner/edec-bot-data --github-branch main
+```powershell
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 5
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --output-dir data/github_exports
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --github-repo owner/edec-bot-data --github-branch main
 ```
 
 Default download location:
@@ -153,8 +163,8 @@ If these checks fail, fix telemetry first or clearly downgrade confidence in the
 
 Default config target:
 
-```bash
-python -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase_a_single.yaml'))"
+```powershell
+.\scripts\venv_python.cmd -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase_a_single.yaml'))"
 ```
 
 Use the resolved file unless the user explicitly wants a different profile.
@@ -246,15 +256,15 @@ Preferred quick path:
 2. if stale/missing, check `.tmp_edec_data_repo/session_exports/`
 3. if stale/missing, run Dropbox sync:
 
-```bash
-python edec_bot/sync_dropbox_to_repo_latest.py
+```powershell
+.\scripts\venv_python.cmd edec_bot/sync_dropbox_to_repo_latest.py
 ```
 
 4. if still missing, use GitHub fetch:
 
-```bash
-python edec_bot/fetch_github_data.py --limit 3
-python -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase_a_single.yaml'))"
+```powershell
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 3
+.\scripts\venv_python.cmd -c "import os; print(os.getenv('EDEC_CONFIG_PATH', 'edec_bot/config_phase_a_single.yaml'))"
 ```
 
 Then:

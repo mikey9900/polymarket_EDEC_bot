@@ -68,9 +68,15 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
             parser = build_parser()
 
         propose_args = parser.parse_args(["propose-tuning"])
+        context_args = parser.parse_args(["build-weekly-ai-context"])
+        weekly_args = parser.parse_args(["propose-weekly-ai-tuning"])
+        review_args = parser.parse_args(["build-weekly-review-bundle"])
         runner_args = parser.parse_args(["codex-runner", "--run-once"])
 
         self.assertEqual(propose_args.command, "propose-tuning")
+        self.assertEqual(context_args.command, "build-weekly-ai-context")
+        self.assertEqual(weekly_args.command, "propose-weekly-ai-tuning")
+        self.assertEqual(review_args.command, "build-weekly-review-bundle")
         self.assertEqual(runner_args.command, "codex-runner")
         self.assertTrue(runner_args.run_once)
 
@@ -144,6 +150,8 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
             mock.patch("research.cli.GoldskyFillSource", return_value=fake_source),
             mock.patch("research.cli.sync_recent_5m_fills", side_effect=RuntimeError("boom")),
             mock.patch("research.artifacts.build_artifacts", return_value={"cluster_count": 1, "outcome_count": 2}),
+            mock.patch("research.cli.propose_tuning", return_value={"candidate_status": "ready", "candidate_source": "daily_local"}),
+            mock.patch("research.cli.build_weekly_ai_context", return_value={"context_path": "data/research/weekly_ai_context.json"}),
             mock.patch("sys.stdout", new=io.StringIO()) as stdout,
         ):
             exit_code = main(
@@ -171,5 +179,8 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertEqual(payload["sync"]["error"]["message"], "boom")
         self.assertTrue(payload["build"]["ok"])
         self.assertEqual(payload["build"]["result"], {"cluster_count": 1, "outcome_count": 2})
+        self.assertTrue(payload["daily_local_tuning"]["ok"])
+        self.assertEqual(payload["daily_local_tuning"]["result"]["candidate_status"], "ready")
+        self.assertTrue(payload["weekly_ai_context"]["ok"])
         fake_source.close.assert_called_once()
         fake_warehouse.close.assert_called_once()

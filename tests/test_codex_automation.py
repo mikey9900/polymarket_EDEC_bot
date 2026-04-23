@@ -3,6 +3,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 from uuid import uuid4
 
 
@@ -39,6 +40,8 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertFalse(second["queued"])
         self.assertTrue(second["duplicate"])
         self.assertEqual(self.manager.queue_depth(), 1)
+        snapshot = self.manager.snapshot()
+        self.assertEqual(snapshot["codex"]["next_queued_job"]["job_type"], "daily_research_refresh")
 
     def test_tuner_schedule_controls_update_snapshot(self):
         pause = self.manager.pause_tuner_schedule()
@@ -62,6 +65,53 @@ class CodexAutomationManagerTests(unittest.TestCase):
         snapshot = self.manager.snapshot()
         self.assertTrue(snapshot["tuner"]["schedule_enabled"])
 
+    def test_snapshot_surfaces_daily_and_weekly_candidate_sources(self):
+        (self.tmpdir / "tuner_state.json").write_text(
+            json.dumps(
+                {
+                    "daily_local_candidate": {
+                        "candidate_id": "local-1",
+                        "status": "ready",
+                        "summary": "Daily local candidate ready.",
+                        "paths": {},
+                        "generated_at": "2026-04-21T12:00:00+00:00",
+                        "last_result": "ready",
+                    },
+                    "weekly_ai_candidate": {
+                        "candidate_id": "weekly-1",
+                        "status": "ready",
+                        "summary": "Weekly AI candidate ready.",
+                        "paths": {},
+                        "generated_at": "2026-04-22T12:00:00+00:00",
+                        "last_result": "ready",
+                    },
+                    "weekly_review_bundle": {
+                        "generated_at": "2026-04-22T12:30:00+00:00",
+                        "status": "ready",
+                        "summary": "Weekly review bundle ready.",
+                        "paths": {"bundle_md": "data/research/weekly_review_bundle.md"},
+                        "last_result": "ready",
+                    },
+                    "primary_candidate_source": "weekly_ai",
+                    "latest_candidate_id": "weekly-1",
+                    "latest_candidate_status": "ready",
+                    "latest_candidate_summary": "Weekly AI candidate ready.",
+                    "latest_candidate_paths": {},
+                    "latest_candidate_source": "weekly_ai",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        snapshot = self.manager.snapshot()
+
+        self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
+        self.assertEqual(snapshot["codex"]["weekly_ai_candidate"]["candidate_id"], "weekly-1")
+        self.assertEqual(snapshot["codex"]["weekly_review_bundle"]["status"], "ready")
+        self.assertEqual(snapshot["tuner"]["daily_local_candidate"]["candidate_id"], "local-1")
+        self.assertEqual(snapshot["tuner"]["candidate_summary"], "Weekly AI candidate ready.")
+
     def test_run_once_processes_repo_task(self):
         self.manager.enqueue_job(
             "repo_task",
@@ -79,6 +129,18 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         payload = json.loads(runs[0].read_text(encoding="utf-8"))
         self.assertEqual(payload["job_type"], "repo_task")
+
+    def test_tuning_proposal_job_builds_weekly_review_bundle(self):
+        self.manager.enqueue_tuning_proposal(requested_by="test")
+
+        with mock.patch(
+            "research.codex_automation.build_weekly_review_bundle",
+            return_value={"ok": True, "status": "ready", "bundle_md_path": "data/research/weekly_review_bundle.md"},
+        ):
+            result = self.manager.run_once()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["status"], "ready")
 
 
 if __name__ == "__main__":

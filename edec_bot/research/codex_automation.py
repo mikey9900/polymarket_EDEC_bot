@@ -29,6 +29,8 @@ from .sources import GoldskyFillSource
 from .sync import sync_recent_5m_fills
 from .tuner import (
     TuningError,
+    build_weekly_ai_context,
+    build_weekly_review_bundle,
     load_tuner_state,
     maybe_run_tuner_heartbeat,
     promote_tuning_candidate,
@@ -114,8 +116,12 @@ class CodexAutomationManager:
         runner = dict(state.get("runner") or {})
         active_run = state.get("active_run")
         last_run = state.get("last_run")
+        next_queued_job = self._next_queued_job_payload()
         tuner_schedule = dict((state.get("schedules") or {}).get("tuning_proposal") or {})
         latest_candidate = dict(state.get("latest_candidate") or {})
+        daily_local_candidate = dict(state.get("daily_local_candidate") or {})
+        weekly_ai_candidate = dict(state.get("weekly_ai_candidate") or {})
+        weekly_review_bundle = dict(state.get("weekly_review_bundle") or {})
         return {
             "codex": {
                 "healthy": bool(runner.get("healthy", False)),
@@ -123,7 +129,12 @@ class CodexAutomationManager:
                 "queue_depth": self.queue_depth(),
                 "active_run": active_run,
                 "last_run": last_run,
+                "next_queued_job": next_queued_job,
                 "latest_candidate": latest_candidate,
+                "daily_local_candidate": daily_local_candidate,
+                "weekly_ai_candidate": weekly_ai_candidate,
+                "weekly_review_bundle": weekly_review_bundle,
+                "primary_candidate_source": state.get("primary_candidate_source", "none"),
             },
             "tuner": {
                 "running": bool(active_run and active_run.get("job_type") == "tuning_proposal"),
@@ -133,6 +144,14 @@ class CodexAutomationManager:
                 "next_auto_run_at": tuner_schedule.get("next_auto_run_at"),
                 "last_run_at": tuner_schedule.get("last_run_at"),
                 "last_result": tuner_schedule.get("last_result"),
+                "daily_local_last_run_at": ((state.get("schedules") or {}).get("daily_research_refresh") or {}).get("last_run_at"),
+                "daily_local_last_result": ((state.get("schedules") or {}).get("daily_research_refresh") or {}).get("last_result"),
+                "weekly_ai_last_run_at": tuner_schedule.get("last_run_at"),
+                "weekly_ai_last_result": tuner_schedule.get("last_result"),
+                "daily_local_candidate": daily_local_candidate,
+                "weekly_ai_candidate": weekly_ai_candidate,
+                "weekly_review_bundle": weekly_review_bundle,
+                "primary_candidate_source": state.get("primary_candidate_source", "none"),
                 "candidate_available": latest_candidate.get("status") == "ready",
                 "candidate_status": latest_candidate.get("status", "none"),
                 "candidate_summary": latest_candidate.get("summary", ""),
@@ -360,7 +379,10 @@ class CodexAutomationManager:
         schedule = state["schedules"].get(job["job_type"])
         if isinstance(schedule, dict):
             schedule["last_run_at"] = finished_at
-            schedule["last_result"] = "success" if ok else "failed"
+            if ok:
+                schedule["last_result"] = result.get("status") or "success"
+            else:
+                schedule["last_result"] = result.get("status") or "failed"
             if ok:
                 schedule["last_success_at"] = finished_at
         if ok and job["job_type"] in ("daily_research_refresh", "tuning_proposal"):
@@ -382,7 +404,7 @@ class CodexAutomationManager:
         if job_type == "daily_research_refresh":
             return self._run_daily_refresh(args)
         if job_type == "tuning_proposal":
-            return propose_tuning(
+            return build_weekly_review_bundle(
                 config_path=args.get("config_path", self.config_path),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
             )
@@ -414,6 +436,10 @@ class CodexAutomationManager:
         sync_error: dict[str, str] | None = None
         build_result: dict[str, Any] | None = None
         build_error: dict[str, str] | None = None
+        local_tuning_result: dict[str, Any] | None = None
+        local_tuning_error: dict[str, str] | None = None
+        weekly_context_result: dict[str, Any] | None = None
+        weekly_context_error: dict[str, str] | None = None
         try:
             sync_result = sync_recent_5m_fills(
                 warehouse,
@@ -439,11 +465,36 @@ class CodexAutomationManager:
             )
         except Exception as exc:  # noqa: BLE001
             build_error = {"type": exc.__class__.__name__, "message": str(exc)}
+        try:
+            local_tuning_result = propose_tuning(
+                config_path=args.get("config_path", self.config_path),
+                tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
+            )
+        except Exception as exc:  # noqa: BLE001
+            local_tuning_error = {"type": exc.__class__.__name__, "message": str(exc)}
+        try:
+            weekly_context_result = build_weekly_ai_context(
+                config_path=args.get("config_path", self.config_path),
+                tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
+                window_days=int(args.get("weekly_context_days", 7)),
+            )
+        except Exception as exc:  # noqa: BLE001
+            weekly_context_error = {"type": exc.__class__.__name__, "message": str(exc)}
         return {
             "command": "daily-refresh",
-            "ok": build_error is None,
+            "ok": build_error is None and local_tuning_error is None and weekly_context_error is None,
             "sync": {"ok": sync_error is None, "result": sync_result, "error": sync_error},
             "build": {"ok": build_error is None, "result": build_result, "error": build_error},
+            "daily_local_tuning": {
+                "ok": local_tuning_error is None,
+                "result": local_tuning_result,
+                "error": local_tuning_error,
+            },
+            "weekly_ai_context": {
+                "ok": weekly_context_error is None,
+                "result": weekly_context_result,
+                "error": weekly_context_error,
+            },
         }
 
     def _run_repo_task(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -509,6 +560,13 @@ class CodexAutomationManager:
         queue_files = sorted(self.queue_root.glob("*.json"))
         return queue_files[0] if queue_files else None
 
+    def _next_queued_job_payload(self) -> dict[str, Any] | None:
+        next_job_path = self._next_job_path()
+        if next_job_path is None:
+            return None
+        payload = self._read_json(next_job_path, default={})
+        return payload or None
+
     def _sync_tuner_state(self, state: dict[str, Any]) -> None:
         tuner = load_tuner_state(self.tuner_state_path or "data/research/tuner_state.json")
         state["latest_candidate"] = {
@@ -516,10 +574,16 @@ class CodexAutomationManager:
             "status": tuner.get("latest_candidate_status", "none"),
             "summary": tuner.get("latest_candidate_summary", ""),
             "paths": dict(tuner.get("latest_candidate_paths") or {}),
+            "source": tuner.get("latest_candidate_source", "none"),
         }
+        state["daily_local_candidate"] = dict(tuner.get("daily_local_candidate") or {})
+        state["weekly_ai_candidate"] = dict(tuner.get("weekly_ai_candidate") or {})
+        state["weekly_review_bundle"] = dict(tuner.get("weekly_review_bundle") or {})
+        state["primary_candidate_source"] = tuner.get("primary_candidate_source", "none")
         schedule = state["schedules"]["tuning_proposal"]
-        schedule["last_run_at"] = tuner.get("last_run_at") or schedule.get("last_run_at")
-        schedule["last_result"] = tuner.get("last_result") or schedule.get("last_result")
+        weekly_bundle = dict(tuner.get("weekly_review_bundle") or {})
+        schedule["last_run_at"] = weekly_bundle.get("generated_at") or schedule.get("last_run_at")
+        schedule["last_result"] = weekly_bundle.get("last_result") or schedule.get("last_result")
 
     def _has_recent_daily_success(self, state: dict[str, Any], now: datetime) -> bool:
         schedule = state["schedules"]["daily_research_refresh"]
@@ -531,7 +595,7 @@ class CodexAutomationManager:
     def _default_state(self) -> dict[str, Any]:
         now = self._utcnow()
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "runner": {
                 "healthy": False,
                 "last_heartbeat_at": None,
@@ -546,7 +610,12 @@ class CodexAutomationManager:
                 "status": "none",
                 "summary": "",
                 "paths": {},
+                "source": "none",
             },
+            "daily_local_candidate": {},
+            "weekly_ai_candidate": {},
+            "weekly_review_bundle": {},
+            "primary_candidate_source": "none",
             "schedules": {
                 "daily_research_refresh": {
                     **SCHEDULE_DEFAULTS["daily_research_refresh"],
@@ -626,9 +695,13 @@ class CodexAutomationManager:
             return f"{job_type} failed: {error.get('message', 'unknown error')}"
         if job_type == "daily_research_refresh":
             build_result = payload["result"].get("build", {}).get("result") or {}
-            return f"Daily refresh built {int(build_result.get('cluster_count', 0))} clusters."
+            local = payload["result"].get("daily_local_tuning", {}).get("result") or {}
+            return (
+                f"Daily refresh built {int(build_result.get('cluster_count', 0))} clusters; "
+                f"local candidate {str(local.get('candidate_status') or 'unknown')}."
+            )
         if job_type == "tuning_proposal":
-            return f"Tuning proposal status: {payload['result'].get('candidate_status', 'unknown')}."
+            return f"Weekly desktop review bundle status: {payload['result'].get('status', 'unknown')}."
         if job_type == "promote_candidate":
             return f"Promoted candidate {payload['result'].get('candidate_id', '')}."
         if job_type == "reject_candidate":

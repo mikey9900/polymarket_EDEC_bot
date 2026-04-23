@@ -1,26 +1,39 @@
-"""Deterministic tuning proposals and promotion helpers."""
+"""Deterministic daily tuning and weekly AI proposal helpers."""
 
 from __future__ import annotations
 
 import csv
 import difflib
 import gzip
+import hashlib
 import json
+import os
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
 
 import yaml
 
+from ._openai import require_openai
 from .paths import (
     CONFIG_CANDIDATES_ROOT,
     DEFAULT_CONFIG_PATH,
+    DEFAULT_REPORT_JSON_PATH,
     TUNER_ACTIVE_PATCH_PATH,
     TUNER_REPORT_JSON_PATH,
     TUNER_REPORT_MD_PATH,
     TUNER_STATE_PATH,
+    WEEKLY_AI_CONTEXT_PATH,
+    WEEKLY_AI_PATCH_PATH,
+    WEEKLY_AI_PROMPT_BUNDLE_PATH,
+    WEEKLY_AI_REPORT_JSON_PATH,
+    WEEKLY_AI_REPORT_MD_PATH,
+    WEEKLY_AI_RESPONSE_PATH,
+    WEEKLY_DESKTOP_PROMPT_PATH,
+    WEEKLY_REVIEW_BUNDLE_JSON_PATH,
+    WEEKLY_REVIEW_BUNDLE_MD_PATH,
     discover_session_export_roots,
     ensure_tuner_dirs,
     resolve_repo_path,
@@ -35,7 +48,12 @@ SAFE_CONFIG_PREFIXES = (
     "research.",
     "risk.",
 )
+SAFE_ROOT_KEYS = tuple(sorted({prefix.split(".", 1)[0] for prefix in SAFE_CONFIG_PREFIXES}))
 TUNER_STATUSES = {"none", "ready", "promoted", "rejected"}
+CANDIDATE_SOURCES = ("daily_local", "weekly_ai")
+PRIMARY_SOURCE_ORDER = ("weekly_ai", "daily_local")
+DEFAULT_WEEKLY_AI_MODEL = "gpt-5.4-mini"
+DEFAULT_WEEKLY_CONTEXT_DAYS = 7
 
 
 class TuningError(RuntimeError):
@@ -48,14 +66,26 @@ class ProposedChange:
     current: Any
     recommended: Any
     evidence: str
+    confidence: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload = {
             "path": self.path,
             "current": self.current,
             "recommended": self.recommended,
             "evidence": self.evidence,
         }
+        if self.confidence is not None:
+            payload["confidence"] = round(float(self.confidence), 4)
+        return payload
+
+
+@dataclass(frozen=True)
+class SessionBundle:
+    export_id: str
+    trades_path: Path
+    signals_path: Path
+    bundle_time: datetime | None
 
 
 def load_tuner_state(path: str | Path = TUNER_STATE_PATH) -> dict[str, Any]:
@@ -66,17 +96,15 @@ def load_tuner_state(path: str | Path = TUNER_STATE_PATH) -> dict[str, Any]:
         payload = json.loads(tuner_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return _default_tuner_state()
-    state = _default_tuner_state()
-    state.update(payload if isinstance(payload, dict) else {})
-    state["latest_candidate_status"] = _normalize_status(state.get("latest_candidate_status"))
-    state["latest_candidate_paths"] = dict(state.get("latest_candidate_paths") or {})
+    state = _normalize_tuner_state(payload if isinstance(payload, dict) else {})
     return state
 
 
 def save_tuner_state(state: dict[str, Any], path: str | Path = TUNER_STATE_PATH) -> Path:
     tuner_path = resolve_repo_path(path)
     tuner_path.parent.mkdir(parents=True, exist_ok=True)
-    tuner_path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    normalized = _normalize_tuner_state(state)
+    tuner_path.write_text(json.dumps(normalized, indent=2, sort_keys=True), encoding="utf-8")
     return tuner_path
 
 
@@ -109,10 +137,10 @@ def propose_tuning(
     patch_path = resolve_repo_path(patch_path)
     candidates_root = resolve_repo_path(candidates_root)
 
-    trades_path, signals_path = _discover_latest_session_bundle()
-    analysis = _analyze_session_exports(trades_path, signals_path)
+    bundle = _discover_latest_session_bundle()
+    analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
     current_config = _load_yaml(config_path)
-    candidate_config = json.loads(json.dumps(current_config))
+    candidate_config = _deep_copy(current_config)
 
     changes, advisories, no_change = _recommend_changes(candidate_config, analysis)
     _enforce_safe_change_surface(changes)
@@ -137,13 +165,14 @@ def propose_tuning(
 
     report_payload = {
         "generated_at": now.isoformat(),
+        "source": "daily_local",
         "candidate_id": candidate_id if changes else None,
         "candidate_status": "ready" if changes else "none",
-        "config_path": str(config_path),
+        "config_name": config_path.name,
         "inputs": {
-            "trades_csv": str(trades_path),
-            "signals_csv": str(signals_path),
-            "folder_ts": trades_path.parent.name,
+            "export_id": bundle.export_id,
+            "trades_file": bundle.trades_path.name,
+            "signals_file": bundle.signals_path.name,
         },
         "data": analysis["overall"],
         "changes": [change.as_dict() for change in changes],
@@ -154,35 +183,392 @@ def propose_tuning(
     report_md_path.write_text(_render_tuner_markdown(report_payload), encoding="utf-8")
 
     state = load_tuner_state(tuner_state_path)
-    state.update(
-        {
-            "last_run_at": now.isoformat(),
-            "last_result": "ready" if changes else "no_change",
-            "running": False,
-            "latest_candidate_id": candidate_id if changes else None,
-            "latest_candidate_status": "ready" if changes else "none",
-            "latest_candidate_paths": {
-                "report_json": str(report_json_path),
-                "report_md": str(report_md_path),
-                "patch": str(patch_path),
-                "candidate_config": str(candidate_path) if candidate_path else "",
-            },
-            "latest_candidate_summary": _candidate_summary(changes, analysis["overall"]),
-        }
+    _set_candidate_record(
+        state,
+        source="daily_local",
+        candidate_id=candidate_id if changes else None,
+        status="ready" if changes else "none",
+        summary=_candidate_summary(changes, analysis["overall"]),
+        paths={
+            "report_json": str(report_json_path),
+            "report_md": str(report_md_path),
+            "patch": str(patch_path),
+            "candidate_config": str(candidate_path) if candidate_path else "",
+        },
+        generated_at=now.isoformat(),
+        last_result="ready" if changes else "no_change",
+        change_count=len(changes),
+        top_changes=[change.path for change in changes[:5]],
     )
+    state["running"] = False
+    state["last_run_at"] = now.isoformat()
+    state["last_result"] = "ready" if changes else "no_change"
     save_tuner_state(state, tuner_state_path)
 
     return {
         "command": "propose-tuning",
         "ok": True,
-        "candidate_id": state["latest_candidate_id"],
-        "candidate_status": state["latest_candidate_status"],
+        "candidate_id": state["daily_local_candidate"]["candidate_id"],
+        "candidate_status": state["daily_local_candidate"]["status"],
+        "candidate_source": "daily_local",
         "config_path": str(config_path),
-        "trades_csv": str(trades_path),
-        "signals_csv": str(signals_path),
+        "export_id": bundle.export_id,
         "change_count": len(changes),
         "report_json_path": str(report_json_path),
         "report_md_path": str(report_md_path),
+        "patch_path": str(patch_path),
+        "candidate_config_path": str(candidate_path) if candidate_path else "",
+    }
+
+
+def build_weekly_ai_context(
+    *,
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tuner_state_path: str | Path = TUNER_STATE_PATH,
+    context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
+    report_json_path: str | Path = DEFAULT_REPORT_JSON_PATH,
+    window_days: int = DEFAULT_WEEKLY_CONTEXT_DAYS,
+) -> dict[str, Any]:
+    ensure_tuner_dirs()
+    now = _utcnow()
+    config_path = resolve_repo_path(config_path)
+    context_path = resolve_repo_path(context_path)
+    state = load_tuner_state(tuner_state_path)
+    current_config = _load_yaml(config_path)
+    research_report = _load_json_file(report_json_path, default={})
+    daily_candidate = _candidate_overview(state.get("daily_local_candidate") or {})
+
+    snapshots, raw_refs = _build_daily_snapshots(current_config, window_days=window_days)
+    payload = {
+        "generated_at": now.isoformat(),
+        "window_days": int(window_days),
+        "window_start": (now - timedelta(days=int(window_days))).date().isoformat(),
+        "window_end": now.date().isoformat(),
+        "config": {
+            "name": config_path.name,
+            "version": _read_repo_version(),
+            "hash": _config_hash(config_path),
+            "safe_params": _extract_safe_params(current_config),
+        },
+        "daily_local_candidate": daily_candidate,
+        "daily_snapshots": snapshots,
+        "research_rollups": _compact_research_report(research_report),
+        "raw_export_refs": raw_refs,
+    }
+    context_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    state["weekly_ai_context"] = {
+        "generated_at": now.isoformat(),
+        "path": str(context_path),
+        "window_days": int(window_days),
+        "window_start": payload["window_start"],
+        "window_end": payload["window_end"],
+        "raw_ref_count": len(raw_refs),
+    }
+    save_tuner_state(state, tuner_state_path)
+
+    return {
+        "command": "build-weekly-ai-context",
+        "ok": True,
+        "context_path": str(context_path),
+        "snapshot_count": len(snapshots),
+        "raw_ref_count": len(raw_refs),
+        "window_days": int(window_days),
+    }
+
+
+def build_weekly_review_bundle(
+    *,
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tuner_state_path: str | Path = TUNER_STATE_PATH,
+    context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
+    bundle_json_path: str | Path = WEEKLY_REVIEW_BUNDLE_JSON_PATH,
+    bundle_md_path: str | Path = WEEKLY_REVIEW_BUNDLE_MD_PATH,
+    prompt_path: str | Path = WEEKLY_DESKTOP_PROMPT_PATH,
+) -> dict[str, Any]:
+    ensure_tuner_dirs()
+    build_weekly_ai_context(
+        config_path=config_path,
+        tuner_state_path=tuner_state_path,
+        context_path=context_path,
+    )
+    now = _utcnow()
+    config_path = resolve_repo_path(config_path)
+    bundle_json_path = resolve_repo_path(bundle_json_path)
+    bundle_md_path = resolve_repo_path(bundle_md_path)
+    prompt_path = resolve_repo_path(prompt_path)
+    context_payload = _load_json_file(context_path, default={})
+    state = load_tuner_state(tuner_state_path)
+    daily_local = dict(state.get("daily_local_candidate") or {})
+    resolved_context_path = Path(resolve_repo_path(context_path))
+    desktop_prompt = _desktop_review_prompt(bundle_md_path.name, resolved_context_path.name)
+    short_prompt = _desktop_weekly_prompt(
+        bundle_md_path=bundle_md_path,
+        config_path=config_path,
+        context_path=resolved_context_path,
+    )
+
+    bundle_payload = {
+        "generated_at": now.isoformat(),
+        "review_mode": "desktop_manual",
+        "config": {
+            "name": config_path.name,
+            "version": _read_repo_version(),
+            "hash": _config_hash(config_path),
+        },
+        "weekly_context": {
+            "generated_at": context_payload.get("generated_at"),
+            "window_start": context_payload.get("window_start"),
+            "window_end": context_payload.get("window_end"),
+            "snapshot_count": len(context_payload.get("daily_snapshots") or []),
+            "raw_ref_count": len(context_payload.get("raw_export_refs") or []),
+        },
+        "daily_local_candidate": _candidate_overview(daily_local),
+        "safe_config_surface": list(SAFE_CONFIG_PREFIXES),
+        "artifacts": {
+            "context_json": Path(resolve_repo_path(context_path)).name,
+            "bundle_json": bundle_json_path.name,
+            "bundle_md": bundle_md_path.name,
+            "desktop_prompt": prompt_path.name,
+        },
+        "desktop_review_prompt": desktop_prompt,
+        "desktop_weekly_prompt": short_prompt,
+        "review_checklist": [
+            "Use only the compact weekly context and the review bundle.",
+            "Stay inside the safe config surface.",
+            "Prefer no change when evidence is weak.",
+            "Explain evidence, risks, and follow-ups in plain language.",
+            "Produce a candidate patch against the current active config only.",
+        ],
+        "research_rollups": context_payload.get("research_rollups") or {},
+        "daily_snapshots": context_payload.get("daily_snapshots") or [],
+        "raw_export_refs": context_payload.get("raw_export_refs") or [],
+    }
+    bundle_json_path.write_text(json.dumps(bundle_payload, indent=2, sort_keys=True), encoding="utf-8")
+    bundle_md_path.write_text(_render_weekly_review_bundle_markdown(bundle_payload), encoding="utf-8")
+    prompt_path.write_text(short_prompt + "\n", encoding="utf-8")
+
+    state["weekly_review_bundle"] = {
+        "generated_at": now.isoformat(),
+        "status": "ready",
+        "summary": (
+            f"Weekly desktop review bundle ready with {len(bundle_payload['daily_snapshots'])} daily snapshots and "
+            f"{len(bundle_payload['raw_export_refs'])} export refs."
+        ),
+        "paths": {
+            "bundle_json": str(bundle_json_path),
+            "bundle_md": str(bundle_md_path),
+            "context_json": str(resolve_repo_path(context_path)),
+            "desktop_prompt": str(prompt_path),
+        },
+        "last_result": "ready",
+    }
+    save_tuner_state(state, tuner_state_path)
+    return {
+        "command": "build-weekly-review-bundle",
+        "ok": True,
+        "status": "ready",
+        "bundle_json_path": str(bundle_json_path),
+        "bundle_md_path": str(bundle_md_path),
+        "context_path": str(resolve_repo_path(context_path)),
+        "desktop_prompt_path": str(prompt_path),
+    }
+
+
+def propose_weekly_ai_tuning(
+    *,
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tuner_state_path: str | Path = TUNER_STATE_PATH,
+    context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
+    report_json_path: str | Path = WEEKLY_AI_REPORT_JSON_PATH,
+    report_md_path: str | Path = WEEKLY_AI_REPORT_MD_PATH,
+    prompt_bundle_path: str | Path = WEEKLY_AI_PROMPT_BUNDLE_PATH,
+    response_path: str | Path = WEEKLY_AI_RESPONSE_PATH,
+    patch_path: str | Path = WEEKLY_AI_PATCH_PATH,
+    candidates_root: str | Path = CONFIG_CANDIDATES_ROOT,
+    model: str = DEFAULT_WEEKLY_AI_MODEL,
+    api_key: str | None = None,
+    max_output_tokens: int = 4000,
+) -> dict[str, Any]:
+    ensure_tuner_dirs()
+    now = _utcnow()
+    config_path = resolve_repo_path(config_path)
+    report_json_path = resolve_repo_path(report_json_path)
+    report_md_path = resolve_repo_path(report_md_path)
+    prompt_bundle_path = resolve_repo_path(prompt_bundle_path)
+    response_path = resolve_repo_path(response_path)
+    patch_path = resolve_repo_path(patch_path)
+    candidates_root = resolve_repo_path(candidates_root)
+
+    effective_api_key = str(api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if not effective_api_key:
+        state = load_tuner_state(tuner_state_path)
+        state["running"] = False
+        state["last_run_at"] = now.isoformat()
+        state["last_result"] = "blocked"
+        save_tuner_state(state, tuner_state_path)
+        return {
+            "command": "propose-weekly-ai-tuning",
+            "ok": False,
+            "status": "blocked",
+            "message": "OPENAI_API_KEY is not configured.",
+        }
+
+    build_weekly_ai_context(
+        config_path=config_path,
+        tuner_state_path=tuner_state_path,
+        context_path=context_path,
+    )
+    context_payload = _load_json_file(context_path, default={})
+    current_config = _load_yaml(config_path)
+    prompt_bundle = {
+        "generated_at": now.isoformat(),
+        "model": model,
+        "system_instructions": _weekly_ai_system_instructions(),
+        "compact_context": context_payload,
+        "expanded_export_facts": _build_weekly_ai_expansion(context_payload),
+    }
+    prompt_bundle_path.write_text(json.dumps(prompt_bundle, indent=2, sort_keys=True), encoding="utf-8")
+
+    openai = require_openai()
+    client = openai.OpenAI(api_key=effective_api_key)
+    response = client.responses.create(
+        model=model,
+        input=[
+            {"role": "system", "content": _weekly_ai_system_instructions()},
+            {"role": "user", "content": json.dumps(prompt_bundle, indent=2, sort_keys=True)},
+        ],
+        text={
+            "format": {
+                "type": "json_schema",
+                "name": "weekly_ai_tuning",
+                "schema": _weekly_ai_response_schema(),
+                "strict": True,
+            }
+        },
+        max_output_tokens=int(max_output_tokens),
+    )
+
+    response_payload = {
+        "id": getattr(response, "id", None),
+        "model": getattr(response, "model", model),
+        "output_text": getattr(response, "output_text", "") or "",
+        "usage": _jsonable(getattr(response, "usage", None)),
+        "refusal": _extract_response_refusal(response),
+    }
+    response_path.write_text(json.dumps(response_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    response_text = str(response_payload.get("output_text") or "").strip()
+    if not response_text:
+        raise TuningError(response_payload.get("refusal") or "Weekly AI response did not include structured output.")
+    raw_payload = json.loads(response_text)
+    parsed = _parse_weekly_ai_output(raw_payload)
+
+    candidate_config = _deep_copy(current_config)
+    changes: list[ProposedChange] = []
+    for item in parsed["recommended_changes"]:
+        path = item["path"]
+        if not path.startswith(SAFE_CONFIG_PREFIXES):
+            raise TuningError(f"Unsafe weekly AI path outside tuning surface: {path}")
+        current_value = _get_nested(current_config, path)
+        recommended_value = item["recommended"]
+        if current_value == recommended_value:
+            continue
+        _set_nested(candidate_config, path, recommended_value)
+        changes.append(
+            ProposedChange(
+                path=path,
+                current=current_value,
+                recommended=recommended_value,
+                evidence=item["evidence"],
+                confidence=item["confidence"],
+            )
+        )
+    _enforce_safe_change_surface(changes)
+
+    candidate_id = now.strftime("%Y%m%dT%H%M%SZ")
+    candidate_path: Path | None = None
+    if changes:
+        candidate_path = candidates_root / f"{candidate_id}_weekly_ai.yaml"
+        candidate_text = _dump_yaml(candidate_config)
+        candidate_path.write_text(candidate_text, encoding="utf-8")
+        patch_path.write_text(
+            _diff_text(
+                config_path.read_text(encoding="utf-8"),
+                candidate_text,
+                config_path,
+                candidate_path,
+            ),
+            encoding="utf-8",
+        )
+    else:
+        patch_path.write_text("", encoding="utf-8")
+
+    report_payload = {
+        "generated_at": now.isoformat(),
+        "source": "weekly_ai",
+        "model": model,
+        "candidate_id": candidate_id if changes else None,
+        "candidate_status": "ready" if changes else "none",
+        "config_name": config_path.name,
+        "summary": parsed["summary"],
+        "inputs": {
+            "context_generated_at": context_payload.get("generated_at"),
+            "window_start": context_payload.get("window_start"),
+            "window_end": context_payload.get("window_end"),
+            "raw_ref_count": len(context_payload.get("raw_export_refs") or []),
+            "expanded_ref_count": len((prompt_bundle.get("expanded_export_facts") or {}).get("export_summaries") or []),
+        },
+        "changes": [change.as_dict() for change in changes],
+        "risks": parsed["risks"],
+        "followups": parsed["followups"],
+        "raw_refs_used": [
+            ref
+            for ref in parsed["raw_refs_used"]
+            if ref in {item.get("export_id") for item in (context_payload.get("raw_export_refs") or [])}
+        ],
+        "no_change": [] if changes else ["Weekly AI review did not produce any config deltas."],
+    }
+    report_json_path.write_text(json.dumps(report_payload, indent=2, sort_keys=True), encoding="utf-8")
+    report_md_path.write_text(_render_weekly_ai_markdown(report_payload), encoding="utf-8")
+
+    state = load_tuner_state(tuner_state_path)
+    _set_candidate_record(
+        state,
+        source="weekly_ai",
+        candidate_id=candidate_id if changes else None,
+        status="ready" if changes else "none",
+        summary=parsed["summary"].strip() or _candidate_summary(changes, {}),
+        paths={
+            "report_json": str(report_json_path),
+            "report_md": str(report_md_path),
+            "prompt_bundle": str(prompt_bundle_path),
+            "response_json": str(response_path),
+            "patch": str(patch_path),
+            "candidate_config": str(candidate_path) if candidate_path else "",
+        },
+        generated_at=now.isoformat(),
+        last_result="ready" if changes else "no_change",
+        change_count=len(changes),
+        top_changes=[change.path for change in changes[:5]],
+    )
+    state["running"] = False
+    state["last_run_at"] = now.isoformat()
+    state["last_result"] = "ready" if changes else "no_change"
+    save_tuner_state(state, tuner_state_path)
+
+    return {
+        "command": "propose-weekly-ai-tuning",
+        "ok": True,
+        "status": "success",
+        "candidate_id": state["weekly_ai_candidate"]["candidate_id"],
+        "candidate_status": state["weekly_ai_candidate"]["status"],
+        "candidate_source": "weekly_ai",
+        "change_count": len(changes),
+        "report_json_path": str(report_json_path),
+        "report_md_path": str(report_md_path),
+        "prompt_bundle_path": str(prompt_bundle_path),
+        "response_json_path": str(response_path),
         "patch_path": str(patch_path),
         "candidate_config_path": str(candidate_path) if candidate_path else "",
     }
@@ -197,15 +583,9 @@ def promote_tuning_candidate(
     addon_config_path: str | Path | None = None,
 ) -> dict[str, Any]:
     state = load_tuner_state(tuner_state_path)
-    latest_id = str(state.get("latest_candidate_id") or "")
-    latest_status = _normalize_status(state.get("latest_candidate_status"))
-    latest_paths = dict(state.get("latest_candidate_paths") or {})
-    if latest_status != "ready" or not latest_id:
-        raise TuningError("No ready tuning candidate is available for promotion.")
-    if candidate_id and candidate_id != latest_id:
-        raise TuningError(f"Latest ready candidate is {latest_id}, not {candidate_id}.")
-
-    candidate_path = resolve_repo_path(latest_paths.get("candidate_config") or "")
+    source = _resolve_ready_candidate_source(state, candidate_id=candidate_id)
+    candidate = dict(state[f"{source}_candidate"] or {})
+    candidate_path = resolve_repo_path(candidate.get("paths", {}).get("candidate_config") or "")
     if not candidate_path.exists():
         raise TuningError(f"Candidate config is missing: {candidate_path}")
 
@@ -218,21 +598,30 @@ def promote_tuning_candidate(
     new_version = _bump_patch_version(version_path, addon_config_path)
 
     now = _utcnow().isoformat()
-    state.update(
-        {
-            "last_run_at": now,
-            "last_result": "promoted",
-            "latest_candidate_status": "promoted",
-            "latest_candidate_promoted_at": now,
-            "latest_candidate_summary": f"Promoted {latest_id} to {config_path.name} ({new_version}).",
-        }
+    _set_candidate_record(
+        state,
+        source=source,
+        candidate_id=candidate.get("candidate_id"),
+        status="promoted",
+        summary=f"Promoted {candidate.get('candidate_id')} to {config_path.name} ({new_version}).",
+        paths=dict(candidate.get("paths") or {}),
+        generated_at=candidate.get("generated_at"),
+        promoted_at=now,
+        last_result="promoted",
+        change_count=int(candidate.get("change_count") or 0),
+        top_changes=list(candidate.get("top_changes") or []),
     )
+    _invalidate_other_candidate_after_promotion(state, promoted_source=source, promoted_id=str(candidate.get("candidate_id") or ""))
+    state["running"] = False
+    state["last_run_at"] = now
+    state["last_result"] = "promoted"
     save_tuner_state(state, tuner_state_path)
 
     return {
         "command": "promote-tuning-candidate",
         "ok": True,
-        "candidate_id": latest_id,
+        "candidate_id": candidate.get("candidate_id"),
+        "candidate_source": source,
         "config_path": str(config_path),
         "version": new_version,
     }
@@ -245,28 +634,31 @@ def reject_tuning_candidate(
     reason: str = "Rejected by operator.",
 ) -> dict[str, Any]:
     state = load_tuner_state(tuner_state_path)
-    latest_id = str(state.get("latest_candidate_id") or "")
-    latest_status = _normalize_status(state.get("latest_candidate_status"))
-    if latest_status != "ready" or not latest_id:
-        raise TuningError("No ready tuning candidate is available to reject.")
-    if candidate_id and candidate_id != latest_id:
-        raise TuningError(f"Latest ready candidate is {latest_id}, not {candidate_id}.")
-
+    source = _resolve_ready_candidate_source(state, candidate_id=candidate_id)
+    candidate = dict(state[f"{source}_candidate"] or {})
     now = _utcnow().isoformat()
-    state.update(
-        {
-            "last_run_at": now,
-            "last_result": "rejected",
-            "latest_candidate_status": "rejected",
-            "latest_candidate_rejected_at": now,
-            "latest_candidate_summary": reason.strip() or "Rejected by operator.",
-        }
+    _set_candidate_record(
+        state,
+        source=source,
+        candidate_id=candidate.get("candidate_id"),
+        status="rejected",
+        summary=reason.strip() or "Rejected by operator.",
+        paths=dict(candidate.get("paths") or {}),
+        generated_at=candidate.get("generated_at"),
+        rejected_at=now,
+        last_result="rejected",
+        change_count=int(candidate.get("change_count") or 0),
+        top_changes=list(candidate.get("top_changes") or []),
     )
+    state["running"] = False
+    state["last_run_at"] = now
+    state["last_result"] = "rejected"
     save_tuner_state(state, tuner_state_path)
     return {
         "command": "reject-tuning-candidate",
         "ok": True,
-        "candidate_id": latest_id,
+        "candidate_id": candidate.get("candidate_id"),
+        "candidate_source": source,
         "status": "rejected",
     }
 
@@ -280,6 +672,7 @@ def maybe_run_tuner_heartbeat(
     has_recent_daily_refresh: bool,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
+    model: str = DEFAULT_WEEKLY_AI_MODEL,
 ) -> dict[str, Any]:
     if not enabled:
         return {"command": "tuner-heartbeat", "ok": True, "status": "paused"}
@@ -296,11 +689,16 @@ def maybe_run_tuner_heartbeat(
             "status": "blocked",
             "message": "Daily research refresh is stale.",
         }
-    return propose_tuning(config_path=config_path, tuner_state_path=tuner_state_path)
+    result = build_weekly_review_bundle(
+        config_path=config_path,
+        tuner_state_path=tuner_state_path,
+    )
+    result.setdefault("command", "tuner-heartbeat")
+    return result
 
 
 def _default_tuner_state() -> dict[str, Any]:
-    return {
+    state = {
         "running": False,
         "last_run_at": None,
         "last_result": None,
@@ -308,7 +706,223 @@ def _default_tuner_state() -> dict[str, Any]:
         "latest_candidate_status": "none",
         "latest_candidate_paths": {},
         "latest_candidate_summary": "",
+        "latest_candidate_source": "none",
+        "primary_candidate_source": "none",
+        "daily_local_candidate": _default_candidate_payload("daily_local"),
+        "weekly_ai_candidate": _default_candidate_payload("weekly_ai"),
+        "weekly_review_bundle": {
+            "generated_at": None,
+            "status": "none",
+            "summary": "",
+            "paths": {},
+            "last_result": None,
+        },
+        "weekly_ai_context": {
+            "generated_at": None,
+            "path": str(resolve_repo_path(WEEKLY_AI_CONTEXT_PATH)),
+            "window_days": DEFAULT_WEEKLY_CONTEXT_DAYS,
+            "window_start": None,
+            "window_end": None,
+            "raw_ref_count": 0,
+        },
     }
+    _sync_primary_candidate_fields(state)
+    return state
+
+
+def _default_candidate_payload(source: str) -> dict[str, Any]:
+    return {
+        "source": source,
+        "candidate_id": None,
+        "status": "none",
+        "summary": "",
+        "paths": {},
+        "generated_at": None,
+        "promoted_at": None,
+        "rejected_at": None,
+        "last_result": None,
+        "change_count": 0,
+        "top_changes": [],
+    }
+
+
+def _normalize_tuner_state(payload: dict[str, Any]) -> dict[str, Any]:
+    state = _deep_merge(_default_tuner_state(), payload)
+    legacy_candidate = {
+        "candidate_id": state.get("latest_candidate_id"),
+        "status": state.get("latest_candidate_status"),
+        "summary": state.get("latest_candidate_summary"),
+        "paths": dict(state.get("latest_candidate_paths") or {}),
+        "generated_at": state.get("last_run_at"),
+        "last_result": state.get("last_result"),
+    }
+    daily_payload = payload.get("daily_local_candidate") if isinstance(payload, dict) else None
+    weekly_payload = payload.get("weekly_ai_candidate") if isinstance(payload, dict) else None
+    state["daily_local_candidate"] = _normalize_candidate_payload(
+        "daily_local",
+        daily_payload if isinstance(daily_payload, dict) and daily_payload else legacy_candidate,
+    )
+    state["weekly_ai_candidate"] = _normalize_candidate_payload(
+        "weekly_ai",
+        weekly_payload if isinstance(weekly_payload, dict) else {},
+    )
+    state["weekly_review_bundle"] = _normalize_weekly_review_bundle(state.get("weekly_review_bundle") or {})
+    state["weekly_ai_context"] = _normalize_weekly_context(state.get("weekly_ai_context") or {})
+    _sync_primary_candidate_fields(state)
+    return state
+
+
+def _normalize_candidate_payload(source: str, payload: dict[str, Any]) -> dict[str, Any]:
+    candidate = _deep_merge(_default_candidate_payload(source), payload if isinstance(payload, dict) else {})
+    candidate["source"] = source
+    candidate["status"] = _normalize_status(candidate.get("status"))
+    candidate["paths"] = dict(candidate.get("paths") or {})
+    candidate["change_count"] = int(candidate.get("change_count") or 0)
+    candidate["top_changes"] = [str(item) for item in (candidate.get("top_changes") or []) if str(item).strip()]
+    return candidate
+
+
+def _normalize_weekly_context(payload: dict[str, Any]) -> dict[str, Any]:
+    base = {
+        "generated_at": None,
+        "path": str(resolve_repo_path(WEEKLY_AI_CONTEXT_PATH)),
+        "window_days": DEFAULT_WEEKLY_CONTEXT_DAYS,
+        "window_start": None,
+        "window_end": None,
+        "raw_ref_count": 0,
+    }
+    base.update(payload if isinstance(payload, dict) else {})
+    return base
+
+
+def _normalize_weekly_review_bundle(payload: dict[str, Any]) -> dict[str, Any]:
+    base = {
+        "generated_at": None,
+        "status": "none",
+        "summary": "",
+        "paths": {},
+        "last_result": None,
+    }
+    base.update(payload if isinstance(payload, dict) else {})
+    base["paths"] = dict(base.get("paths") or {})
+    return base
+
+
+def _sync_primary_candidate_fields(state: dict[str, Any]) -> None:
+    primary_source = _select_primary_candidate_source(state)
+    display_source = _select_display_candidate_source(state, primary_source=primary_source)
+    state["primary_candidate_source"] = primary_source
+    if display_source == "none":
+        state["latest_candidate_id"] = None
+        state["latest_candidate_status"] = "none"
+        state["latest_candidate_paths"] = {}
+        state["latest_candidate_summary"] = ""
+        state["latest_candidate_source"] = "none"
+        return
+    candidate = dict(state.get(f"{display_source}_candidate") or {})
+    state["latest_candidate_id"] = candidate.get("candidate_id")
+    state["latest_candidate_status"] = candidate.get("status", "none")
+    state["latest_candidate_paths"] = dict(candidate.get("paths") or {})
+    state["latest_candidate_summary"] = candidate.get("summary", "")
+    state["latest_candidate_source"] = display_source
+
+
+def _select_primary_candidate_source(state: dict[str, Any]) -> str:
+    for source in PRIMARY_SOURCE_ORDER:
+        candidate = dict(state.get(f"{source}_candidate") or {})
+        if candidate.get("status") == "ready" and candidate.get("candidate_id"):
+            return source
+    return "none"
+
+
+def _select_display_candidate_source(state: dict[str, Any], *, primary_source: str) -> str:
+    if primary_source != "none":
+        return primary_source
+    candidates = []
+    for source in CANDIDATE_SOURCES:
+        candidate = dict(state.get(f"{source}_candidate") or {})
+        ts = candidate.get("generated_at") or candidate.get("promoted_at") or candidate.get("rejected_at")
+        candidates.append((ts or "", source))
+    candidates.sort(reverse=True)
+    for _, source in candidates:
+        candidate = dict(state.get(f"{source}_candidate") or {})
+        if candidate.get("candidate_id"):
+            return source
+    return "none"
+
+
+def _set_candidate_record(
+    state: dict[str, Any],
+    *,
+    source: str,
+    candidate_id: str | None,
+    status: str,
+    summary: str,
+    paths: dict[str, Any],
+    generated_at: str | None,
+    last_result: str | None,
+    change_count: int = 0,
+    top_changes: list[str] | None = None,
+    promoted_at: str | None = None,
+    rejected_at: str | None = None,
+) -> None:
+    key = f"{source}_candidate"
+    current = _normalize_candidate_payload(source, state.get(key) or {})
+    current.update(
+        {
+            "candidate_id": candidate_id,
+            "status": _normalize_status(status),
+            "summary": str(summary or ""),
+            "paths": dict(paths or {}),
+            "generated_at": generated_at,
+            "last_result": last_result,
+            "change_count": int(change_count or 0),
+            "top_changes": [str(item) for item in (top_changes or []) if str(item).strip()],
+        }
+    )
+    if promoted_at is not None:
+        current["promoted_at"] = promoted_at
+    if rejected_at is not None:
+        current["rejected_at"] = rejected_at
+    state[key] = _normalize_candidate_payload(source, current)
+    _sync_primary_candidate_fields(state)
+
+
+def _resolve_ready_candidate_source(state: dict[str, Any], *, candidate_id: str | None) -> str:
+    if candidate_id:
+        for source in PRIMARY_SOURCE_ORDER:
+            candidate = dict(state.get(f"{source}_candidate") or {})
+            if candidate.get("candidate_id") == candidate_id:
+                if candidate.get("status") != "ready":
+                    raise TuningError(f"Candidate {candidate_id} is not ready for promotion or rejection.")
+                return source
+        raise TuningError(f"No ready tuning candidate matches {candidate_id}.")
+    primary = _select_primary_candidate_source(state)
+    if primary == "none":
+        raise TuningError("No ready tuning candidate is available.")
+    return primary
+
+
+def _invalidate_other_candidate_after_promotion(state: dict[str, Any], *, promoted_source: str, promoted_id: str) -> None:
+    for source in CANDIDATE_SOURCES:
+        if source == promoted_source:
+            continue
+        candidate = dict(state.get(f"{source}_candidate") or {})
+        if candidate.get("status") != "ready":
+            continue
+        _set_candidate_record(
+            state,
+            source=source,
+            candidate_id=candidate.get("candidate_id"),
+            status="rejected",
+            summary=f"Superseded after promoting {promoted_id}; rebuild this candidate on the new config base.",
+            paths=dict(candidate.get("paths") or {}),
+            generated_at=candidate.get("generated_at"),
+            rejected_at=_utcnow().isoformat(),
+            last_result="rejected",
+            change_count=int(candidate.get("change_count") or 0),
+            top_changes=list(candidate.get("top_changes") or []),
+        )
 
 
 def _normalize_status(value: Any) -> str:
@@ -320,20 +934,42 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _discover_latest_session_bundle() -> tuple[Path, Path]:
-    bundles: list[tuple[str, Path, Path]] = []
+def _discover_latest_session_bundle() -> SessionBundle:
+    bundles = _discover_session_bundles()
+    if not bundles:
+        raise TuningError("No paired session export trades/signals files were found.")
+    return bundles[0]
+
+
+def _discover_session_bundles() -> list[SessionBundle]:
+    bundles: list[SessionBundle] = []
+    seen_export_ids: set[str] = set()
     for root in discover_session_export_roots():
         trades_files = sorted(root.rglob("*_session_trades.csv")) + sorted(root.rglob("*_session_trades.csv.gz"))
         for trades_path in trades_files:
             signals_path = _matching_signals_path(trades_path)
             if signals_path is None:
                 continue
-            bundles.append((trades_path.parent.name, trades_path.resolve(), signals_path.resolve()))
-    if not bundles:
-        raise TuningError("No paired session export trades/signals files were found.")
-    bundles.sort(key=lambda item: item[0], reverse=True)
-    _, trades_path, signals_path = bundles[0]
-    return trades_path, signals_path
+            export_id = trades_path.parent.name
+            if export_id in seen_export_ids:
+                continue
+            seen_export_ids.add(export_id)
+            bundles.append(
+                SessionBundle(
+                    export_id=export_id,
+                    trades_path=trades_path.resolve(),
+                    signals_path=signals_path.resolve(),
+                    bundle_time=_parse_bundle_time(export_id),
+                )
+            )
+    bundles.sort(
+        key=lambda item: (
+            item.bundle_time.isoformat() if item.bundle_time else "",
+            item.export_id,
+        ),
+        reverse=True,
+    )
+    return bundles
 
 
 def _matching_signals_path(trades_path: Path) -> Path | None:
@@ -352,17 +988,36 @@ def _matching_signals_path(trades_path: Path) -> Path | None:
     return None
 
 
+def _parse_bundle_time(export_id: str) -> datetime | None:
+    prefix = str(export_id or "").split("_EDEC", 1)[0]
+    for fmt in ("%Y-%m-%d_%H%M%S", "%Y-%m-%d_%H%M"):
+        try:
+            return datetime.strptime(prefix, fmt).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
+
+
 def _open_csv(path: Path):
     if path.suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8", newline="")
     return open(path, "r", encoding="utf-8", newline="")
 
 
-def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str, Any]:
-    trades: list[dict[str, str]] = []
-    with _open_csv(trades_path) as fh:
-        trades.extend(csv.DictReader(fh))
+def _read_csv_rows(path: Path) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    with _open_csv(path) as fh:
+        rows.extend(csv.DictReader(fh))
+    return rows
 
+
+def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str, Any]:
+    trades = _read_csv_rows(trades_path)
+    signals = _read_csv_rows(signals_path)
+    return _analyze_rows(trades, signals, folder_ts=trades_path.parent.name)
+
+
+def _analyze_rows(trades: list[dict[str, str]], signals: list[dict[str, str]], *, folder_ts: str) -> dict[str, Any]:
     closed = [row for row in trades if row.get("status") in ("closed_win", "closed_loss")]
     wins = [row for row in closed if row.get("status") == "closed_win"]
     losses = [row for row in closed if row.get("status") == "closed_loss"]
@@ -370,10 +1025,6 @@ def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str,
     for row in closed:
         strategy_type = str(row.get("st") or row.get("strategy_type") or "").strip().lower()
         closed_by_strategy.setdefault(strategy_type, []).append(row)
-
-    signals: list[dict[str, str]] = []
-    with _open_csv(signals_path) as fh:
-        signals.extend(csv.DictReader(fh))
 
     filter_fail_counts: dict[str, int] = {}
     for row in signals:
@@ -385,7 +1036,7 @@ def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str,
 
     return {
         "overall": {
-            "folder_ts": trades_path.parent.name,
+            "folder_ts": folder_ts,
             "closed": len(closed),
             "wins": len(wins),
             "losses": len(losses),
@@ -670,6 +1321,528 @@ def _recommend_disabled_coins(
     )
 
 
+def _build_daily_snapshots(current_config: dict[str, Any], *, window_days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    bundles = _discover_session_bundles()
+    if not bundles:
+        return [], []
+    now = _utcnow()
+    day_cutoff = now.date() - timedelta(days=max(int(window_days) - 1, 0))
+    grouped: dict[str, dict[str, Any]] = {}
+    raw_refs: list[dict[str, Any]] = []
+    for bundle in bundles:
+        bundle_day = (bundle.bundle_time or now).date()
+        if bundle_day < day_cutoff:
+            continue
+        analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
+        candidate_config = _deep_copy(current_config)
+        changes, advisories, _ = _recommend_changes(candidate_config, analysis)
+        key = bundle_day.isoformat()
+        bucket = grouped.setdefault(
+            key,
+            {
+                "day": key,
+                "export_count": 0,
+                "closed_trade_count": 0,
+                "wins": 0,
+                "losses": 0,
+                "total_pnl": 0.0,
+                "top_advisories": [],
+                "top_changed_params": [],
+                "_export_ids": [],
+            },
+        )
+        bucket["export_count"] += 1
+        bucket["closed_trade_count"] += int(analysis["overall"].get("closed") or 0)
+        bucket["wins"] += int(analysis["overall"].get("wins") or 0)
+        bucket["losses"] += int(analysis["overall"].get("losses") or 0)
+        bucket["total_pnl"] += float(analysis["overall"].get("total_pnl") or 0.0)
+        bucket["top_advisories"].extend(advisories[:3])
+        bucket["top_changed_params"].extend(change.path for change in changes[:3])
+        bucket["_export_ids"].append(bundle.export_id)
+        raw_refs.append(_build_export_ref_payload(bundle, analysis))
+
+    snapshots = []
+    for day in sorted(grouped.keys(), reverse=True)[: int(window_days)]:
+        bucket = grouped[day]
+        closed = int(bucket["closed_trade_count"] or 0)
+        wins = int(bucket["wins"] or 0)
+        snapshots.append(
+            {
+                "day": bucket["day"],
+                "export_count": int(bucket["export_count"] or 0),
+                "closed_trade_count": closed,
+                "win_pct": _pct(wins, closed),
+                "total_pnl": round(float(bucket["total_pnl"] or 0.0), 4),
+                "top_advisories": _unique_trim(bucket["top_advisories"], limit=3),
+                "top_changed_params": _unique_trim(bucket["top_changed_params"], limit=5),
+                "export_refs": list(bucket["_export_ids"]),
+            }
+        )
+
+    selected_export_ids = {export_id for snap in snapshots for export_id in snap["export_refs"]}
+    raw_refs = [item for item in raw_refs if item["export_id"] in selected_export_ids]
+    raw_refs.sort(key=lambda item: item["export_id"], reverse=True)
+    return snapshots, raw_refs
+
+
+def _build_export_ref_payload(bundle: SessionBundle, analysis: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "export_id": bundle.export_id,
+        "bundle_day": (bundle.bundle_time.date().isoformat() if bundle.bundle_time else bundle.export_id[:10]),
+        "closed_trade_count": int(analysis["overall"].get("closed") or 0),
+        "signal_count": int((analysis.get("filter_analysis") or {}).get("total_signals") or 0),
+        "win_pct": float(analysis["overall"].get("win_pct") or 0.0),
+        "total_pnl": float(analysis["overall"].get("total_pnl") or 0.0),
+        "coins": [key for key in sorted((analysis["advisory_groups"]["by_coin"] or {}).keys()) if key and key != "null"],
+        "strategies": [
+            key
+            for key in sorted((analysis["advisory_groups"]["by_strategy"] or {}).keys())
+            if key and key != "null"
+        ],
+    }
+
+
+def _candidate_overview(candidate: dict[str, Any]) -> dict[str, Any]:
+    report_payload = _load_json_file((candidate.get("paths") or {}).get("report_json") or "", default={})
+    return {
+        "source": candidate.get("source"),
+        "candidate_id": candidate.get("candidate_id"),
+        "status": candidate.get("status", "none"),
+        "summary": candidate.get("summary", ""),
+        "generated_at": candidate.get("generated_at"),
+        "change_count": int(candidate.get("change_count") or 0),
+        "top_changes": [item.get("path") for item in (report_payload.get("changes") or [])[:5] if item.get("path")],
+    }
+
+
+def _compact_research_report(report: dict[str, Any]) -> dict[str, Any]:
+    policy = dict(report.get("policy") or {})
+    return {
+        "generated_at": report.get("generated_at"),
+        "cluster_count": int(policy.get("cluster_count") or 0),
+        "outcome_count": int(policy.get("outcome_count") or 0),
+        "cluster_winners": list(report.get("cluster_winners") or [])[:5],
+        "cluster_losers": list(report.get("cluster_losers") or [])[:5],
+        "by_coin": list(report.get("by_coin") or [])[:5],
+        "by_strategy": list(report.get("by_strategy") or [])[:5],
+        "fill_flow_5m_1d": list(report.get("fill_flow_5m_1d") or [])[:5],
+        "trader_concentration_5m_1d": list(report.get("trader_concentration_5m_1d") or [])[:5],
+    }
+
+
+def _extract_safe_params(config: dict[str, Any]) -> dict[str, Any]:
+    flattened: dict[str, Any] = {}
+    for root_key in SAFE_ROOT_KEYS:
+        payload = config.get(root_key)
+        if isinstance(payload, dict):
+            _flatten_payload(flattened, root_key, payload)
+        elif payload is not None:
+            flattened[root_key] = payload
+    return dict(sorted(flattened.items()))
+
+
+def _flatten_payload(target: dict[str, Any], prefix: str, payload: dict[str, Any]) -> None:
+    for key, value in payload.items():
+        path = f"{prefix}.{key}" if prefix else str(key)
+        if isinstance(value, dict):
+            _flatten_payload(target, path, value)
+        else:
+            target[path] = value
+
+
+def _read_repo_version() -> str:
+    version_path = resolve_repo_path("edec_bot/version.py")
+    try:
+        text = version_path.read_text(encoding="utf-8")
+    except OSError:
+        return "unknown"
+    for line in text.splitlines():
+        if "__version__" not in line:
+            continue
+        return line.split("=", 1)[-1].strip().strip('"').strip("'")
+    return "unknown"
+
+
+def _config_hash(config_path: Path) -> str:
+    return hashlib.sha1(config_path.read_bytes()).hexdigest()[:12]
+
+
+def _build_weekly_ai_expansion(context_payload: dict[str, Any]) -> dict[str, Any]:
+    ref_index = {bundle.export_id: bundle for bundle in _discover_session_bundles()}
+    export_summaries: list[dict[str, Any]] = []
+    for ref in list(context_payload.get("raw_export_refs") or [])[:3]:
+        export_id = str(ref.get("export_id") or "").strip()
+        bundle = ref_index.get(export_id)
+        if bundle is None:
+            continue
+        analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
+        fail_counts = analysis["filter_analysis"].get("fail_counts") or {}
+        top_fail_filters = []
+        for name, payload in list(fail_counts.items())[:5]:
+            top_fail_filters.append(
+                {
+                    "name": name,
+                    "n": int(payload.get("n") or 0),
+                    "pct_of_signals": payload.get("pct_of_signals"),
+                }
+            )
+        export_summaries.append(
+            {
+                "export_id": export_id,
+                "by_coin": _top_group_rows(analysis["advisory_groups"]["by_coin"]),
+                "by_strategy": _top_group_rows(analysis["advisory_groups"]["by_strategy"]),
+                "by_exit_reason": _top_group_rows(analysis["advisory_groups"]["by_exit_reason"]),
+                "top_fail_filters": top_fail_filters,
+            }
+        )
+    return {
+        "generated_at": _utcnow().isoformat(),
+        "export_summaries": export_summaries,
+    }
+
+
+def _top_group_rows(payload: dict[str, dict[str, Any]], *, limit: int = 3) -> list[dict[str, Any]]:
+    rows = []
+    for name, item in (payload or {}).items():
+        rows.append(
+            {
+                "name": name,
+                "n": int(item.get("n") or 0),
+                "win_pct": item.get("win_pct"),
+                "total_pnl": item.get("total_pnl"),
+            }
+        )
+    rows.sort(key=lambda row: (float(row.get("total_pnl") or 0.0), int(row.get("n") or 0)), reverse=True)
+    return rows[:limit]
+
+
+def _weekly_ai_system_instructions() -> str:
+    allowed = ", ".join(SAFE_CONFIG_PREFIXES)
+    return (
+        "You are producing a weekly config proposal for the EDEC Polymarket bot. "
+        "Use only the compact research context and expanded export facts provided. "
+        "Recommend changes only when the evidence in the supplied payload is explicit. "
+        f"Only recommend config paths under these prefixes: {allowed}. "
+        "Do not mention filesystem paths or raw CSV files. "
+        "If evidence is insufficient, return an empty recommended_changes list, explain the no-op in summary, "
+        "and add next-step checks to followups. "
+        "Use raw_refs_used only with export_id values that appear in raw_export_refs."
+    )
+
+
+def _weekly_ai_response_schema() -> dict[str, Any]:
+    scalar_or_list = {
+        "anyOf": [
+            {"type": "number"},
+            {"type": "string"},
+            {"type": "boolean"},
+            {"type": "null"},
+            {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "number"},
+                        {"type": "string"},
+                        {"type": "boolean"},
+                        {"type": "null"},
+                    ]
+                },
+            },
+        ]
+    }
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "recommended_changes": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "current": scalar_or_list,
+                        "recommended": scalar_or_list,
+                        "evidence": {"type": "string"},
+                        "confidence": {"type": "number"},
+                    },
+                    "required": ["path", "current", "recommended", "evidence", "confidence"],
+                    "additionalProperties": False,
+                },
+            },
+            "risks": {"type": "array", "items": {"type": "string"}},
+            "followups": {"type": "array", "items": {"type": "string"}},
+            "raw_refs_used": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "recommended_changes", "risks", "followups", "raw_refs_used"],
+        "additionalProperties": False,
+    }
+
+
+def _parse_weekly_ai_output(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise TuningError("Weekly AI output must be a JSON object.")
+    parsed = {
+        "summary": str(payload.get("summary") or "").strip(),
+        "recommended_changes": [],
+        "risks": [str(item).strip() for item in (payload.get("risks") or []) if str(item).strip()],
+        "followups": [str(item).strip() for item in (payload.get("followups") or []) if str(item).strip()],
+        "raw_refs_used": [str(item).strip() for item in (payload.get("raw_refs_used") or []) if str(item).strip()],
+    }
+    changes = payload.get("recommended_changes") or []
+    if not isinstance(changes, list):
+        raise TuningError("Weekly AI output field `recommended_changes` must be a list.")
+    for item in changes:
+        if not isinstance(item, dict):
+            raise TuningError("Weekly AI output contained a non-object recommended change.")
+        path = str(item.get("path") or "").strip()
+        evidence = str(item.get("evidence") or "").strip()
+        if not path or not evidence:
+            raise TuningError("Weekly AI recommended changes require non-empty path and evidence values.")
+        confidence = float(item.get("confidence") or 0.0)
+        parsed["recommended_changes"].append(
+            {
+                "path": path,
+                "current": item.get("current"),
+                "recommended": item.get("recommended"),
+                "evidence": evidence,
+                "confidence": _clamp(confidence, 0.0, 1.0),
+            }
+        )
+    return parsed
+
+
+def _render_tuner_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        f"# Daily Local Tuning Proposal - {report['inputs']['export_id']}",
+        "",
+        "## Data",
+        f"- Trades analysed: {report['data']['closed']} closed ({report['data']['wins']}W / {report['data']['losses']}L)",
+        f"- Session win rate: {report['data']['win_pct']:.1f}%",
+        f"- Session PnL: ${report['data']['total_pnl']:.4f}",
+        f"- Config file: {report['config_name']}",
+        "",
+        "## Proposed Config Changes",
+    ]
+    if report["changes"]:
+        lines.extend(["| Parameter | Current | Recommended | Evidence |", "| --- | --- | --- | --- |"])
+        for change in report["changes"]:
+            lines.append(
+                f"| {change['path']} | {change['current']} | {change['recommended']} | {change['evidence']} |"
+            )
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Advisory Flags"])
+    if report["advisories"]:
+        lines.extend(f"- {item}" for item in report["advisories"])
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Parameters With No Change Recommended"])
+    lines.extend(f"- {item}" for item in (report["no_change"] or ["None."]))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_weekly_ai_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# Weekly AI Tuning Proposal",
+        "",
+        f"- Generated: {report['generated_at']}",
+        f"- Model: {report.get('model') or DEFAULT_WEEKLY_AI_MODEL}",
+        f"- Config file: {report['config_name']}",
+        "",
+        "## Summary",
+        report.get("summary") or "No summary provided.",
+        "",
+        "## Proposed Config Changes",
+    ]
+    if report["changes"]:
+        lines.extend(["| Parameter | Current | Recommended | Confidence | Evidence |", "| --- | --- | --- | ---: | --- |"])
+        for change in report["changes"]:
+            lines.append(
+                f"| {change['path']} | {change['current']} | {change['recommended']} | "
+                f"{float(change.get('confidence') or 0.0):.2f} | {change['evidence']} |"
+            )
+    else:
+        lines.append("None.")
+    lines.extend(["", "## Risks"])
+    lines.extend(f"- {item}" for item in (report.get("risks") or ["None."]))
+    lines.extend(["", "## Follow-ups"])
+    lines.extend(f"- {item}" for item in (report.get("followups") or ["None."]))
+    lines.extend(["", "## Raw Export Refs Used"])
+    lines.extend(f"- {item}" for item in (report.get("raw_refs_used") or ["None."]))
+    return "\n".join(lines).strip() + "\n"
+
+
+def _desktop_review_prompt(bundle_md_name: str, context_name: str) -> str:
+    return (
+        f"Read {bundle_md_name} and {context_name}, compare them to the active config, "
+        "and propose only safe-surface config changes. Prefer no change when evidence is weak. "
+        "If you recommend changes, explain the evidence, risks, and follow-ups, then produce a candidate patch."
+    )
+
+
+def _desktop_weekly_prompt(*, bundle_md_path: Path, config_path: Path, context_path: Path) -> str:
+    return "\n".join(
+        [
+            "Open these files in Codex desktop:",
+            f"- {bundle_md_path}",
+            f"- {context_path}",
+            f"- {config_path}",
+            "",
+            "Paste this prompt:",
+            (
+                f"Read {bundle_md_path.name}, {context_path.name}, and {config_path.name}. "
+                "Stay inside the safe config surface only: dual_leg.*, single_leg.*, lead_lag.*, "
+                "swing_leg.*, research.*, risk.*. Prefer no change when evidence is weak. "
+                "Start with a short conclusion on whether any config change is warranted. "
+                "If changes are justified, propose only safe-surface config changes and produce "
+                "a candidate patch against the active config with concise evidence, risks, and follow-ups. "
+                "Do not touch HA or add-on files."
+            ),
+        ]
+    )
+
+
+def _render_weekly_review_bundle_markdown(bundle: dict[str, Any]) -> str:
+    config = bundle.get("config") or {}
+    weekly_context = bundle.get("weekly_context") or {}
+    daily_candidate = bundle.get("daily_local_candidate") or {}
+    artifacts = bundle.get("artifacts") or {}
+    lines = [
+        "# Weekly Desktop Review Bundle",
+        "",
+        f"- Generated: {bundle.get('generated_at')}",
+        f"- Config: {config.get('name')} ({config.get('version')} / {config.get('hash')})",
+        f"- Context window: {weekly_context.get('window_start')} -> {weekly_context.get('window_end')}",
+        f"- Daily snapshots: {weekly_context.get('snapshot_count')}",
+        f"- Raw export refs: {weekly_context.get('raw_ref_count')}",
+        f"- Copy-paste prompt file: {artifacts.get('desktop_prompt') or 'weekly_desktop_prompt.txt'}",
+        "",
+        "## Desktop Prompt",
+        bundle.get("desktop_review_prompt") or "",
+        "",
+        "## Quick Paste Prompt",
+        bundle.get("desktop_weekly_prompt") or "",
+        "",
+        "## Open These Files",
+        f"- {artifacts.get('bundle_md') or 'weekly_review_bundle.md'}",
+        f"- {artifacts.get('context_json') or 'weekly_ai_context.json'}",
+        f"- {config.get('name') or 'config_phase_a_single.yaml'}",
+        "",
+        "## Safe Config Surface",
+    ]
+    lines.extend(f"- {item}" for item in (bundle.get("safe_config_surface") or []))
+    lines.extend(
+        [
+            "",
+            "## Daily Local Candidate",
+            f"- Status: {daily_candidate.get('status')}",
+            f"- Summary: {daily_candidate.get('summary') or 'None'}",
+            f"- Top changes: {', '.join(daily_candidate.get('top_changes') or []) or 'None'}",
+            "",
+            "## Review Checklist",
+        ]
+    )
+    lines.extend(f"- {item}" for item in (bundle.get("review_checklist") or []))
+    lines.extend(["", "## Daily Snapshots"])
+    snapshots = bundle.get("daily_snapshots") or []
+    if snapshots:
+        lines.extend(["| Day | Closed | Win % | PnL | Top Params |", "| --- | ---: | ---: | ---: | --- |"])
+        for item in snapshots:
+            lines.append(
+                f"| {item.get('day')} | {int(item.get('closed_trade_count') or 0)} | "
+                f"{float(item.get('win_pct') or 0.0):.1f} | {float(item.get('total_pnl') or 0.0):.4f} | "
+                f"{', '.join(item.get('top_changed_params') or []) or 'None'} |"
+            )
+    else:
+        lines.append("No daily snapshots available.")
+    lines.extend(["", "## Raw Export Refs"])
+    refs = bundle.get("raw_export_refs") or []
+    if refs:
+        lines.extend(["| Export ID | Closed | Win % | PnL | Coins | Strategies |", "| --- | ---: | ---: | ---: | --- | --- |"])
+        for item in refs:
+            lines.append(
+                f"| {item.get('export_id')} | {int(item.get('closed_trade_count') or 0)} | "
+                f"{float(item.get('win_pct') or 0.0):.1f} | {float(item.get('total_pnl') or 0.0):.4f} | "
+                f"{', '.join(item.get('coins') or []) or 'None'} | {', '.join(item.get('strategies') or []) or 'None'} |"
+            )
+    else:
+        lines.append("No raw export refs available.")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _enforce_safe_change_surface(changes: list[ProposedChange]) -> None:
+    for change in changes:
+        if not change.path.startswith(SAFE_CONFIG_PREFIXES):
+            raise TuningError(f"Unsafe config path outside tuning surface: {change.path}")
+
+
+def _load_yaml(path: Path) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as fh:
+        data = yaml.safe_load(fh) or {}
+    if not isinstance(data, dict):
+        raise TuningError(f"Expected mapping at root of config: {path}")
+    return data
+
+
+def _dump_yaml(payload: dict[str, Any]) -> str:
+    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=False)
+
+
+def _diff_text(current_text: str, candidate_text: str, current_path: Path, candidate_path: Path) -> str:
+    return "".join(
+        difflib.unified_diff(
+            current_text.splitlines(keepends=True),
+            candidate_text.splitlines(keepends=True),
+            fromfile=str(current_path),
+            tofile=str(candidate_path),
+        )
+    )
+
+
+def _get_nested(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for segment in path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current
+
+
+def _set_nested(payload: dict[str, Any], path: str, value: Any) -> None:
+    current = payload
+    parts = path.split(".")
+    for segment in parts[:-1]:
+        next_payload = current.get(segment)
+        if not isinstance(next_payload, dict):
+            next_payload = {}
+            current[segment] = next_payload
+        current = next_payload
+    current[parts[-1]] = value
+
+
+def _flt(value: Any, default: float | None = None) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _pct(wins: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round(wins / total * 100.0, 1)
+
+
+def _ptile(values: list[float | None], percentile: float) -> float | None:
+    ordered = sorted(value for value in values if value is not None)
+    if not ordered:
+        return None
+    k = (len(ordered) - 1) * float(percentile) / 100.0
+    lower = int(k)
+    upper = min(lower + 1, len(ordered) - 1)
+    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (k - lower), 4)
+
+
 def _group_stats(rows: list[dict[str, str]], key_fn) -> dict[str, dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -770,111 +1943,77 @@ def _candidate_summary(changes: list[ProposedChange], overall: dict[str, Any]) -
     closed = int(overall.get("closed") or 0)
     win_pct = overall.get("win_pct") or 0.0
     if not changes:
-        return f"No config changes proposed from {closed} closed trades."
+        if closed:
+            return f"No config changes proposed from {closed} closed trades."
+        return "No config changes proposed."
     return f"{len(changes)} config changes proposed from {closed} closed trades at {win_pct:.1f}% win rate."
 
 
-def _render_tuner_markdown(report: dict[str, Any]) -> str:
-    lines = [
-        f"# Tuning Proposal - {report['inputs']['folder_ts']}",
-        "",
-        "## Data",
-        f"- Trades analysed: {report['data']['closed']} closed ({report['data']['wins']}W / {report['data']['losses']}L)",
-        f"- Session win rate: {report['data']['win_pct']:.1f}%",
-        f"- Session PnL: ${report['data']['total_pnl']:.4f}",
-        f"- Config file: {report['config_path']}",
-        "",
-        "## Proposed Config Changes",
-    ]
-    if report["changes"]:
-        lines.extend(["| Parameter | Current | Recommended | Evidence |", "| --- | --- | --- | --- |"])
-        for change in report["changes"]:
-            lines.append(
-                f"| {change['path']} | {change['current']} | {change['recommended']} | {change['evidence']} |"
-            )
-    else:
-        lines.append("None.")
-    lines.extend(["", "## Advisory Flags"])
-    if report["advisories"]:
-        lines.extend(f"- {item}" for item in report["advisories"])
-    else:
-        lines.append("None.")
-    lines.extend(["", "## Parameters With No Change Recommended"])
-    lines.extend(f"- {item}" for item in (report["no_change"] or ["None."]))
-    return "\n".join(lines).strip() + "\n"
-
-
-def _enforce_safe_change_surface(changes: list[ProposedChange]) -> None:
-    for change in changes:
-        if not change.path.startswith(SAFE_CONFIG_PREFIXES):
-            raise TuningError(f"Unsafe config path outside tuning surface: {change.path}")
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as fh:
-        data = yaml.safe_load(fh) or {}
-    if not isinstance(data, dict):
-        raise TuningError(f"Expected mapping at root of config: {path}")
-    return data
-
-
-def _dump_yaml(payload: dict[str, Any]) -> str:
-    return yaml.safe_dump(payload, sort_keys=False, allow_unicode=False)
-
-
-def _diff_text(current_text: str, candidate_text: str, current_path: Path, candidate_path: Path) -> str:
-    return "".join(
-        difflib.unified_diff(
-            current_text.splitlines(keepends=True),
-            candidate_text.splitlines(keepends=True),
-            fromfile=str(current_path),
-            tofile=str(candidate_path),
-        )
-    )
-
-
-def _get_nested(payload: dict[str, Any], path: str) -> Any:
-    current: Any = payload
-    for segment in path.split("."):
-        if not isinstance(current, dict):
-            return None
-        current = current.get(segment)
-    return current
-
-
-def _set_nested(payload: dict[str, Any], path: str, value: Any) -> None:
-    current = payload
-    parts = path.split(".")
-    for segment in parts[:-1]:
-        next_payload = current.get(segment)
-        if not isinstance(next_payload, dict):
-            next_payload = {}
-            current[segment] = next_payload
-        current = next_payload
-    current[parts[-1]] = value
-
-
-def _flt(value: Any, default: float | None = None) -> float | None:
+def _load_json_file(path: str | Path, *, default: dict[str, Any]) -> dict[str, Any]:
+    resolved = resolve_repo_path(path) if path else None
+    if not resolved or not resolved.exists():
+        return dict(default)
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return dict(default)
+    return payload if isinstance(payload, dict) else dict(default)
 
 
-def _pct(wins: int, total: int) -> float:
-    if total <= 0:
-        return 0.0
-    return round(wins / total * 100.0, 1)
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if hasattr(value, "model_dump"):
+        return _jsonable(value.model_dump())
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    return str(value)
 
 
-def _ptile(values: list[float | None], percentile: float) -> float | None:
-    ordered = sorted(value for value in values if value is not None)
-    if not ordered:
-        return None
-    k = (len(ordered) - 1) * float(percentile) / 100.0
-    lower = int(k)
-    upper = min(lower + 1, len(ordered) - 1)
-    return round(ordered[lower] + (ordered[upper] - ordered[lower]) * (k - lower), 4)
+def _extract_response_refusal(response: Any) -> str | None:
+    output = getattr(response, "output", None) or []
+    for item in output:
+        content = getattr(item, "content", None) or []
+        for chunk in content:
+            if getattr(chunk, "type", None) == "refusal":
+                return str(getattr(chunk, "refusal", "") or "").strip() or None
+    return None
+
+
+def _unique_trim(values: list[str], *, limit: int) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _deep_copy(payload: Any) -> Any:
+    return json.loads(json.dumps(payload))
+
+
+def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base)
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
 
 
 def _bump_patch_version(version_path: Path, addon_config_path: Path) -> str:

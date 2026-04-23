@@ -107,7 +107,7 @@ execution:
 research:
   enabled: true
   artifact_path: data/research/runtime_policy.json
-  paper_gate_enabled: false
+  paper_gate_enabled: true
   execution_overlay_enabled: true
   size_scaling_enabled: true
   size_adjustment_per_score_point: 0.06

@@ -205,6 +205,16 @@
     font-family: "Press Start 2P", "VT323", monospace;
     text-shadow: 0 0 4px rgba(134,247,255,0.18);
   }
+  .control-head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-bottom: 8px;
+  }
+  .control-head-row .head {
+    margin-bottom: 0;
+  }
   .control-row {
     display: flex;
     gap: 6px;
@@ -231,6 +241,97 @@
     font-size: 10px;
     margin-right: 4px;
     letter-spacing: 1px;
+  }
+  .control-note {
+    margin-top: 8px;
+    padding: 6px 8px;
+    border: 1px solid #2a3a78;
+    border-radius: 4px;
+    background: rgba(6, 10, 30, 0.7);
+    color: #d6e3ff;
+    font-size: 14px;
+    line-height: 1.15;
+  }
+  .control-note.ready {
+    color: var(--neon-lime);
+    text-shadow: 0 0 4px var(--neon-lime);
+  }
+  .control-note.pending {
+    color: var(--neon-amber);
+    text-shadow: 0 0 4px var(--neon-amber);
+  }
+  .control-note.err {
+    color: var(--neon-red);
+    text-shadow: 0 0 4px var(--neon-red);
+  }
+  .control-path {
+    margin-top: 6px;
+    color: var(--text-dim);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .codex-led-cluster {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 8px;
+    border: 1px solid #2a3a78;
+    border-radius: 999px;
+    background: rgba(6, 10, 30, 0.78);
+    box-shadow: inset 0 1px 0 rgba(44, 56, 101, 0.8), 0 0 8px rgba(0, 0, 0, 0.22);
+  }
+  .codex-led {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: #33446d;
+    opacity: 0.45;
+    box-shadow: 0 0 0 rgba(0, 0, 0, 0);
+  }
+  .codex-led-label {
+    color: var(--text-dim);
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+    white-space: nowrap;
+  }
+  .codex-led-cluster.ready .codex-led,
+  .codex-led-cluster.queued .codex-led {
+    background: var(--neon-lime);
+    opacity: 0.95;
+    box-shadow: 0 0 8px var(--neon-lime), 0 0 14px rgba(57,255,20,0.55);
+  }
+  .codex-led-cluster.ready .codex-led-label,
+  .codex-led-cluster.queued .codex-led-label,
+  .codex-led-cluster.thinking .codex-led-label {
+    color: #d8ffd2;
+    text-shadow: 0 0 4px rgba(57,255,20,0.45);
+  }
+  .codex-led-cluster.thinking .codex-led {
+    background: var(--neon-lime);
+    opacity: 1;
+    box-shadow: 0 0 8px var(--neon-lime), 0 0 18px rgba(57,255,20,0.75);
+    animation: blink 0.55s infinite;
+  }
+  .codex-led-cluster.issue .codex-led,
+  .codex-led-cluster.offline .codex-led {
+    background: var(--neon-red);
+    opacity: 1;
+    box-shadow: 0 0 8px var(--neon-red), 0 0 18px rgba(255,59,59,0.75);
+    animation: blink 0.75s infinite;
+  }
+  .codex-led-cluster.issue .codex-led-label,
+  .codex-led-cluster.offline .codex-led-label {
+    color: #ffd0d0;
+    text-shadow: 0 0 4px rgba(255,59,59,0.55);
+  }
+  .codex-led-cluster.pulse .codex-led {
+    animation: codex-pulse 0.95s ease-out 1;
+  }
+  @keyframes codex-pulse {
+    0% { transform: scale(1); }
+    35% { transform: scale(1.55); }
+    100% { transform: scale(1); }
   }
   .ctl-btn {
     appearance: none;
@@ -724,6 +825,8 @@
     .control-readout { gap: 4px; }
     .readout-pill { font-size: 12px; }
     .readout-pill .lbl { font-size: 9px; }
+    .control-note { font-size: 12px; }
+    .control-path { font-size: 10px; }
     .ctl-btn { font-size: 9px; padding: 4px 6px; }
     .ctl-status { font-size: 14px; }
     main.stack { padding: 10px; gap: 10px; }
@@ -826,7 +929,13 @@
           </div>
         </div>
         <div class="control-block">
-          <span class="head">RESEARCH CODEx</span>
+          <div class="control-head-row">
+            <span class="head">RESEARCH CODEx</span>
+            <div id="codex-led-cluster" class="codex-led-cluster offline" title="Research runner status">
+              <span id="codex-led" class="codex-led" aria-hidden="true"></span>
+              <span id="codex-led-label" class="codex-led-label">OFFLINE</span>
+            </div>
+          </div>
           <div class="control-row">
             <button type="button" class="ctl-btn" data-action="research_run_now">RUN RESEARCH</button>
           </div>
@@ -834,6 +943,8 @@
             <div class="readout-pill"><span class="lbl">QUEUE</span><span id="codex-queue">-</span></div>
             <div class="readout-pill"><span class="lbl">ACTIVE</span><span id="codex-active">-</span></div>
           </div>
+          <div id="codex-note" class="control-note pending">RESEARCH RUNNER STATUS UNKNOWN</div>
+          <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
         </div>
         <div class="control-block">
           <span class="head">TUNER</span>
@@ -850,8 +961,15 @@
           <div class="control-readout">
             <div class="readout-pill"><span class="lbl">CADENCE</span><span id="tuner-cadence">-</span></div>
             <div class="readout-pill"><span class="lbl">NEXT</span><span id="tuner-next">-</span></div>
+            <div class="readout-pill"><span class="lbl">PRIMARY</span><span id="tuner-primary">-</span></div>
+          </div>
+          <div class="control-readout">
+            <div class="readout-pill"><span class="lbl">LOCAL</span><span id="tuner-daily">-</span></div>
+            <div class="readout-pill"><span class="lbl">REVIEW</span><span id="tuner-weekly">-</span></div>
             <div class="readout-pill"><span class="lbl">CAND</span><span id="tuner-candidate">-</span></div>
           </div>
+          <div id="tuner-desktop-note" class="control-note pending">DESKTOP REVIEW NOT READY</div>
+          <div id="tuner-desktop-path" class="control-path">PROMPT FILE: -</div>
         </div>
       </div>
       <div id="ctrl-status" class="ctl-status">CONTROL LINK STANDBY</div>
@@ -875,6 +993,9 @@
   const POLL_MS = 100;             // 10 Hz
   const STALE_AFTER_MS = 1500;     // banner + dim if no frame for this long
   const DEAD_AFTER_MS = 5000;      // hard "uplink lost" threshold
+  const CODEX_HEARTBEAT_FRESH_MS = 45000;
+  const CODEX_HEARTBEAT_STALE_MS = 120000;
+  const CODEX_QUEUE_STUCK_MS = 180000;
   const FEED_LABELS = { binance: "BNC", coinbase: "CB ", coingecko: "CG ", polymarket_rtds: "RTDS" };
   const MODE_NAMES = { both: "ALL", dual: "DUAL", single: "SINGLE", lead: "LEAD", swing: "SWING", off: "OFF" };
 
@@ -910,6 +1031,32 @@
     s = Math.max(0, Math.round(s));
     const m = Math.floor(s / 60), r = s % 60;
     return m + ":" + String(r).padStart(2, "0");
+  };
+  const baseName = (value) => {
+    const text = String(value || "").trim();
+    if (!text) return "";
+    const parts = text.split(/[\\/]/);
+    return parts[parts.length - 1] || text;
+  };
+  const parseTimeMs = (value) => {
+    if (!value) return null;
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  const fmtAgeCompact = (ms) => {
+    if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+    const totalSeconds = Math.round(ms / 1000);
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    if (totalMinutes < 60) return `${totalMinutes}m`;
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
+  };
+  const fmtShortStamp = (value) => {
+    if (!value) return "—";
+    const text = String(value);
+    return text.length >= 16 ? text.slice(5, 16).replace("T", " ") : text;
   };
   const escapeHtml = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 
@@ -965,6 +1112,96 @@
     if (!host) return;
     setText(host, text);
     host.className = "ctl-status" + (cls ? " " + cls : "");
+  }
+  function pulseCodexLed(host, token) {
+    if (!host || !token) return;
+    if (host.__lastPulseToken === token) return;
+    host.__lastPulseToken = token;
+    host.classList.remove("pulse");
+    void host.offsetWidth;
+    host.classList.add("pulse");
+    window.clearTimeout(host.__pulseTimer);
+    host.__pulseTimer = window.setTimeout(() => {
+      host.classList.remove("pulse");
+    }, 1000);
+  }
+  function describeCodexRunner(codex) {
+    const now = Date.now();
+    const activeRun = codex.active_run || null;
+    const lastRun = codex.last_run || {};
+    const queuedJob = codex.next_queued_job || null;
+    const queueDepth = Number(codex.queue_depth || 0);
+    const heartbeatMs = parseTimeMs(codex.last_heartbeat_at);
+    const queueMs = parseTimeMs(queuedJob && queuedJob.requested_at);
+    const heartbeatAge = heartbeatMs == null ? null : Math.max(0, now - heartbeatMs);
+    const queueAge = queueMs == null ? null : Math.max(0, now - queueMs);
+    const heartbeatFresh = heartbeatAge != null && heartbeatAge <= CODEX_HEARTBEAT_FRESH_MS;
+    const heartbeatRecent = heartbeatAge != null && heartbeatAge <= CODEX_HEARTBEAT_STALE_MS;
+    const lastRunFailed = !!(lastRun && lastRun.ok === false);
+
+    if (activeRun && activeRun.job_type) {
+      return {
+        state: "thinking",
+        label: "THINKING",
+        note: `PROCESSING ${String(activeRun.job_type).replaceAll("_", " ").toUpperCase()}`,
+        meta: `STARTED ${fmtShortStamp(activeRun.started_at)} | HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO`,
+        pulseToken: codex.last_heartbeat_at || activeRun.started_at || activeRun.run_id || "active",
+        noteClass: "ready",
+      };
+    }
+    if (queueDepth > 0 && (!heartbeatRecent || (queueAge != null && queueAge >= CODEX_QUEUE_STUCK_MS))) {
+      return {
+        state: "issue",
+        label: "ISSUE",
+        note: queueAge != null
+          ? `JOB STUCK IN QUEUE FOR ${fmtAgeCompact(queueAge).toUpperCase()}. CHECK CODEx RUNNER.`
+          : "JOB QUEUED BUT RUNNER IS NOT REPORTING A HEARTBEAT.",
+        meta: heartbeatMs != null
+          ? `LAST HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO | QUEUED ${fmtShortStamp(queuedJob && queuedJob.requested_at)}`
+          : "LAST HEARTBEAT: NEVER SEEN",
+        noteClass: "err",
+      };
+    }
+    if (lastRunFailed) {
+      return {
+        state: "issue",
+        label: "ISSUE",
+        note: String(lastRun.summary || "LAST RESEARCH RUN FAILED.").toUpperCase(),
+        meta: `LAST RUN ${fmtShortStamp(lastRun.finished_at || lastRun.started_at)} | HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO`,
+        noteClass: "err",
+      };
+    }
+    if (queueDepth > 0) {
+      return {
+        state: heartbeatFresh ? "queued" : "offline",
+        label: heartbeatFresh ? "QUEUED" : "OFFLINE",
+        note: heartbeatFresh
+          ? "JOB QUEUED. RUNNER SHOULD PICK IT UP WITHIN THE NEXT POLL."
+          : "JOB QUEUED. WAITING FOR CODEx RUNNER TO COME ONLINE.",
+        meta: `QUEUED ${fmtShortStamp(queuedJob && queuedJob.requested_at)} | WAIT ${fmtAgeCompact(queueAge)}`,
+        pulseToken: heartbeatFresh ? (codex.last_heartbeat_at || queuedJob && queuedJob.requested_at || "queued") : null,
+        noteClass: heartbeatFresh ? "pending" : "err",
+      };
+    }
+    if (heartbeatFresh || codex.healthy === true) {
+      return {
+        state: "ready",
+        label: "READY",
+        note: "RUNNER ONLINE. WAITING FOR RESEARCH WORK.",
+        meta: lastRun.summary
+          ? `LAST: ${String(lastRun.summary).toUpperCase()}`
+          : `LAST HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO`,
+        pulseToken: codex.last_heartbeat_at || null,
+        noteClass: "ready",
+      };
+    }
+    return {
+      state: "offline",
+      label: "OFFLINE",
+      note: "CODEx RUNNER OFFLINE. QUEUED RESEARCH WILL NOT START.",
+      meta: heartbeatMs != null ? `LAST HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO` : "LAST HEARTBEAT: NEVER SEEN",
+      noteClass: "err",
+    };
   }
 
   // ----- Card rendering -----
@@ -1429,9 +1666,72 @@
         ? String(codex.active_run.job_type).replaceAll("_", " ").toUpperCase()
         : "IDLE"
     );
+    const codexLedCluster = $("codex-led-cluster");
+    const codexLedLabel = $("codex-led-label");
+    const codexNote = $("codex-note");
+    const codexMeta = $("codex-meta");
+    const codexStatus = describeCodexRunner(codex);
+    if (codexLedCluster) {
+      codexLedCluster.className = `codex-led-cluster ${codexStatus.state}`;
+      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}`);
+      if (codexStatus.pulseToken) {
+        pulseCodexLed(codexLedCluster, codexStatus.pulseToken);
+      }
+    }
+    setText(codexLedLabel, codexStatus.label);
+    setText(codexNote, codexStatus.note);
+    setText(codexMeta, codexStatus.meta);
+    setClassList(codexNote, "ready", codexStatus.noteClass === "ready");
+    setClassList(codexNote, "pending", codexStatus.noteClass === "pending");
+    setClassList(codexNote, "err", codexStatus.noteClass === "err");
     setText($("tuner-cadence"), String(tuner.cadence || "—").toUpperCase());
     setText($("tuner-next"), tuner.next_auto_run_at ? String(tuner.next_auto_run_at).slice(5, 16).replace("T", " ") : "—");
-    setText($("tuner-candidate"), String(tuner.candidate_status || "—").toUpperCase());
+    setText($("tuner-primary"), String(tuner.primary_candidate_source || "none").replaceAll("_", " ").toUpperCase());
+    const dailyLocal = tuner.daily_local_candidate || {};
+    const weeklyReview = tuner.weekly_review_bundle || {};
+    const weeklyReviewPaths = weeklyReview.paths || {};
+    setText(
+      $("tuner-daily"),
+      `${String(tuner.daily_local_last_result || dailyLocal.last_result || "—").toUpperCase()} / ${String(dailyLocal.status || "—").toUpperCase()}`
+    );
+    setText(
+      $("tuner-weekly"),
+      `${String(tuner.weekly_ai_last_result || weeklyReview.last_result || "—").toUpperCase()} / ${String(weeklyReview.status || "—").toUpperCase()}`
+    );
+    setText(
+      $("tuner-candidate"),
+      tuner.candidate_summary
+        ? String(tuner.candidate_summary).slice(0, 42)
+        : String(tuner.candidate_status || "—").toUpperCase()
+    );
+    const desktopReady = String(weeklyReview.status || "").toLowerCase() === "ready";
+    const desktopPromptPath = String(weeklyReviewPaths.desktop_prompt || "");
+    const desktopBundlePath = String(weeklyReviewPaths.bundle_md || "");
+    const desktopPromptName = baseName(desktopPromptPath) || "weekly_desktop_prompt.txt";
+    const desktopBundleName = baseName(desktopBundlePath) || "weekly_review_bundle.md";
+    const desktopNote = $("tuner-desktop-note");
+    const desktopPath = $("tuner-desktop-path");
+    setText(
+      desktopNote,
+      desktopReady
+        ? `DESKTOP REVIEW READY: OPEN ${desktopPromptName.toUpperCase()}`
+        : String(weeklyReview.summary || "Desktop review bundle pending.").toUpperCase()
+    );
+    setClassList(desktopNote, "ready", desktopReady);
+    setClassList(desktopNote, "pending", !desktopReady);
+    setText(
+      desktopPath,
+      desktopReady
+        ? `PROMPT FILE: ${desktopPromptPath || desktopPromptName} | BUNDLE: ${desktopBundleName}`
+        : `PROMPT FILE: ${desktopPromptPath || "—"}`
+    );
+    setAttr(
+      desktopPath,
+      "title",
+      desktopReady
+        ? `Prompt: ${desktopPromptPath || desktopPromptName}\nBundle: ${desktopBundlePath || desktopBundleName}`
+        : String(weeklyReview.summary || "Desktop review bundle pending.")
+    );
     setClassList($("btn-tuner-pause"), "active", tuner.schedule_enabled === false);
     setClassList($("btn-tuner-resume"), "active", tuner.schedule_enabled !== false);
     setClassList($("btn-tuner-weekly"), "active", tuner.cadence === "weekly");

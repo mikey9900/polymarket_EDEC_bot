@@ -25,7 +25,6 @@ CONFIG_PATH="$(read_option config_path)"
 POLL_SECONDS="$(read_option poll_seconds)"
 TIMEZONE_NAME="$(read_option timezone)"
 CODEX_HOME_VALUE="$(read_option codex_home)"
-OPENAI_API_KEY_VALUE="$(read_option openai_api_key)"
 
 if [ -z "${WORKSPACE_PATH}" ]; then
   WORKSPACE_PATH="/share/polymarket_EDEC_bot"
@@ -63,9 +62,6 @@ export EDEC_SHARED_DATA_ROOT="/data/edec"
 export EDEC_LOCAL_TIMEZONE="${TIMEZONE_NAME}"
 export CODEX_HOME="${CODEX_HOME_VALUE}"
 export EDEC_CONFIG_PATH="${CONFIG_PATH}"
-if [ -n "${OPENAI_API_KEY_VALUE}" ]; then
-  export OPENAI_API_KEY="${OPENAI_API_KEY_VALUE}"
-fi
 
 CURRENT_REQ_HASH="$(python - "${REQ_FILE}" <<'PY'
 import hashlib

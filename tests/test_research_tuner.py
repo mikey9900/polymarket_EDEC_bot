@@ -3,6 +3,7 @@ import shutil
 import sys
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from uuid import uuid4
 
@@ -13,9 +14,32 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
 from research.tuner import TuningError
+from research.tuner import build_weekly_ai_context
+from research.tuner import build_weekly_review_bundle
+from research.tuner import load_tuner_state
 from research.tuner import promote_tuning_candidate
 from research.tuner import propose_tuning
+from research.tuner import propose_weekly_ai_tuning
 from research.tuner import reject_tuning_candidate
+
+
+class _FakeResponsesClient:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def create(self, **kwargs):
+        return SimpleNamespace(
+            id="resp-test",
+            model=kwargs.get("model", "gpt-5.4-mini"),
+            output_text=json.dumps(self.payload),
+            usage={"input_tokens": 123, "output_tokens": 45},
+            output=[],
+        )
+
+
+class _FakeOpenAIClient:
+    def __init__(self, payload: dict):
+        self.responses = _FakeResponsesClient(payload)
 
 
 class ResearchTunerTests(unittest.TestCase):
@@ -34,11 +58,40 @@ class ResearchTunerTests(unittest.TestCase):
         self._write_signals_csv()
 
         self.config_path = self.tmpdir / "config_phase_a_single.yaml"
-        self.config_path.write_text((ROOT / "edec_bot" / "config_phase_a_single.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+        self.config_path.write_text(
+            (ROOT / "edec_bot" / "config_phase_a_single.yaml").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
         self.tuner_state_path = self.tmpdir / "tuner_state.json"
         self.report_json_path = self.tmpdir / "tuner_report.json"
         self.report_md_path = self.tmpdir / "tuner_report.md"
         self.patch_path = self.tmpdir / "tuner_active_patch.diff"
+        self.weekly_context_path = self.tmpdir / "weekly_ai_context.json"
+        self.weekly_report_json_path = self.tmpdir / "weekly_ai_tuner_report.json"
+        self.weekly_report_md_path = self.tmpdir / "weekly_ai_tuner_report.md"
+        self.weekly_prompt_bundle_path = self.tmpdir / "weekly_ai_prompt_bundle.json"
+        self.weekly_response_path = self.tmpdir / "weekly_ai_response.json"
+        self.weekly_patch_path = self.tmpdir / "weekly_ai_patch.diff"
+        self.weekly_review_bundle_json = self.tmpdir / "weekly_review_bundle.json"
+        self.weekly_review_bundle_md = self.tmpdir / "weekly_review_bundle.md"
+        self.weekly_desktop_prompt = self.tmpdir / "weekly_desktop_prompt.txt"
+        self.research_report_json_path = self.tmpdir / "research_report.json"
+        self.research_report_json_path.write_text(
+            json.dumps(
+                {
+                    "generated_at": "2026-04-21T18:00:00+00:00",
+                    "policy": {"cluster_count": 4, "outcome_count": 18},
+                    "cluster_winners": [{"cluster_id": "btc_single_a", "sample_size": 8, "avg_pnl": 1.2}],
+                    "cluster_losers": [{"cluster_id": "sol_lead_b", "sample_size": 6, "avg_pnl": -0.7}],
+                    "by_coin": [{"name": "btc", "sample_size": 12, "total_pnl": 3.0, "paper_blocked_clusters": 1}],
+                    "by_strategy": [{"name": "single_leg", "sample_size": 12, "total_pnl": 3.0, "paper_blocked_clusters": 1}],
+                    "fill_flow_5m_1d": [{"coin": "btc", "fill_count": 2, "usd_volume": 5.5, "avg_price": 0.58}],
+                    "trader_concentration_5m_1d": [{"coin": "btc", "top_trader": "0xabc", "top_trader_share_pct": 44.0, "top_3_share_pct": 77.0, "unique_trader_count": 5}],
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         self.candidates_root = self.tmpdir / "config_candidates"
         self.candidates_root.mkdir(parents=True, exist_ok=True)
 
@@ -72,15 +125,183 @@ class ResearchTunerTests(unittest.TestCase):
         self.assertEqual(report_payload["candidate_status"], "ready")
         self.assertIn("depth_check", "\n".join(report_payload["advisories"]))
 
-    def test_promote_candidate_updates_config_and_bumps_version(self):
+    def test_build_weekly_ai_context_compacts_exports_without_paths(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
-            proposal = propose_tuning(
+            propose_tuning(
                 config_path=self.config_path,
                 tuner_state_path=self.tuner_state_path,
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
                 candidates_root=self.candidates_root,
+            )
+            result = build_weekly_ai_context(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+                report_json_path=self.research_report_json_path,
+                window_days=7,
+            )
+
+        self.assertTrue(result["ok"])
+        payload = json.loads(self.weekly_context_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["config"]["name"], "config_phase_a_single.yaml")
+        self.assertEqual(payload["daily_local_candidate"]["status"], "ready")
+        self.assertTrue(payload["daily_snapshots"])
+        self.assertEqual(payload["raw_export_refs"][0]["export_id"], self.export_root.name)
+        self.assertNotIn(str(self.tmpdir), json.dumps(payload))
+        self.assertNotIn("session_trades.csv", json.dumps(payload))
+
+    def test_propose_weekly_ai_tuning_builds_candidate_and_becomes_primary(self):
+        weekly_payload = {
+            "summary": "Tighten single-leg velocity after a stronger recent-flow regime.",
+            "recommended_changes": [
+                {
+                    "path": "single_leg.min_velocity_30s",
+                    "current": 0.12,
+                    "recommended": 0.18,
+                    "evidence": "The recent daily snapshots improved once velocity cleared 0.15.",
+                    "confidence": 0.74,
+                }
+            ],
+            "risks": ["Trade count may fall if flow softens."],
+            "followups": ["Watch BTC fill flow and crowded-trader share next week."],
+            "raw_refs_used": [self.export_root.name],
+        }
+        fake_openai_module = SimpleNamespace(OpenAI=lambda api_key=None: _FakeOpenAIClient(weekly_payload))
+
+        with (
+            mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]),
+            mock.patch("research.tuner.require_openai", return_value=fake_openai_module),
+        ):
+            propose_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+            )
+            result = propose_weekly_ai_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+                report_json_path=self.weekly_report_json_path,
+                report_md_path=self.weekly_report_md_path,
+                prompt_bundle_path=self.weekly_prompt_bundle_path,
+                response_path=self.weekly_response_path,
+                patch_path=self.weekly_patch_path,
+                candidates_root=self.candidates_root,
+                api_key="test-key",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["candidate_source"], "weekly_ai")
+        self.assertEqual(result["candidate_status"], "ready")
+        self.assertTrue(Path(result["candidate_config_path"]).exists())
+        self.assertTrue(self.weekly_prompt_bundle_path.exists())
+        self.assertTrue(self.weekly_response_path.exists())
+        self.assertTrue(self.weekly_patch_path.exists())
+
+        state = load_tuner_state(self.tuner_state_path)
+        self.assertEqual(state["primary_candidate_source"], "weekly_ai")
+        self.assertEqual(state["weekly_ai_candidate"]["status"], "ready")
+        self.assertEqual(state["latest_candidate_source"], "weekly_ai")
+
+    def test_propose_weekly_ai_tuning_blocks_without_api_key(self):
+        with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
+            result = propose_weekly_ai_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("OPENAI_API_KEY", result["message"])
+
+    def test_build_weekly_review_bundle_writes_desktop_bundle(self):
+        with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
+            propose_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+            )
+            result = build_weekly_review_bundle(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+                bundle_json_path=self.weekly_review_bundle_json,
+                bundle_md_path=self.weekly_review_bundle_md,
+                prompt_path=self.weekly_desktop_prompt,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(self.weekly_review_bundle_json.exists())
+        self.assertTrue(self.weekly_review_bundle_md.exists())
+        self.assertTrue(self.weekly_desktop_prompt.exists())
+        payload = json.loads(self.weekly_review_bundle_json.read_text(encoding="utf-8"))
+        self.assertEqual(payload["review_mode"], "desktop_manual")
+        self.assertIn("desktop_review_prompt", payload)
+        self.assertIn("desktop_weekly_prompt", payload)
+        self.assertEqual(payload["artifacts"]["desktop_prompt"], self.weekly_desktop_prompt.name)
+        self.assertNotIn(str(self.tmpdir), json.dumps(payload))
+        prompt_text = self.weekly_desktop_prompt.read_text(encoding="utf-8").strip()
+        self.assertIn("Open these files in Codex desktop:", prompt_text)
+        self.assertIn(self.weekly_review_bundle_md.name, prompt_text)
+        self.assertIn(self.weekly_context_path.name, prompt_text)
+        self.assertIn(self.config_path.name, prompt_text)
+        state = load_tuner_state(self.tuner_state_path)
+        self.assertEqual(state["weekly_review_bundle"]["status"], "ready")
+        self.assertEqual(
+            Path(state["weekly_review_bundle"]["paths"]["desktop_prompt"]).name,
+            self.weekly_desktop_prompt.name,
+        )
+
+    def test_promote_candidate_uses_primary_weekly_ai_candidate(self):
+        weekly_payload = {
+            "summary": "Weekly AI candidate ready.",
+            "recommended_changes": [
+                {
+                    "path": "single_leg.min_velocity_30s",
+                    "current": 0.12,
+                    "recommended": 0.18,
+                    "evidence": "Recent snapshots were better at higher velocity.",
+                    "confidence": 0.81,
+                }
+            ],
+            "risks": [],
+            "followups": ["Confirm signal count stays acceptable."],
+            "raw_refs_used": [self.export_root.name],
+        }
+        fake_openai_module = SimpleNamespace(OpenAI=lambda api_key=None: _FakeOpenAIClient(weekly_payload))
+
+        with (
+            mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]),
+            mock.patch("research.tuner.require_openai", return_value=fake_openai_module),
+        ):
+            propose_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+            )
+            weekly = propose_weekly_ai_tuning(
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+                report_json_path=self.weekly_report_json_path,
+                report_md_path=self.weekly_report_md_path,
+                prompt_bundle_path=self.weekly_prompt_bundle_path,
+                response_path=self.weekly_response_path,
+                patch_path=self.weekly_patch_path,
+                candidates_root=self.candidates_root,
+                api_key="test-key",
             )
 
         version_path = self.tmpdir / "version.py"
@@ -89,7 +310,7 @@ class ResearchTunerTests(unittest.TestCase):
         addon_config_path.write_text(json.dumps({"version": "5.2.9"}, indent=2) + "\n", encoding="utf-8")
 
         result = promote_tuning_candidate(
-            candidate_id=proposal["candidate_id"],
+            candidate_id=weekly["candidate_id"],
             config_path=self.config_path,
             tuner_state_path=self.tuner_state_path,
             version_path=version_path,
@@ -97,10 +318,11 @@ class ResearchTunerTests(unittest.TestCase):
         )
 
         self.assertTrue(result["ok"])
+        self.assertEqual(result["candidate_source"], "weekly_ai")
         self.assertEqual(result["version"], "5.2.11")
-        self.assertIn("0.15", self.config_path.read_text(encoding="utf-8"))
-        self.assertIn('5.2.11', version_path.read_text(encoding="utf-8"))
-        self.assertEqual(json.loads(addon_config_path.read_text(encoding="utf-8"))["version"], "5.2.11")
+        state = load_tuner_state(self.tuner_state_path)
+        self.assertEqual(state["weekly_ai_candidate"]["status"], "promoted")
+        self.assertEqual(state["daily_local_candidate"]["status"], "rejected")
 
     def test_reject_candidate_blocks_later_promotion(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
@@ -116,7 +338,11 @@ class ResearchTunerTests(unittest.TestCase):
         reject = reject_tuning_candidate(candidate_id=proposal["candidate_id"], tuner_state_path=self.tuner_state_path)
         self.assertTrue(reject["ok"])
         with self.assertRaises(TuningError):
-            promote_tuning_candidate(candidate_id=proposal["candidate_id"], config_path=self.config_path, tuner_state_path=self.tuner_state_path)
+            promote_tuning_candidate(
+                candidate_id=proposal["candidate_id"],
+                config_path=self.config_path,
+                tuner_state_path=self.tuner_state_path,
+            )
 
     def _write_trades_csv(self) -> None:
         rows = [

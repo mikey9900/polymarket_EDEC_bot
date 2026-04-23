@@ -12,7 +12,7 @@ python -m edec_bot.research codex-runner
 
 The runner owns:
 - daily research refresh at 6:15 AM local time
-- weekly tuning proposal at Monday 6:30 AM local time
+- weekly desktop review bundle at Monday 6:30 AM local time
 - queue-backed manual jobs from the HA dashboard
 
 ## Required setup on the HA machine
@@ -28,7 +28,6 @@ The runner owns:
    - `poll_seconds`: `15`
    - `timezone`: your local zone, for example `America/Edmonton`
    - `codex_home`: `/data/codex`
-   - `openai_api_key`: your API key
 5. Start the Codex Runner add-on.
 6. Confirm it creates `/data/edec/codex/state.json`.
 7. Start the bot add-on and use the dashboard controls to queue research/tuner jobs.
@@ -37,4 +36,5 @@ The runner owns:
 
 - The sidecar caches a Python venv under `/data/codex/venv`, so it does not reinstall dependencies on every boot.
 - Shared queue/state/results live under `/data/edec/codex`.
+- Weekly desktop review bundles are written under `data/research/` for Codex desktop review.
 - The runner does not rewrite live config automatically. Promotion still requires the explicit HA control action.

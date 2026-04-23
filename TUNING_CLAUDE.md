@@ -4,8 +4,8 @@
 
 **In your very first response**, do all three of the following in one message (parallel tool calls):
 1. `TodoWrite` — create the six tasks listed at the bottom of this section
-2. `Bash` — run `python edec_bot/fetch_github_data.py --limit 3`
-3. `Bash` — run `python -c "import os; print(os.getenv('EDEC_CONFIG_PATH','edec_bot/config_phase_a_single.yaml'))"`
+2. `Bash` — run `.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 3`
+3. `Bash` — run `.\scripts\venv_python.cmd -c "import os; print(os.getenv('EDEC_CONFIG_PATH','edec_bot/config_phase_a_single.yaml'))"`
 
 Then work through each task in order, marking it done immediately when complete.
 
@@ -18,6 +18,8 @@ Then work through each task in order, marking it done immediately when complete.
 - [ ] Apply changes (on user confirmation)
 
 If the fetch script exits with an error containing `EDEC_GITHUB_TOKEN` or `EDEC_GITHUB_REPO`, stop and tell the user which variable is missing.
+
+All local commands below assume repo root on this Windows machine and should run through `.\scripts\venv_python.cmd`.
 
 ---
 
@@ -39,8 +41,8 @@ From the config path output, `Read` that file. That is `CONFIG`.
 1. From `CONFIG`, extract and record `CURRENT` values for every parameter listed in the Decision Rules section
 2. Run the metrics script below, substituting the real paths
 
-```bash
-python - << 'PYEOF'
+```powershell
+@'
 import csv, json, sys, statistics
 from collections import defaultdict
 from pathlib import Path
@@ -147,7 +149,7 @@ result = {
     },
 }
 print(json.dumps(result, indent=2))
-PYEOF
+'@ | .\scripts\venv_python.cmd -
 ```
 
 This is `METRICS`. If it errors, show the traceback and halt.

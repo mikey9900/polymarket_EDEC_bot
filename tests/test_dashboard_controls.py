@@ -152,13 +152,43 @@ class _FakeCodexManager:
                 "last_heartbeat_at": "2026-04-22T12:00:00+00:00",
                 "queue_depth": 1,
                 "active_run": {"job_type": "daily_research_refresh"},
-                "last_run": {"job_type": "tuning_proposal"},
+                "last_run": {
+                    "job_type": "tuning_proposal",
+                    "ok": True,
+                    "summary": "Weekly desktop review bundle status: ready.",
+                    "finished_at": "2026-04-22T11:58:00+00:00",
+                },
+                "next_queued_job": {
+                    "job_type": "daily_research_refresh",
+                    "requested_at": "2026-04-22T11:59:00+00:00",
+                },
                 "latest_candidate": {
                     "candidate_id": "cand-1",
                     "status": "ready",
                     "summary": "Candidate ready for review.",
                     "paths": {},
                 },
+                "daily_local_candidate": {
+                    "candidate_id": "local-1",
+                    "status": "ready",
+                    "summary": "Daily local candidate ready.",
+                    "paths": {},
+                },
+                "weekly_ai_candidate": {
+                    "candidate_id": "weekly-1",
+                    "status": "ready",
+                    "summary": "Weekly AI candidate ready.",
+                    "paths": {},
+                },
+                "weekly_review_bundle": {
+                    "status": "ready",
+                    "summary": "Weekly desktop review bundle ready.",
+                    "paths": {
+                        "bundle_md": "data/research/weekly_review_bundle.md",
+                        "desktop_prompt": "data/research/weekly_desktop_prompt.txt",
+                    },
+                },
+                "primary_candidate_source": "weekly_ai",
             },
             "tuner": {
                 "running": False,
@@ -168,9 +198,32 @@ class _FakeCodexManager:
                 "next_auto_run_at": "2026-04-27T12:30:00+00:00",
                 "last_run_at": "2026-04-21T12:30:00+00:00",
                 "last_result": "success",
+                "daily_local_last_run_at": "2026-04-22T12:15:00+00:00",
+                "daily_local_last_result": "success",
+                "weekly_ai_last_run_at": "2026-04-21T12:30:00+00:00",
+                "weekly_ai_last_result": "success",
+                "daily_local_candidate": {
+                    "candidate_id": "local-1",
+                    "status": "ready",
+                    "summary": "Daily local candidate ready.",
+                },
+                "weekly_ai_candidate": {
+                    "candidate_id": "weekly-1",
+                    "status": "ready",
+                    "summary": "Weekly AI candidate ready.",
+                },
+                "weekly_review_bundle": {
+                    "status": "ready",
+                    "summary": "Weekly desktop review bundle ready.",
+                    "paths": {
+                        "bundle_md": "data/research/weekly_review_bundle.md",
+                        "desktop_prompt": "data/research/weekly_desktop_prompt.txt",
+                    },
+                },
+                "primary_candidate_source": "weekly_ai",
                 "candidate_available": True,
                 "candidate_status": "ready",
-                "candidate_summary": "Candidate ready for review.",
+                "candidate_summary": "Weekly AI candidate ready.",
             },
         }
 
@@ -265,7 +318,13 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(snapshot["codex"]["queue_depth"], 1)
         self.assertEqual(snapshot["codex"]["latest_candidate"]["status"], "ready")
+        self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
         self.assertEqual(snapshot["tuner"]["cadence"], "weekly")
+        self.assertEqual(snapshot["tuner"]["primary_candidate_source"], "weekly_ai")
+        self.assertEqual(
+            snapshot["tuner"]["weekly_review_bundle"]["paths"]["desktop_prompt"],
+            "data/research/weekly_desktop_prompt.txt",
+        )
         self.assertTrue(snapshot["controls"]["available_actions"]["research_run_now"])
 
     async def test_apply_control_async_updates_mode_and_budget(self):
@@ -353,6 +412,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(research_result["ok"])
         self.assertIn("queued", research_result["message"].lower())
+        self.assertIn("manual", cadence_result["message"].lower())
         self.assertTrue(cadence_result["ok"])
         self.assertEqual(cadence_result["state"]["tuner"]["cadence"], "manual")
 

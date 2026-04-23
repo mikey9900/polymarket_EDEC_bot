@@ -15,8 +15,11 @@ from .paths import (
 from .sources import GammaMarketSource, GoldskyFillSource
 from .sync import sync_fills, sync_markets, sync_recent_5m_fills
 from .tuner import (
+    build_weekly_ai_context,
+    build_weekly_review_bundle,
     promote_tuning_candidate,
     propose_tuning,
+    propose_weekly_ai_tuning,
     reject_tuning_candidate,
     tuner_status,
 )
@@ -126,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     daily_refresh_parser = subparsers.add_parser(
         "daily-refresh",
-        help="Run the recent fill sync and rebuild research artifacts",
+        help="Run sync, rebuild research artifacts, propose local tuning, and refresh the weekly AI context",
     )
     daily_refresh_parser.add_argument("--lookback-hours", type=int, default=24)
     daily_refresh_parser.add_argument("--batch-size", type=int, default=1000)
@@ -136,12 +139,34 @@ def build_parser() -> argparse.ArgumentParser:
     daily_refresh_parser.add_argument("--max-batches-per-chunk", type=int, default=2)
     _add_http_retry_args(daily_refresh_parser)
     _add_build_artifact_args(daily_refresh_parser)
+    _add_config_path_arg(daily_refresh_parser)
 
     propose_tuning_parser = subparsers.add_parser(
         "propose-tuning",
         help="Build a deterministic tuning candidate from the latest session exports",
     )
     _add_config_path_arg(propose_tuning_parser)
+
+    weekly_context_parser = subparsers.add_parser(
+        "build-weekly-ai-context",
+        help="Build the rolling compact weekly context file used by the weekly OpenAI tuning pass",
+    )
+    _add_config_path_arg(weekly_context_parser)
+    weekly_context_parser.add_argument("--window-days", type=int, default=7)
+
+    weekly_ai_parser = subparsers.add_parser(
+        "propose-weekly-ai-tuning",
+        help="Use the weekly compact context to build a weekly AI tuning candidate",
+    )
+    _add_config_path_arg(weekly_ai_parser)
+    weekly_ai_parser.add_argument("--model", default="gpt-5.4-mini")
+    weekly_ai_parser.add_argument("--max-output-tokens", type=int, default=4000)
+
+    weekly_review_parser = subparsers.add_parser(
+        "build-weekly-review-bundle",
+        help="Prepare the compact weekly desktop review bundle for manual Codex review",
+    )
+    _add_config_path_arg(weekly_review_parser)
 
     tuner_status_parser = subparsers.add_parser("tuner-status", help="Print current tuner state and candidate metadata")
     _add_config_path_arg(tuner_status_parser)
@@ -248,9 +273,22 @@ def main(argv: list[str] | None = None) -> int:
             build_result = build_artifacts(**_build_artifact_kwargs(args))
         except Exception as exc:  # noqa: BLE001
             build_error = _exception_payload(exc)
+        local_tuning_result: dict[str, object] | None = None
+        local_tuning_error: dict[str, str] | None = None
+        weekly_context_result: dict[str, object] | None = None
+        weekly_context_error: dict[str, str] | None = None
+        try:
+            local_tuning_result = propose_tuning(config_path=args.config_path)
+        except Exception as exc:  # noqa: BLE001
+            local_tuning_error = _exception_payload(exc)
+        try:
+            weekly_context_result = build_weekly_ai_context(config_path=args.config_path)
+        except Exception as exc:  # noqa: BLE001
+            weekly_context_error = _exception_payload(exc)
 
         result = {
             "command": "daily-refresh",
+            "ok": build_error is None and local_tuning_error is None and weekly_context_error is None,
             "sync": {
                 "ok": sync_error is None,
                 "result": sync_result,
@@ -261,12 +299,41 @@ def main(argv: list[str] | None = None) -> int:
                 "result": build_result,
                 "error": build_error,
             },
+            "daily_local_tuning": {
+                "ok": local_tuning_error is None,
+                "result": local_tuning_result,
+                "error": local_tuning_error,
+            },
+            "weekly_ai_context": {
+                "ok": weekly_context_error is None,
+                "result": weekly_context_result,
+                "error": weekly_context_error,
+            },
         }
         print(json.dumps(result, indent=2, sort_keys=True))
-        return 1 if build_error is not None else 0
+        return 1 if build_error is not None or local_tuning_error is not None or weekly_context_error is not None else 0
 
     if args.command == "propose-tuning":
         result = propose_tuning(config_path=args.config_path)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "build-weekly-ai-context":
+        result = build_weekly_ai_context(config_path=args.config_path, window_days=args.window_days)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "propose-weekly-ai-tuning":
+        result = propose_weekly_ai_tuning(
+            config_path=args.config_path,
+            model=args.model,
+            max_output_tokens=args.max_output_tokens,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("ok", False) else 1
+
+    if args.command == "build-weekly-review-bundle":
+        result = build_weekly_review_bundle(config_path=args.config_path)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 

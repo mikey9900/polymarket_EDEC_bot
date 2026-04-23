@@ -9,19 +9,21 @@
 - Read files
 - Edit files
 
+All local commands below assume repo root on this Windows machine and run through `.\scripts\venv_python.cmd` so the repo `.venv` is always used.
+
 ---
 
 ## STEP 1 — Verify credentials
 
-```bash
-python -c "
+```powershell
+@'
 import os, sys
 t = os.getenv('EDEC_GITHUB_TOKEN','').strip()
 r = os.getenv('EDEC_GITHUB_REPO','').strip()
 if not t: sys.exit('STOP: EDEC_GITHUB_TOKEN is not set')
 if not r: sys.exit('STOP: EDEC_GITHUB_REPO is not set')
 print('OK token=' + t[:4] + '... repo=' + r)
-"
+'@ | .\scripts\venv_python.cmd -
 ```
 
 **If output starts with STOP** → report the exact message to the user and halt.  
@@ -31,8 +33,8 @@ Credentials are read from environment variables. They are also accepted from a `
 
 ## STEP 2 — Fetch session export data
 
-```bash
-python edec_bot/fetch_github_data.py --limit 3
+```powershell
+.\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 3
 ```
 
 **On success:** script prints `Ready for analysis. CSV files are at:` followed by absolute paths.  
@@ -49,8 +51,8 @@ If multiple folders were fetched, the most recent folder (highest `FOLDER_TS`) i
 
 ## STEP 3 — Identify active config file
 
-```bash
-python -c "import os; print(os.getenv('EDEC_CONFIG_PATH','edec_bot/config_phase_a_single.yaml'))"
+```powershell
+.\scripts\venv_python.cmd -c "import os; print(os.getenv('EDEC_CONFIG_PATH','edec_bot/config_phase_a_single.yaml'))"
 ```
 
 Read the printed path. That file is `CONFIG` for all subsequent steps.
@@ -61,8 +63,8 @@ Read the printed path. That file is `CONFIG` for all subsequent steps.
 
 Copy the script below verbatim and execute it, substituting `{TRADES_CSV}` and `{SIGNALS_CSV}` with the paths from STEP 2. The script uses only the Python standard library.
 
-```bash
-python - <<'PYEOF'
+```powershell
+@'
 import csv, json, sys, statistics
 from collections import defaultdict
 from pathlib import Path
@@ -241,7 +243,7 @@ result = {
     "loss_depth_ratio": {"median_drt": ptile(loss_drt, 50), "p75_drt": ptile(loss_drt, 75)},
 }
 print(json.dumps(result, indent=2))
-PYEOF
+'@ | .\scripts\venv_python.cmd -
 ```
 
 Save the printed JSON as `ANALYSIS_JSON`. If the script errors, report the traceback to the user and halt.

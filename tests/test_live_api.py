@@ -24,8 +24,36 @@ class _FakeDashboardState:
                 "last_message": "CONTROL LINK STANDBY",
                 "last_ok": None,
             },
-            "codex": {"queue_depth": 0, "active_run": None},
-            "tuner": {"cadence": "weekly", "candidate_status": "ready", "schedule_enabled": True},
+            "codex": {
+                "queue_depth": 0,
+                "active_run": None,
+                "healthy": True,
+                "last_heartbeat_at": "2026-04-22T12:00:00+00:00",
+                "last_run": {
+                    "ok": True,
+                    "summary": "Daily refresh built 10 clusters; local candidate ready.",
+                    "finished_at": "2026-04-22T11:59:00+00:00",
+                },
+                "next_queued_job": None,
+            },
+            "tuner": {
+                "cadence": "weekly",
+                "candidate_status": "ready",
+                "schedule_enabled": True,
+                "primary_candidate_source": "weekly_ai",
+                "daily_local_candidate": {"status": "ready"},
+                "weekly_ai_candidate": {"status": "ready"},
+                "weekly_review_bundle": {
+                    "status": "ready",
+                    "paths": {
+                        "desktop_prompt": "data/research/weekly_desktop_prompt.txt",
+                        "bundle_md": "data/research/weekly_review_bundle.md",
+                    },
+                },
+                "daily_local_last_result": "success",
+                "weekly_ai_last_result": "success",
+                "candidate_summary": "Weekly AI candidate ready.",
+            },
             "coins": {},
             "coins_order": [],
         }
@@ -91,9 +119,22 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('setClassList(btn, "unavailable", !enabled);', html)
         self.assertIn('id="codex-queue"', html)
         self.assertIn('id="codex-active"', html)
+        self.assertIn('id="codex-led-cluster"', html)
+        self.assertIn('id="codex-note"', html)
+        self.assertIn('id="codex-meta"', html)
         self.assertIn('id="tuner-cadence"', html)
         self.assertIn('id="tuner-next"', html)
+        self.assertIn('id="tuner-primary"', html)
+        self.assertIn('id="tuner-daily"', html)
+        self.assertIn('id="tuner-weekly"', html)
         self.assertIn('id="tuner-candidate"', html)
+        self.assertIn('id="tuner-desktop-note"', html)
+        self.assertIn('id="tuner-desktop-path"', html)
+        self.assertIn("function apiUrl(path)", html)
+        self.assertIn("const baseName = (value) =>", html)
+        self.assertIn("function describeCodexRunner(codex)", html)
+        self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
+        self.assertIn("DESKTOP REVIEW READY: OPEN", html)
         self.assertIn('data-field="session-inline"', html)
         self.assertNotIn('data-field="pred-copy"', html)
         self.assertIn('data-field="strike-delta"', html)

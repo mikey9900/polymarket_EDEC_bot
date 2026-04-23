@@ -4,9 +4,9 @@ Reads credentials from environment variables or .env file.
 Downloads to data/github_exports/ by default.
 
 Usage:
-    python edec_bot/fetch_github_data.py
-    python edec_bot/fetch_github_data.py --limit 5
-    python edec_bot/fetch_github_data.py --output-dir data/github_exports
+    .\scripts\venv_python.cmd edec_bot/fetch_github_data.py
+    .\scripts\venv_python.cmd edec_bot/fetch_github_data.py --limit 5
+    .\scripts\venv_python.cmd edec_bot/fetch_github_data.py --output-dir data/github_exports
 """
 
 from __future__ import annotations

@@ -2,7 +2,7 @@
 """One-time helper to get a new Dropbox refresh token with updated scopes.
 
 Run this after adding sharing.write (or any other scope) to your Dropbox app:
-    python scripts/dropbox_reauth.py
+    .\scripts\venv_python.cmd scripts/dropbox_reauth.py
 
 You'll need your App Key and App Secret from:
     https://www.dropbox.com/developers/apps

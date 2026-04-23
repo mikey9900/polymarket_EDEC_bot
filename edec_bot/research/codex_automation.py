@@ -271,6 +271,8 @@ class CodexAutomationManager:
     def run_once(self) -> dict[str, Any]:
         ensure_codex_dirs()
         state = self.read_state()
+        if self._clear_orphaned_active_run(state):
+            state = self.read_state()
         now = self._utcnow()
         self._queue_due_jobs(state, now)
         self._update_runner_status(state=state, healthy=True)
@@ -636,6 +638,16 @@ class CodexAutomationManager:
         active["progress_at"] = self._utcnow().isoformat()
         state["active_run"] = active
         self._update_runner_status(state=state, healthy=True)
+
+    def _clear_orphaned_active_run(self, state: dict[str, Any]) -> bool:
+        active = state.get("active_run") or {}
+        if not active:
+            return False
+        if self.lock_path.exists():
+            return False
+        state["active_run"] = None
+        self.save_state(state)
+        return True
 
     def _latest_daily_refresh_metrics(self) -> dict[str, Any]:
         latest_payload = self._read_json(self.latest_path, default={})

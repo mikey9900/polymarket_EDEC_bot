@@ -61,6 +61,23 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertEqual(snapshot["codex"]["queue_depth"], 0)
         self.assertIsNone(snapshot["codex"]["next_queued_job"])
 
+    def test_run_once_clears_orphaned_active_run_without_lock(self):
+        state = self.manager.read_state()
+        state["active_run"] = {
+            "run_id": "stale-run",
+            "job_type": "daily_research_refresh",
+            "request_id": "stale-request",
+            "started_at": "2026-04-23T19:06:00+00:00",
+        }
+        self.manager.save_state(state)
+
+        result = self.manager.run_once()
+        snapshot = self.manager.snapshot()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "idle")
+        self.assertIsNone(snapshot["codex"]["active_run"])
+
     def test_tuner_schedule_controls_update_snapshot(self):
         pause = self.manager.pause_tuner_schedule()
         self.assertTrue(pause["ok"])

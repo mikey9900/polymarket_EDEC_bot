@@ -116,12 +116,13 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertEqual(result["status"], "idle")
         self.assertIsNone(snapshot["codex"]["active_run"])
 
-    def test_reset_runner_state_clears_active_run_and_lock(self):
+    def test_reset_runner_state_clears_daily_queue_active_run_and_lock(self):
+        queued = self.manager.enqueue_daily_refresh(requested_by="dashboard")
         state = self.manager.read_state()
         state["active_run"] = {
             "run_id": "run-1",
             "job_type": "daily_research_refresh",
-            "request_id": "request-1",
+            "request_id": queued["request_id"],
             "started_at": "2026-04-23T19:06:00+00:00",
         }
         self.manager.save_state(state)
@@ -132,8 +133,10 @@ class CodexAutomationManagerTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertTrue(result["lock_removed"])
+        self.assertEqual(result["removed_queue"], 1)
         self.assertFalse(self.manager.lock_path.exists())
         self.assertIsNone(snapshot["codex"]["active_run"])
+        self.assertEqual(snapshot["codex"]["queue_depth"], 0)
 
     def test_tuner_schedule_controls_update_snapshot(self):
         pause = self.manager.pause_tuner_schedule()

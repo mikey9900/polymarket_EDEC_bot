@@ -152,7 +152,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('CLEAR STATS', html)
         self.assertIn('EXPORT SESSION', html)
         self.assertIn('RUN RESEARCH', html)
-        self.assertIn('RESET RESEARCH', html)
+        self.assertIn('STOP RESEARCH', html)
         self.assertIn('PROMOTE', html)
         self.assertIn('REJECT', html)
         self.assertIn('class="topbar-meta"', html)

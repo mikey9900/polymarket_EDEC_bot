@@ -299,7 +299,7 @@ class _FakeCodexManager:
 
     def reset_runner_state(self):
         self.calls.append(("research_reset_runner",))
-        return {"ok": True, "message": "Research runner state reset."}
+        return {"ok": True, "message": "Stopped 1 queued daily research job. Stale runner lock cleared."}
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args=None):
         self.calls.append(("tuner_run_now", requested_by, args))
@@ -504,7 +504,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(research_result["ok"])
         self.assertIn("queued", research_result["message"].lower())
         self.assertTrue(reset_result["ok"])
-        self.assertIn("reset", reset_result["message"].lower())
+        self.assertIn("stopped", reset_result["message"].lower())
         self.assertIn("manual", cadence_result["message"].lower())
         self.assertTrue(cadence_result["ok"])
         self.assertEqual(cadence_result["state"]["tuner"]["cadence"], "manual")

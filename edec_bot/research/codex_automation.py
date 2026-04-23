@@ -182,18 +182,49 @@ class CodexAutomationManager:
 
     def reset_runner_state(self) -> dict[str, Any]:
         state = self.read_state()
-        state["active_run"] = None
-        try:
-            self.lock_path.unlink()
-            lock_removed = True
-        except FileNotFoundError:
-            lock_removed = False
-        state["runner"]["queue_depth"] = len(self._visible_queue_paths(active_request_id=""))
+        removed_queue = 0
+        for path in sorted(self.queue_root.glob("*.json")):
+            payload = self._read_json(path, default={})
+            if payload.get("job_type") != "daily_research_refresh":
+                continue
+            try:
+                path.unlink()
+                removed_queue += 1
+            except FileNotFoundError:
+                continue
+
+        active = dict(state.get("active_run") or {})
+        cleared_active = False
+        if not active or active.get("job_type") == "daily_research_refresh":
+            state["active_run"] = None
+            cleared_active = bool(active)
+
+        lock_removed = False
+        if not active or active.get("job_type") == "daily_research_refresh":
+            try:
+                self.lock_path.unlink()
+                lock_removed = True
+            except FileNotFoundError:
+                lock_removed = False
+
+        state["runner"]["queue_depth"] = self.queue_depth()
         self.save_state(state)
-        message = "Research runner state reset."
+        parts = []
+        if removed_queue:
+            parts.append(f"Stopped {removed_queue} queued daily research job{'s' if removed_queue != 1 else ''}.")
+        elif cleared_active:
+            parts.append("Cleared active daily research state.")
+        else:
+            parts.append("No queued daily research jobs were waiting.")
         if lock_removed:
-            message = "Research runner state reset and stale lock cleared."
-        return {"ok": True, "message": message, "lock_removed": lock_removed}
+            parts.append("Stale runner lock cleared.")
+        return {
+            "ok": True,
+            "message": " ".join(parts),
+            "lock_removed": lock_removed,
+            "removed_queue": removed_queue,
+            "cleared_active": cleared_active,
+        }
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.enqueue_job("tuning_proposal", requested_by=requested_by, args=args)

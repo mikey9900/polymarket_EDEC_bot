@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -11,13 +12,10 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
+from urllib import request
+from urllib import error as urlerror
 from uuid import uuid4
 from zoneinfo import ZoneInfo
-
-try:  # Support both package execution on HA and local test imports.
-    from ..bot.archive import _github_push_file
-except ImportError:  # pragma: no cover - compatibility for legacy test/module paths.
-    from bot.archive import _github_push_file
 
 from .artifacts import build_artifacts
 from .paths import (
@@ -88,6 +86,55 @@ SCHEDULE_DEFAULTS = {
         "skip_next_auto_run": False,
     },
 }
+
+
+def _github_push_file(
+    local_path: str,
+    repo_path: str,
+    github_token: str,
+    github_repo: str,
+    github_branch: str = "main",
+    commit_message: str | None = None,
+) -> dict[str, Any]:
+    """Push a single file to GitHub via the Contents API without bot package imports."""
+    with open(local_path, "rb") as fh:
+        content_b64 = base64.b64encode(fh.read()).decode("utf-8")
+
+    msg = commit_message or f"Update research mirror: {Path(local_path).name}"
+    api_url = f"https://api.github.com/repos/{github_repo}/contents/{repo_path}"
+    headers = {
+        "Authorization": f"Bearer {github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    sha: str | None = None
+    try:
+        get_req = request.Request(f"{api_url}?ref={github_branch}", headers=headers)
+        with request.urlopen(get_req, timeout=15) as resp:
+            sha = json.loads(resp.read().decode("utf-8")).get("sha")
+    except urlerror.HTTPError as exc:
+        if exc.code != 404:
+            return {"ok": False, "path": repo_path, "error": exc.read().decode("utf-8"), "status": exc.code}
+
+    payload: dict[str, Any] = {"message": msg, "content": content_b64, "branch": github_branch}
+    if sha:
+        payload["sha"] = sha
+
+    put_req = request.Request(
+        api_url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={**headers, "Content-Type": "application/json"},
+    )
+    try:
+        with request.urlopen(put_req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return {"ok": True, "path": repo_path, "sha": data.get("content", {}).get("sha")}
+    except urlerror.HTTPError as exc:
+        return {"ok": False, "path": repo_path, "error": exc.read().decode("utf-8"), "status": exc.code}
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "path": repo_path, "error": str(exc)}
 
 
 class CodexAutomationManager:

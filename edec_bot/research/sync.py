@@ -85,8 +85,11 @@ def sync_recent_markets(
         order="closedTime",
         progress_callback=progress_callback,
     )
+    _emit_progress(progress_callback, "Gamma feeds complete. Rebuilding 5m registry.")
     registry_rows = warehouse.rebuild_market_5m_registry()
+    _emit_progress(progress_callback, "Gamma registry rebuilt. Rebuilding enriched fills.")
     enriched_rows = warehouse.rebuild_fills_enriched()
+    _emit_progress(progress_callback, "Gamma enrich complete. Exporting parquet snapshots.")
     parquet_paths = warehouse.export_parquet()
     return {
         "dataset": "recent_markets",
@@ -206,8 +209,11 @@ def sync_recent_5m_fills(
         progress_callback=progress_callback,
         label="history",
     )
+    _emit_progress(progress_callback, "Goldsky scans complete. Rebuilding 5m registry.")
     registry_rows = warehouse.rebuild_market_5m_registry()
+    _emit_progress(progress_callback, "Goldsky registry rebuilt. Rebuilding enriched fills.")
     enriched_rows = warehouse.rebuild_fills_enriched()
+    _emit_progress(progress_callback, "Goldsky enrich complete. Exporting parquet snapshots.")
     parquet_paths = warehouse.export_parquet()
     return {
         "dataset": "recent_5m_fills",

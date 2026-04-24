@@ -335,6 +335,9 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertTrue(any("Gamma recent markets:" in item for item in progress))
         self.assertTrue(any("Gamma open feed:" in item for item in progress))
         self.assertTrue(any("Gamma closed feed:" in item for item in progress))
+        self.assertTrue(any("Gamma feeds complete. Rebuilding 5m registry." in item for item in progress))
+        self.assertTrue(any("Gamma registry rebuilt. Rebuilding enriched fills." in item for item in progress))
+        self.assertTrue(any("Gamma enrich complete. Exporting parquet snapshots." in item for item in progress))
 
     def test_recent_market_sync_uses_closed_time_cutoff_for_closed_feed(self):
         now = datetime.now(timezone.utc).replace(microsecond=0)
@@ -571,6 +574,9 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertTrue(any("Goldsky recent windows:" in item for item in progress))
         self.assertTrue(any("Goldsky history windows:" in item for item in progress))
         self.assertTrue(any("Goldsky recent chunk" in item for item in progress))
+        self.assertTrue(any("Goldsky scans complete. Rebuilding 5m registry." in item for item in progress))
+        self.assertTrue(any("Goldsky registry rebuilt. Rebuilding enriched fills." in item for item in progress))
+        self.assertTrue(any("Goldsky enrich complete. Exporting parquet snapshots." in item for item in progress))
 
     def test_recent_5m_fill_sync_excludes_future_windows_from_recent_pass(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_future.duckdb")

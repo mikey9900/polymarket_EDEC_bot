@@ -741,11 +741,7 @@ def promote_tuning_candidate(
 
     config_path = resolve_repo_path(config_path)
     config_path.write_text(candidate_path.read_text(encoding="utf-8"), encoding="utf-8")
-
-    repo_root = resolve_repo_path("edec_bot")
-    version_path = resolve_repo_path(version_path or (repo_root / "version.py"))
-    addon_config_path = resolve_repo_path(addon_config_path or (repo_root / "config.json"))
-    new_version = _bump_patch_version(version_path, addon_config_path)
+    config_hash = _config_hash(config_path)
 
     now = _utcnow().isoformat()
     _set_candidate_record(
@@ -753,7 +749,7 @@ def promote_tuning_candidate(
         source=source,
         candidate_id=candidate.get("candidate_id"),
         status="promoted",
-        summary=f"Promoted {candidate.get('candidate_id')} to {config_path.name} ({new_version}).",
+        summary=f"Promoted {candidate.get('candidate_id')} to {config_path.name}.",
         paths=dict(candidate.get("paths") or {}),
         generated_at=candidate.get("generated_at"),
         promoted_at=now,
@@ -773,7 +769,8 @@ def promote_tuning_candidate(
         "candidate_id": candidate.get("candidate_id"),
         "candidate_source": source,
         "config_path": str(config_path),
-        "version": new_version,
+        "config_hash": config_hash,
+        "release_version_changed": False,
     }
 
 

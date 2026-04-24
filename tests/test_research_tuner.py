@@ -387,7 +387,10 @@ class ResearchTunerTests(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["candidate_source"], "weekly_ai")
-        self.assertEqual(result["version"], "5.2.11")
+        self.assertFalse(result["release_version_changed"])
+        self.assertRegex(str(result["config_hash"]), r"^[0-9a-f]{12}$")
+        self.assertEqual(version_path.read_text(encoding="utf-8"), '__version__ = "5.2.9"\n')
+        self.assertEqual(json.loads(addon_config_path.read_text(encoding="utf-8"))["version"], "5.2.9")
         state = load_tuner_state(self.tuner_state_path)
         self.assertEqual(state["weekly_ai_candidate"]["status"], "promoted")
         self.assertEqual(state["daily_local_candidate"]["status"], "rejected")

@@ -510,9 +510,9 @@ class CodexAutomationManager:
                 market_result = sync_recent_markets(
                     warehouse,
                     market_source,
-                    lookback_days=int(args.get("market_lookback_days", 30)),
+                    lookback_days=int(args.get("market_lookback_days", 1)),
                     batch_size=int(args.get("market_batch_size", 500)),
-                    max_batches=self._optional_int(args.get("market_max_batches")),
+                    max_batches=self._optional_int(args.get("market_max_batches", 2)),
                     progress_callback=market_progress,
                 )
             with self._phase_monitor("syncing fills", "Refreshing recent Goldsky 5m fills.") as fill_progress:
@@ -520,7 +520,7 @@ class CodexAutomationManager:
                     warehouse,
                     fill_source,
                     lookback_hours=int(args.get("lookback_hours", 24)),
-                    history_lookback_days=int(args.get("history_lookback_days", 30)),
+                    history_lookback_days=int(args.get("history_lookback_days", 1)),
                     batch_size=int(args.get("batch_size", 1000)),
                     asset_chunk_size=int(args.get("asset_chunk_size", 20)),
                     bucket_minutes=int(args.get("bucket_minutes", 60)),

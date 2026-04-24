@@ -93,6 +93,17 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertEqual(runner_args.command, "codex-runner")
         self.assertTrue(runner_args.run_once)
 
+    def test_daily_refresh_parser_defaults_to_lean_recent_window(self):
+        with mock.patch.object(optional_duckdb, "_duckdb", None):
+            parser = build_parser()
+
+        args = parser.parse_args(["daily-refresh"])
+
+        self.assertEqual(args.market_lookback_days, 1)
+        self.assertEqual(args.market_max_batches, 2)
+        self.assertEqual(args.lookback_hours, 24)
+        self.assertEqual(args.history_lookback_days, 1)
+
     def test_default_archive_output_dir_moves_to_shared_root_when_available(self):
         with mock.patch.dict(os.environ, {"EDEC_SHARED_DATA_ROOT": "/share/edec"}, clear=False):
             self.assertEqual(app_main._resolve_archive_output_dir("data/exports"), str(Path("/share/edec") / "exports"))

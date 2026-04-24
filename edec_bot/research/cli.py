@@ -150,11 +150,11 @@ def build_parser() -> argparse.ArgumentParser:
         "daily-refresh",
         help="Run sync, rebuild research artifacts, propose local tuning, and refresh the weekly AI context",
     )
-    daily_refresh_parser.add_argument("--market-lookback-days", type=int, default=30)
+    daily_refresh_parser.add_argument("--market-lookback-days", type=int, default=1)
     daily_refresh_parser.add_argument("--market-batch-size", type=int, default=500)
-    daily_refresh_parser.add_argument("--market-max-batches", type=int, default=None)
+    daily_refresh_parser.add_argument("--market-max-batches", type=int, default=2)
     daily_refresh_parser.add_argument("--lookback-hours", type=int, default=24)
-    daily_refresh_parser.add_argument("--history-lookback-days", type=int, default=30)
+    daily_refresh_parser.add_argument("--history-lookback-days", type=int, default=1)
     daily_refresh_parser.add_argument("--batch-size", type=int, default=1000)
     daily_refresh_parser.add_argument("--asset-chunk-size", type=int, default=20)
     daily_refresh_parser.add_argument("--bucket-minutes", type=int, default=60)

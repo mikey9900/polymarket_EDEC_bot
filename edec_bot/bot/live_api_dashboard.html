@@ -1147,8 +1147,10 @@
     const queuedJob = codex.next_queued_job || null;
     const queueDepth = Number(codex.queue_depth || 0);
     const heartbeatMs = parseTimeMs(codex.last_heartbeat_at);
+    const progressMs = parseTimeMs(activeRun && activeRun.progress_at);
     const queueMs = parseTimeMs(queuedJob && queuedJob.requested_at);
     const heartbeatAge = heartbeatMs == null ? null : Math.max(0, now - heartbeatMs);
+    const progressAge = progressMs == null ? null : Math.max(0, now - progressMs);
     const queueAge = queueMs == null ? null : Math.max(0, now - queueMs);
     const heartbeatFresh = heartbeatAge != null && heartbeatAge <= CODEX_HEARTBEAT_FRESH_MS;
     const heartbeatRecent = heartbeatAge != null && heartbeatAge <= CODEX_HEARTBEAT_STALE_MS;
@@ -1156,14 +1158,20 @@
     const activePhase = String((activeRun && activeRun.phase) || "").trim();
     const activeDetail = String((activeRun && activeRun.detail) || "").trim();
     const activeLabel = activePhase ? activePhase.toUpperCase() : String(activeRun && activeRun.job_type || "").replaceAll("_", " ").toUpperCase();
+    const activeHeartbeatAge = heartbeatAge == null
+      ? progressAge
+      : progressAge == null
+        ? heartbeatAge
+        : Math.min(heartbeatAge, progressAge);
+    const activeHeartbeatRecent = activeHeartbeatAge != null && activeHeartbeatAge <= CODEX_HEARTBEAT_STALE_MS;
 
     if (activeRun && activeRun.job_type) {
-      if (!heartbeatRecent) {
+      if (!activeHeartbeatRecent) {
         return {
           state: "issue",
           label: "ISSUE",
           note: `RUNNER HEARTBEAT STALE DURING ${activeLabel || "ACTIVE JOB"}. CHECK CODEx RUNNER.`,
-          meta: `STARTED ${fmtShortStamp(activeRun.started_at)} | LAST HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO${activeDetail ? ` | ${activeDetail.toUpperCase()}` : ""}`,
+          meta: `STARTED ${fmtShortStamp(activeRun.started_at)} | LAST HEARTBEAT ${fmtAgeCompact(activeHeartbeatAge)} AGO${activeDetail ? ` | ${activeDetail.toUpperCase()}` : ""}`,
           noteClass: "err",
         };
       }
@@ -1171,8 +1179,8 @@
         state: "thinking",
         label: "THINKING",
         note: `PROCESSING ${activeLabel}`,
-        meta: `STARTED ${fmtShortStamp(activeRun.started_at)} | HEARTBEAT ${fmtAgeCompact(heartbeatAge)} AGO${activeDetail ? ` | ${activeDetail.toUpperCase()}` : ""}`,
-        pulseToken: codex.last_heartbeat_at || activeRun.progress_at || activeRun.started_at || activeRun.run_id || "active",
+        meta: `STARTED ${fmtShortStamp(activeRun.started_at)} | HEARTBEAT ${fmtAgeCompact(activeHeartbeatAge)} AGO${activeDetail ? ` | ${activeDetail.toUpperCase()}` : ""}`,
+        pulseToken: activeRun.progress_at || codex.last_heartbeat_at || activeRun.started_at || activeRun.run_id || "active",
         noteClass: "ready",
       };
     }

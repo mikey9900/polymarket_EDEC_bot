@@ -323,6 +323,34 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["result"]["status"], "ready")
 
+    def test_daily_refresh_runner_defaults_to_recent_only_scan(self):
+        fake_warehouse = mock.MagicMock()
+        fake_market_source = mock.MagicMock()
+        fake_market_source.close = mock.MagicMock()
+        fake_fill_source = mock.MagicMock()
+        fake_fill_source.close = mock.MagicMock()
+        fake_warehouse.close = mock.MagicMock()
+
+        with (
+            mock.patch("research.codex_automation.ResearchWarehouse", return_value=fake_warehouse),
+            mock.patch("research.codex_automation.GammaMarketSource", return_value=fake_market_source),
+            mock.patch("research.codex_automation.GoldskyFillSource", return_value=fake_fill_source),
+            mock.patch("research.codex_automation.sync_recent_markets", return_value={"fetched": 10}) as market_sync,
+            mock.patch("research.codex_automation.sync_recent_5m_fills", return_value={"fetched": 5}) as fill_sync,
+            mock.patch("research.codex_automation.build_artifacts", return_value={"cluster_count": 1}),
+            mock.patch("research.codex_automation.propose_tuning", return_value={"candidate_status": "none"}),
+            mock.patch("research.codex_automation.build_weekly_ai_context", return_value={"context_path": "data/research/weekly_ai_context.json"}),
+        ):
+            result = self.manager._run_daily_refresh({})
+
+        self.assertTrue(result["sync"]["ok"])
+        market_sync.assert_called_once()
+        self.assertEqual(market_sync.call_args.kwargs["lookback_days"], 1)
+        self.assertEqual(market_sync.call_args.kwargs["max_batches"], 2)
+        fill_sync.assert_called_once()
+        self.assertEqual(fill_sync.call_args.kwargs["lookback_hours"], 24)
+        self.assertEqual(fill_sync.call_args.kwargs["history_lookback_days"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

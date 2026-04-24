@@ -123,13 +123,45 @@ class ResearchTunerTests(unittest.TestCase):
         self.assertEqual(candidate["single_leg"]["entry_min"], 0.56)
         self.assertEqual(candidate["single_leg"]["entry_max"], 0.58)
         self.assertEqual(candidate["single_leg"]["high_confidence_bid"], 0.72)
-        self.assertEqual(candidate["single_leg"]["loss_cut_pct"], 0.13)
+        self.assertEqual(candidate["single_leg"]["loss_cut_pct"], 0.07)
 
         report_payload = json.loads(self.report_json_path.read_text(encoding="utf-8"))
         self.assertEqual(report_payload["candidate_status"], "ready")
+        self.assertEqual(report_payload["aggressiveness"]["proposal_level"], 5)
         self.assertIn("depth_check", "\n".join(report_payload["advisories"]))
         self.assertEqual(report_payload["research_rollups"]["cluster_count"], 4)
         self.assertIn("Warehouse", self.report_md_path.read_text(encoding="utf-8"))
+
+    def test_propose_tuning_aggressiveness_changes_thresholds_and_caps(self):
+        with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
+            conservative = propose_tuning(
+                config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
+                tuner_state_path=self.tuner_state_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+                proposal_aggressiveness_level=1,
+            )
+            aggressive = propose_tuning(
+                config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
+                tuner_state_path=self.tuner_state_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+                proposal_aggressiveness_level=10,
+            )
+
+        self.assertEqual(conservative["candidate_status"], "none")
+        self.assertEqual(aggressive["candidate_status"], "ready")
+        aggressive_candidate = yaml.safe_load(Path(aggressive["candidate_config_path"]).read_text(encoding="utf-8"))
+        self.assertEqual(aggressive["proposal_aggressiveness_level"], 10)
+        self.assertEqual(aggressive_candidate["single_leg"]["loss_cut_pct"], 0.10)
+        aggressive_report = json.loads(self.report_json_path.read_text(encoding="utf-8"))
+        self.assertEqual(aggressive_report["aggressiveness"]["proposal_level"], 10)
 
     def test_build_weekly_ai_context_compacts_exports_without_paths(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):

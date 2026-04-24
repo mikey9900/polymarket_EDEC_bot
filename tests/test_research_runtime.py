@@ -22,12 +22,16 @@ from research.runtime import ResearchSnapshotProvider
 class _CapturingTracker:
     def __init__(self):
         self.decisions = []
+        self.runtime_context = {}
 
     def get_paper_capital(self):
         return (5000.0, 5000.0)
 
     def get_runtime_context(self):
-        return {}
+        return dict(self.runtime_context)
+
+    def set_runtime_context(self, context):
+        self.runtime_context = dict(context or {})
 
     def log_decision(self, decision):
         self.decisions.append(decision)
@@ -293,6 +297,56 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(tracker.decisions[-1].action, "SUPPRESSED")
         self.assertEqual(tracker.decisions[-1].research_market_regime_1d, "thin_crowded")
         self.assertIn("research_regime:thin_crowded_block", tracker.decisions[-1].reason)
+
+    def test_live_aggressiveness_level_five_matches_current_overlay_behavior(self):
+        tracker = _CapturingTracker()
+        tracker.set_runtime_context({"research_live_aggressiveness_level": 5})
+        config = replace(
+            self.base_config,
+            research=replace(self.base_config.research, enabled=True, paper_gate_enabled=False),
+        )
+        engine = StrategyEngine(config, aggregator=None, scanner=None, tracker=tracker, research_provider=_OverlayResearchProvider())
+
+        score = engine._apply_research_score({"signal_score": 50.0}, _OverlayResearchProvider().lookup(), strategy_type="single_leg")
+        size = engine._research_order_size("single_leg", _OverlayResearchProvider().lookup())
+
+        self.assertEqual(score["score_research_flow"], 3.4)
+        self.assertEqual(score["score_research_crowding"], -1.2)
+        self.assertGreater(size["order_size_multiplier"], 1.0)
+
+    def test_live_aggressiveness_higher_level_strengthens_overlay_and_live_blocking(self):
+        tracker = _CapturingTracker()
+        tracker.set_runtime_context({"research_live_aggressiveness_level": 9})
+        config = replace(
+            self.base_config,
+            research=replace(
+                self.base_config.research,
+                enabled=True,
+                paper_gate_enabled=False,
+                thin_crowded_block_live_enabled=False,
+            ),
+        )
+        engine = StrategyEngine(config, aggregator=None, scanner=None, tracker=tracker, research_provider=_OverlayResearchProvider())
+        base_engine = StrategyEngine(
+            config,
+            aggregator=None,
+            scanner=None,
+            tracker=_CapturingTracker(),
+            research_provider=_OverlayResearchProvider(),
+        )
+
+        boosted = engine._apply_research_score({"signal_score": 50.0}, _OverlayResearchProvider().lookup(), strategy_type="single_leg")
+        baseline = base_engine._apply_research_score({"signal_score": 50.0}, _OverlayResearchProvider().lookup(), strategy_type="single_leg")
+        boosted_size = engine._research_order_size("single_leg", _OverlayResearchProvider().lookup())
+        baseline_size = base_engine._research_order_size("single_leg", _OverlayResearchProvider().lookup())
+
+        self.assertGreater(boosted["score_research_flow"], baseline["score_research_flow"])
+        self.assertGreater(abs(boosted["score_research_crowding"]), abs(baseline["score_research_crowding"]))
+        self.assertGreater(boosted_size["order_size_multiplier"], baseline_size["order_size_multiplier"])
+
+        thin_provider = _ThinCrowdedResearchProvider()
+        gate_reason = engine._research_gate_reason("TRADE", thin_provider.lookup())
+        self.assertIn("thin_crowded_block", gate_reason or "")
 
 
 if __name__ == "__main__":

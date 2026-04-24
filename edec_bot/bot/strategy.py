@@ -20,6 +20,26 @@ logger = logging.getLogger(__name__)
 
 # Valid runtime modes
 VALID_MODES = {"dual", "single", "both", "lead", "swing", "off"}
+RESEARCH_LIVE_AGGRESSIVENESS_DEFAULT = 5
+RESEARCH_LIVE_OVERLAY_FACTORS = {
+    1: 0.35,
+    2: 0.50,
+    3: 0.65,
+    4: 0.85,
+    5: 1.00,
+    6: 1.15,
+    7: 1.30,
+    8: 1.50,
+    9: 1.75,
+    10: 2.00,
+}
+RESEARCH_LIVE_BLOCK_THRESHOLDS = {
+    6: -7.0,
+    7: -6.0,
+    8: -5.0,
+    9: -4.0,
+    10: -3.0,
+}
 
 
 class StrategyEngine:
@@ -396,8 +416,9 @@ class StrategyEngine:
     ) -> dict[str, float]:
         updated = dict(score_payload)
         strategy_multiplier = 1.1 if strategy_type == "lead_lag" else 1.0
-        flow_score = float(research_payload.get("research_score_flow_1d") or 0.0) * strategy_multiplier
-        crowding_penalty = float(research_payload.get("research_score_crowding_1d") or 0.0) * strategy_multiplier
+        overlay_factor = self._research_live_overlay_factor()
+        flow_score = float(research_payload.get("research_score_flow_1d") or 0.0) * strategy_multiplier * overlay_factor
+        crowding_penalty = float(research_payload.get("research_score_crowding_1d") or 0.0) * strategy_multiplier * overlay_factor
         crowding_score = -abs(crowding_penalty)
         base_total = float(score_payload.get("signal_score") or 0.0)
         updated["score_research_flow"] = round(flow_score, 2)
@@ -426,14 +447,33 @@ class StrategyEngine:
             return self.config.single_leg.order_size_usd
         return self.config.execution.order_size_usd
 
+    def _research_live_aggressiveness_level(self) -> int:
+        context: dict[str, object] = {}
+        try:
+            context = self.tracker.get_runtime_context() or {}
+        except Exception:
+            context = {}
+        try:
+            level = int(context.get("research_live_aggressiveness_level", RESEARCH_LIVE_AGGRESSIVENESS_DEFAULT))
+        except (TypeError, ValueError):
+            level = RESEARCH_LIVE_AGGRESSIVENESS_DEFAULT
+        return max(1, min(10, level))
+
+    def _research_live_overlay_factor(self) -> float:
+        return float(RESEARCH_LIVE_OVERLAY_FACTORS[self._research_live_aggressiveness_level()])
+
     def _research_order_size(self, strategy_type: str, annotation: dict[str, object]) -> dict[str, float]:
         base_size = float(self._strategy_order_size_usd(strategy_type) or 0.0)
         multiplier = 1.0
         rcfg = self.config.research
         if rcfg.enabled and rcfg.execution_overlay_enabled and rcfg.size_scaling_enabled:
             adjustment = float(annotation.get("research_signal_score_adjustment") or 0.0)
-            multiplier = 1.0 + adjustment * float(rcfg.size_adjustment_per_score_point)
-            multiplier = max(float(rcfg.size_floor_multiplier), min(float(rcfg.size_ceiling_multiplier), multiplier))
+            overlay_factor = self._research_live_overlay_factor()
+            effective_size_per_point = float(rcfg.size_adjustment_per_score_point) * overlay_factor
+            effective_floor = max(0.25, 1.0 - (1.0 - float(rcfg.size_floor_multiplier)) * overlay_factor)
+            effective_ceiling = min(2.50, 1.0 + (float(rcfg.size_ceiling_multiplier) - 1.0) * overlay_factor)
+            multiplier = 1.0 + adjustment * effective_size_per_point
+            multiplier = max(effective_floor, min(effective_ceiling, multiplier))
         effective_size = base_size * multiplier if base_size > 0 else 0.0
         return {
             "order_size_usd": round(effective_size, 4),
@@ -455,13 +495,24 @@ class StrategyEngine:
             avg_pnl = float(annotation.get("research_cluster_avg_pnl") or 0.0)
             return f"research_policy:paper_blocked:{cluster_id}:n={sample_size}:win_pct={win_pct:.2f}:avg_pnl={avg_pnl:.4f}"
         rcfg = self.config.research
-        if not rcfg.enabled or not rcfg.execution_overlay_enabled or not rcfg.thin_crowded_block_enabled:
+        live_level = self._research_live_aggressiveness_level()
+        if not rcfg.enabled or not rcfg.execution_overlay_enabled:
             return None
-        if action == "TRADE" and not rcfg.thin_crowded_block_live_enabled:
+        effective_block_enabled = bool(rcfg.thin_crowded_block_enabled)
+        effective_live_enabled = bool(rcfg.thin_crowded_block_live_enabled)
+        if live_level >= 6:
+            effective_live_enabled = True
+        if not effective_block_enabled:
+            if not (action == "TRADE" and effective_live_enabled and live_level >= 6):
+                return None
+        if action == "TRADE" and not effective_live_enabled:
             return None
         regime = str(annotation.get("research_market_regime_1d") or "")
         adjustment = float(annotation.get("research_signal_score_adjustment") or 0.0)
-        if regime != "thin_crowded" or adjustment > float(rcfg.thin_crowded_block_max_adjustment):
+        max_adjustment = float(rcfg.thin_crowded_block_max_adjustment)
+        if action == "TRADE" and live_level >= 6:
+            max_adjustment = float(RESEARCH_LIVE_BLOCK_THRESHOLDS[live_level])
+        if regime != "thin_crowded" or adjustment > max_adjustment:
             return None
         liquidity = float(annotation.get("research_liquidity_score_1d") or 0.0)
         crowding = float(annotation.get("research_crowding_score_1d") or 0.0)

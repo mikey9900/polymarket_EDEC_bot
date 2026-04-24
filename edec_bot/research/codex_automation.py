@@ -34,6 +34,7 @@ from .tuner import (
     TuningError,
     build_weekly_ai_context,
     build_weekly_review_bundle,
+    candidate_detail_payload,
     load_tuner_state,
     maybe_run_tuner_heartbeat,
     promote_tuning_candidate,
@@ -128,6 +129,8 @@ class CodexAutomationManager:
         daily_local_candidate = dict(state.get("daily_local_candidate") or {})
         weekly_ai_candidate = dict(state.get("weekly_ai_candidate") or {})
         weekly_review_bundle = dict(state.get("weekly_review_bundle") or {})
+        research_controls = dict(state.get("research_controls") or {})
+        daily_local_candidate_details = dict(state.get("daily_local_candidate_details") or {})
         return {
             "codex": {
                 "healthy": bool(runner.get("healthy", False)),
@@ -139,9 +142,11 @@ class CodexAutomationManager:
                 "daily_research_metrics": daily_research_metrics,
                 "latest_candidate": latest_candidate,
                 "daily_local_candidate": daily_local_candidate,
+                "daily_local_candidate_details": daily_local_candidate_details,
                 "weekly_ai_candidate": weekly_ai_candidate,
                 "weekly_review_bundle": weekly_review_bundle,
                 "primary_candidate_source": state.get("primary_candidate_source", "none"),
+                "research_controls": research_controls,
             },
             "tuner": {
                 "running": bool(active_run and active_run.get("job_type") == "tuning_proposal"),
@@ -170,6 +175,8 @@ class CodexAutomationManager:
         return {
             "research_run_now": True,
             "research_reset_runner": True,
+            "research_set_proposal_aggressiveness": True,
+            "research_set_live_aggressiveness": True,
             "tuner_run_now": True,
             "tuner_schedule_pause": True,
             "tuner_schedule_resume": True,
@@ -181,6 +188,23 @@ class CodexAutomationManager:
 
     def enqueue_daily_refresh(self, *, requested_by: str = "dashboard", args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.enqueue_job("daily_research_refresh", requested_by=requested_by, args=args)
+
+    def research_controls(self) -> dict[str, Any]:
+        return dict(self.read_state().get("research_controls") or {})
+
+    def set_proposal_aggressiveness(self, level: Any, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self._set_research_control(
+            key="proposal_aggressiveness_level",
+            level=level,
+            requested_by=requested_by,
+        )
+
+    def set_live_aggressiveness(self, level: Any, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self._set_research_control(
+            key="live_aggressiveness_level",
+            level=level,
+            requested_by=requested_by,
+        )
 
     def reset_runner_state(self) -> dict[str, Any]:
         state = self.read_state()
@@ -233,8 +257,7 @@ class CodexAutomationManager:
 
     def enqueue_promote_candidate(self, *, requested_by: str = "dashboard", candidate_id: str | None = None) -> dict[str, Any]:
         tuner = load_tuner_state(self.tuner_state_path or "data/research/tuner_state.json")
-        if tuner.get("latest_candidate_status") != "ready":
-            raise TuningError("No ready tuning candidate is available for promotion.")
+        self._ensure_queueable_candidate(tuner, candidate_id=candidate_id)
         args = {"candidate_id": candidate_id} if candidate_id else {}
         return self.enqueue_job("promote_candidate", requested_by=requested_by, args=args)
 
@@ -246,8 +269,7 @@ class CodexAutomationManager:
         reason: str = DEFAULT_TUNER_REASON,
     ) -> dict[str, Any]:
         tuner = load_tuner_state(self.tuner_state_path or "data/research/tuner_state.json")
-        if tuner.get("latest_candidate_status") != "ready":
-            raise TuningError("No ready tuning candidate is available to reject.")
+        self._ensure_queueable_candidate(tuner, candidate_id=candidate_id)
         args = {"candidate_id": candidate_id, "reason": reason}
         return self.enqueue_job("reject_candidate", requested_by=requested_by, args=args)
 
@@ -484,6 +506,7 @@ class CodexAutomationManager:
         raise TuningError(f"Unsupported Codex job type: {job_type}")
 
     def _run_daily_refresh(self, args: dict[str, Any]) -> dict[str, Any]:
+        proposal_aggressiveness = self.research_controls().get("proposal_aggressiveness_level", 5)
         warehouse = ResearchWarehouse(args.get("warehouse_path", WAREHOUSE_PATH))
         market_source = GammaMarketSource(
             timeout_seconds=float(args.get("http_timeout_seconds", 30.0)),
@@ -558,6 +581,7 @@ class CodexAutomationManager:
                 tracker_db_path=args.get("tracker_db", LOCAL_TRACKER_DB),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
                 research_report_json_path=args.get("report_json_path", "data/research/research_report.json"),
+                proposal_aggressiveness_level=proposal_aggressiveness,
             )
         except Exception as exc:  # noqa: BLE001
             local_tuning_error = {"type": exc.__class__.__name__, "message": str(exc)}
@@ -568,6 +592,7 @@ class CodexAutomationManager:
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
                 report_json_path=args.get("report_json_path", "data/research/research_report.json"),
                 window_days=int(args.get("weekly_context_days", 7)),
+                proposal_aggressiveness_level=proposal_aggressiveness,
             )
         except Exception as exc:  # noqa: BLE001
             weekly_context_error = {"type": exc.__class__.__name__, "message": str(exc)}
@@ -834,6 +859,7 @@ class CodexAutomationManager:
             "source": tuner.get("latest_candidate_source", "none"),
         }
         state["daily_local_candidate"] = dict(tuner.get("daily_local_candidate") or {})
+        state["daily_local_candidate_details"] = candidate_detail_payload(state["daily_local_candidate"])
         state["weekly_ai_candidate"] = dict(tuner.get("weekly_ai_candidate") or {})
         state["weekly_review_bundle"] = dict(tuner.get("weekly_review_bundle") or {})
         state["primary_candidate_source"] = tuner.get("primary_candidate_source", "none")
@@ -852,7 +878,7 @@ class CodexAutomationManager:
     def _default_state(self) -> dict[str, Any]:
         now = self._utcnow()
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "runner": {
                 "healthy": False,
                 "last_heartbeat_at": None,
@@ -870,9 +896,16 @@ class CodexAutomationManager:
                 "source": "none",
             },
             "daily_local_candidate": {},
+            "daily_local_candidate_details": {},
             "weekly_ai_candidate": {},
             "weekly_review_bundle": {},
             "primary_candidate_source": "none",
+            "research_controls": {
+                "proposal_aggressiveness_level": 5,
+                "live_aggressiveness_level": 5,
+                "updated_at": None,
+                "updated_by": None,
+            },
             "schedules": {
                 "daily_research_refresh": {
                     **SCHEDULE_DEFAULTS["daily_research_refresh"],
@@ -895,6 +928,17 @@ class CodexAutomationManager:
         base = self._merge_dicts(self._default_state(), state)
         tuner = base["schedules"]["tuning_proposal"]
         tuner["cadence"] = "manual" if str(tuner.get("cadence")).lower() == "manual" else "weekly"
+        controls = dict(base.get("research_controls") or {})
+        controls["proposal_aggressiveness_level"] = self._normalize_aggressiveness_level(
+            controls.get("proposal_aggressiveness_level")
+        )
+        controls["live_aggressiveness_level"] = self._normalize_aggressiveness_level(
+            controls.get("live_aggressiveness_level")
+        )
+        controls["updated_at"] = controls.get("updated_at")
+        controls["updated_by"] = str(controls.get("updated_by") or "system")
+        base["research_controls"] = controls
+        base["daily_local_candidate_details"] = dict(base.get("daily_local_candidate_details") or {})
         for job_type, schedule in base["schedules"].items():
             enabled = bool(schedule.get("schedule_enabled", True))
             if not enabled:
@@ -904,6 +948,44 @@ class CodexAutomationManager:
             elif schedule.get("next_auto_run_at") is None:
                 schedule["next_auto_run_at"] = self._compute_next_run(job_type, self._utcnow()).isoformat()
         return base
+
+    def _normalize_aggressiveness_level(self, value: Any) -> int:
+        try:
+            level = int(value)
+        except (TypeError, ValueError):
+            level = 5
+        return max(1, min(10, level))
+
+    def _set_research_control(self, *, key: str, level: Any, requested_by: str) -> dict[str, Any]:
+        state = self.read_state()
+        controls = dict(state.get("research_controls") or {})
+        normalized = self._normalize_aggressiveness_level(level)
+        controls[key] = normalized
+        controls["updated_at"] = self._utcnow().isoformat()
+        controls["updated_by"] = str(requested_by or "unknown")
+        state["research_controls"] = controls
+        self.save_state(state)
+        return {
+            "ok": True,
+            "level": normalized,
+            "key": key,
+            "message": (
+                f"{'Proposal' if key == 'proposal_aggressiveness_level' else 'Live'} aggressiveness "
+                f"set to {normalized}."
+            ),
+        }
+
+    def _ensure_queueable_candidate(self, tuner_state: dict[str, Any], *, candidate_id: str | None = None) -> None:
+        if candidate_id:
+            for source in ("daily_local", "weekly_ai"):
+                candidate = dict(tuner_state.get(f"{source}_candidate") or {})
+                if candidate.get("candidate_id") == candidate_id:
+                    if candidate.get("status") != "ready":
+                        raise TuningError(f"Candidate {candidate_id} is not ready for promotion or rejection.")
+                    return
+            raise TuningError(f"No ready tuning candidate matches {candidate_id}.")
+        if str(tuner_state.get("latest_candidate_status") or "none").lower() != "ready":
+            raise TuningError("No ready tuning candidate is available.")
 
     def _compute_next_run(self, job_type: str, now: datetime) -> datetime:
         tz = self._local_timezone()

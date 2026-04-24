@@ -282,6 +282,197 @@
     color: #ffe3a6;
     text-shadow: 0 0 4px rgba(255,176,0,0.3);
   }
+  .research-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: start;
+  }
+  .research-main {
+    min-width: 0;
+  }
+  .research-side {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .synth-slider {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 7px 8px;
+    border: 1px solid #314580;
+    border-radius: 6px;
+    background: linear-gradient(180deg, rgba(10, 18, 42, 0.95), rgba(6, 10, 28, 0.95));
+    box-shadow: inset 0 1px 0 rgba(44, 56, 101, 0.9), 0 0 12px rgba(0, 240, 255, 0.08);
+  }
+  .synth-slider-label {
+    color: #ffe3a6;
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 8px;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+  .synth-slider-value {
+    min-width: 28px;
+    padding: 2px 5px;
+    border: 1px solid #3e5db1;
+    border-radius: 4px;
+    background: rgba(6, 12, 30, 0.92);
+    color: var(--neon-cyan);
+    text-align: center;
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 9px;
+    text-shadow: 0 0 5px rgba(0, 240, 255, 0.45);
+  }
+  .synth-slider-track {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 4px;
+  }
+  .synth-slider-step {
+    width: 24px;
+    height: 12px;
+    padding: 0;
+    min-width: 0;
+    border-radius: 3px;
+    font-size: 0;
+    line-height: 0;
+  }
+  .synth-slider-step.active {
+    color: transparent;
+    border-color: rgba(0, 240, 255, 0.9);
+    background: linear-gradient(180deg, rgba(0, 240, 255, 0.24), rgba(11, 24, 52, 0.98));
+    box-shadow: inset 0 1px 0 rgba(126, 241, 255, 0.5), 0 0 14px rgba(0, 240, 255, 0.35);
+  }
+  .synth-slider-step.active.warn {
+    border-color: rgba(255, 176, 0, 0.85);
+    background: linear-gradient(180deg, rgba(255, 176, 0, 0.22), rgba(32, 15, 6, 0.98));
+    box-shadow: inset 0 1px 0 rgba(255, 219, 133, 0.42), 0 0 14px rgba(255, 176, 0, 0.32);
+  }
+  .research-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1200;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 24px 16px;
+    background: rgba(2, 4, 12, 0.72);
+    backdrop-filter: blur(2px);
+  }
+  .research-modal-overlay.open {
+    display: flex;
+  }
+  .research-modal {
+    width: min(920px, 100%);
+    max-height: min(88vh, 920px);
+    overflow: auto;
+    border: 2px solid var(--chrome-hi);
+    border-radius: 8px;
+    background: linear-gradient(180deg, #10183a 0%, #060a1e 100%);
+    box-shadow: inset 0 1px 0 #2c3865, inset 0 -2px 0 #000, 0 0 22px rgba(0, 240, 255, 0.14), 0 6px 0 #000;
+  }
+  .research-modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid #22325f;
+    background: linear-gradient(180deg, #1a2247 0%, #0d1532 100%);
+  }
+  .research-modal-title {
+    color: var(--neon-cyan);
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-shadow: 0 0 5px rgba(0, 240, 255, 0.45);
+  }
+  .research-modal-body {
+    padding: 12px;
+  }
+  .research-modal-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .research-modal-stat {
+    padding: 7px 8px;
+    border: 1px solid #23315f;
+    border-radius: 4px;
+    background: rgba(7, 12, 29, 0.82);
+  }
+  .research-modal-stat .lbl {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--text-dim);
+    font-size: 10px;
+    letter-spacing: 1px;
+  }
+  .research-modal-stat .val {
+    color: var(--text);
+    font-size: 16px;
+    font-variant-numeric: tabular-nums;
+  }
+  .research-modal-summary,
+  .research-modal-list,
+  .research-modal-table-wrap {
+    margin-top: 10px;
+    padding: 8px 9px;
+    border: 1px solid #23315f;
+    border-radius: 4px;
+    background: rgba(7, 12, 29, 0.82);
+  }
+  .research-modal-section-title {
+    margin: 0 0 8px 0;
+    color: #ffe3a6;
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 9px;
+    letter-spacing: 1px;
+  }
+  .research-modal-summary-text {
+    color: var(--text);
+    font-size: 16px;
+    line-height: 1.2;
+  }
+  .research-modal-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 15px;
+  }
+  .research-modal-table th,
+  .research-modal-table td {
+    padding: 6px 5px;
+    text-align: left;
+    vertical-align: top;
+    border-bottom: 1px solid rgba(49, 69, 128, 0.45);
+  }
+  .research-modal-table th {
+    color: var(--text-dim);
+    font-size: 11px;
+    letter-spacing: 1px;
+  }
+  .research-modal-code {
+    color: var(--neon-cyan);
+    font-size: 14px;
+    word-break: break-word;
+  }
+  .research-modal-list ul {
+    margin: 0;
+    padding-left: 18px;
+  }
+  .research-modal-list li {
+    margin: 0 0 4px 0;
+  }
+  .research-modal-foot {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 12px 12px;
+  }
   .codex-led-cluster {
     display: inline-flex;
     align-items: center;
@@ -948,18 +1139,57 @@
               <span id="codex-led-label" class="codex-led-label">OFFLINE</span>
             </div>
           </div>
-          <div class="control-row">
-            <button type="button" class="ctl-btn" data-action="research_run_now">RUN RESEARCH</button>
-            <button type="button" class="ctl-btn warn" data-action="research_reset_runner">STOP RESEARCH</button>
+          <div class="research-layout">
+            <div class="research-main">
+              <div class="control-row">
+                <button type="button" class="ctl-btn" data-action="research_run_now">RUN RESEARCH</button>
+                <button type="button" class="ctl-btn warn" data-action="research_reset_runner">STOP RESEARCH</button>
+                <button id="btn-research-view" type="button" class="ctl-btn">VIEW CHANGES</button>
+              </div>
+              <div class="control-readout">
+                <div class="readout-pill"><span class="lbl">QUEUE</span><span id="codex-queue">-</span></div>
+                <div class="readout-pill"><span class="lbl">ACTIVE</span><span id="codex-active">-</span></div>
+              </div>
+              <div id="codex-note" class="control-note pending">RESEARCH RUNNER STATUS UNKNOWN</div>
+              <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
+              <div id="codex-warehouse" class="control-path">WAREHOUSE: -</div>
+              <div id="codex-live" class="control-path">LIVE POLICY: -</div>
+            </div>
+            <div class="research-side">
+              <div class="synth-slider">
+                <div class="synth-slider-label">PROPOSE</div>
+                <div id="proposal-aggr-value" class="synth-slider-value">5</div>
+                <div id="proposal-aggr-slider" class="synth-slider-track">
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="1">1</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="2">2</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="3">3</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="4">4</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="5">5</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="6">6</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="7">7</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="8">8</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="9">9</button>
+                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="10">10</button>
+                </div>
+              </div>
+              <div class="synth-slider">
+                <div class="synth-slider-label">LIVE</div>
+                <div id="live-aggr-value" class="synth-slider-value">5</div>
+                <div id="live-aggr-slider" class="synth-slider-track">
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="1">1</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="2">2</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="3">3</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="4">4</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="5">5</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="6">6</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="7">7</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="8">8</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="9">9</button>
+                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="10">10</button>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="control-readout">
-            <div class="readout-pill"><span class="lbl">QUEUE</span><span id="codex-queue">-</span></div>
-            <div class="readout-pill"><span class="lbl">ACTIVE</span><span id="codex-active">-</span></div>
-          </div>
-          <div id="codex-note" class="control-note pending">RESEARCH RUNNER STATUS UNKNOWN</div>
-          <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
-          <div id="codex-warehouse" class="control-path">WAREHOUSE: -</div>
-          <div id="codex-live" class="control-path">LIVE POLICY: -</div>
         </div>
         <div class="control-block">
           <span class="head">TUNER</span>
@@ -997,6 +1227,48 @@
       </div>
     </div>
   </section>
+
+  <div id="research-modal-overlay" class="research-modal-overlay" aria-hidden="true">
+    <div class="research-modal" role="dialog" aria-modal="true" aria-labelledby="research-modal-title">
+      <div class="research-modal-head">
+        <div id="research-modal-title" class="research-modal-title">DAILY LOCAL CANDIDATE</div>
+        <button id="btn-research-modal-close-top" type="button" class="ctl-btn">CLOSE</button>
+      </div>
+      <div class="research-modal-body">
+        <div class="research-modal-grid">
+          <div class="research-modal-stat"><span class="lbl">CANDIDATE</span><span id="research-modal-candidate-id" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">STATUS</span><span id="research-modal-status" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">GENERATED</span><span id="research-modal-generated" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">CHANGES</span><span id="research-modal-change-count" class="val">0</span></div>
+          <div class="research-modal-stat"><span class="lbl">CLOSED</span><span id="research-modal-closed" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">WIN RATE</span><span id="research-modal-win-rate" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">P&amp;L</span><span id="research-modal-pnl" class="val">—</span></div>
+          <div class="research-modal-stat"><span class="lbl">TOP CHANGES</span><span id="research-modal-top-changes" class="val">—</span></div>
+        </div>
+        <div class="research-modal-summary">
+          <div class="research-modal-section-title">SUMMARY</div>
+          <div id="research-modal-summary" class="research-modal-summary-text">No daily local candidate has been generated yet.</div>
+        </div>
+        <div class="research-modal-table-wrap">
+          <div class="research-modal-section-title">PROPOSED CHANGES</div>
+          <div id="research-modal-changes"></div>
+        </div>
+        <div class="research-modal-list">
+          <div class="research-modal-section-title">ADVISORIES</div>
+          <div id="research-modal-advisories"></div>
+        </div>
+        <div class="research-modal-list">
+          <div class="research-modal-section-title">NO-CHANGE REASONS</div>
+          <div id="research-modal-no-change"></div>
+        </div>
+      </div>
+      <div class="research-modal-foot">
+        <button id="btn-research-modal-promote" type="button" class="ctl-btn">PROMOTE</button>
+        <button id="btn-research-modal-reject" type="button" class="ctl-btn warn">REJECT</button>
+        <button id="btn-research-modal-close" type="button" class="ctl-btn">CLOSE</button>
+      </div>
+    </div>
+  </div>
 
   <main id="stack" class="stack">
     <div id="loading" class="nodata">⏳ ESTABLISHING UPLINK…</div>
@@ -1074,6 +1346,12 @@
     return text.length >= 16 ? text.slice(5, 16).replace("T", " ") : text;
   };
   const escapeHtml = (s) => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const fmtModalValue = (value) => {
+    if (Array.isArray(value)) return escapeHtml(value.join(", "));
+    if (value == null || value === "") return "—";
+    if (typeof value === "number") return Number.isInteger(value) ? String(value) : value.toFixed(4);
+    return escapeHtml(String(value));
+  };
 
   // Skip innerHTML if the rendered key matches the previous frame.
   // Prevents LED-blink restarts and DOM thrash when nothing changed.
@@ -1377,6 +1655,7 @@
 
   let controlBusy = false;
   let lastState = null;
+  let researchModalOpen = false;
   async function sendControl(action, value) {
     action = (action || "").trim();
     if (!action) {
@@ -1418,6 +1697,107 @@
       }
     }
   }
+  function controlValue(target) {
+    const rawJson = target.getAttribute("data-value-json");
+    if (rawJson) {
+      try {
+        return JSON.parse(rawJson);
+      } catch (_err) {
+        return null;
+      }
+    }
+    return target.getAttribute("data-value");
+  }
+  function openResearchModal() {
+    researchModalOpen = true;
+    renderResearchModal((lastState && lastState.codex) || {});
+    const overlay = $("research-modal-overlay");
+    if (overlay) {
+      overlay.classList.add("open");
+      overlay.setAttribute("aria-hidden", "false");
+    }
+  }
+  function closeResearchModal() {
+    researchModalOpen = false;
+    const overlay = $("research-modal-overlay");
+    if (overlay) {
+      overlay.classList.remove("open");
+      overlay.setAttribute("aria-hidden", "true");
+    }
+  }
+  function renderResearchSlider(groupId, valueId, action, level, warn) {
+    const levelNum = Math.max(1, Math.min(10, Number(level || 5)));
+    setText($(valueId), String(levelNum));
+    document.querySelectorAll(`#${groupId} .synth-slider-step`).forEach((btn) => {
+      const active = Number(btn.dataset.value || 0) === levelNum;
+      setClassList(btn, "active", active);
+      setClassList(btn, "warn", !!warn);
+      btn.dataset.action = action;
+    });
+  }
+  function renderResearchModal(codex) {
+    const detail = (codex && codex.daily_local_candidate_details) || {};
+    const data = detail.data || {};
+    const changes = Array.isArray(detail.changes) ? detail.changes : [];
+    const advisories = Array.isArray(detail.advisories) ? detail.advisories : [];
+    const noChange = Array.isArray(detail.no_change) ? detail.no_change : [];
+    const candidateId = String(detail.candidate_id || "").trim();
+    const status = String(detail.status || "none").toUpperCase();
+    const ready = String(detail.status || "").toLowerCase() === "ready" && !!candidateId;
+    setText($("research-modal-candidate-id"), candidateId || "NONE");
+    setText($("research-modal-status"), status);
+    setText($("research-modal-generated"), fmtShortStamp(detail.generated_at));
+    setText($("research-modal-change-count"), String(Number(detail.change_count || changes.length || 0)));
+    setText($("research-modal-closed"), String(Number(data.closed || 0)));
+    setText($("research-modal-win-rate"), data.win_pct == null ? "—" : `${Number(data.win_pct).toFixed(1)}%`);
+    setText($("research-modal-pnl"), data.total_pnl == null ? "—" : `$${Number(data.total_pnl).toFixed(4)}`);
+    setText($("research-modal-top-changes"), (detail.top_changes || []).join(", ") || "NONE");
+    setText($("research-modal-summary"), String(detail.summary || "No daily local candidate has been generated yet."));
+    const changeRows = changes.length
+      ? `
+        <table class="research-modal-table">
+          <thead>
+            <tr><th>PATH</th><th>CURRENT</th><th>RECOMMENDED</th><th>EVIDENCE</th></tr>
+          </thead>
+          <tbody>
+            ${changes.map((change) => `
+              <tr>
+                <td class="research-modal-code">${escapeHtml(change.path || "—")}</td>
+                <td>${fmtModalValue(change.current)}</td>
+                <td>${fmtModalValue(change.recommended)}</td>
+                <td>${escapeHtml(change.evidence || "—")}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `
+      : `<div class="research-modal-summary-text">No proposed config deltas in the current daily local candidate.</div>`;
+    cachedSet($("research-modal-changes"), JSON.stringify(changes), changeRows);
+    cachedSet(
+      $("research-modal-advisories"),
+      JSON.stringify(advisories),
+      advisories.length
+        ? `<ul>${advisories.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+        : `<div class="research-modal-summary-text">No advisories.</div>`
+    );
+    cachedSet(
+      $("research-modal-no-change"),
+      JSON.stringify(noChange),
+      noChange.length
+        ? `<ul>${noChange.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+        : `<div class="research-modal-summary-text">No no-change reasons recorded.</div>`
+    );
+    setDisabled($("btn-research-modal-promote"), controlBusy || !ready);
+    setDisabled($("btn-research-modal-reject"), controlBusy || !ready);
+    $("btn-research-modal-promote").onclick = () => {
+      if (!ready) return;
+      sendControl("tuner_promote_latest", { candidate_id: candidateId });
+    };
+    $("btn-research-modal-reject").onclick = () => {
+      if (!ready) return;
+      sendControl("tuner_reject_latest", { candidate_id: candidateId });
+    };
+  }
   function bindControls() {
     document.querySelectorAll(".ctl-btn[data-action]").forEach((btn) => {
       btn.addEventListener("click", (event) => {
@@ -1425,9 +1805,24 @@
         const target = event.currentTarget;
         sendControl(
           target.getAttribute("data-action"),
-          target.getAttribute("data-value")
+          controlValue(target)
         );
       });
+    });
+    $("btn-research-view")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      openResearchModal();
+    });
+    $("btn-research-modal-close")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeResearchModal();
+    });
+    $("btn-research-modal-close-top")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      closeResearchModal();
+    });
+    $("research-modal-overlay")?.addEventListener("click", (event) => {
+      if (event.target === $("research-modal-overlay")) closeResearchModal();
     });
   }
 
@@ -1816,6 +2211,8 @@
     const dailyLocal = tuner.daily_local_candidate || {};
     const weeklyReview = tuner.weekly_review_bundle || {};
     const weeklyReviewPaths = weeklyReview.paths || {};
+    const researchControls = codex.research_controls || {};
+    const dailyCandidateDetails = codex.daily_local_candidate_details || {};
     setText(
       $("tuner-daily"),
       `${String(tuner.daily_local_last_result || dailyLocal.last_result || "—").toUpperCase()} / ${String(dailyLocal.status || "—").toUpperCase()}`
@@ -1862,6 +2259,29 @@
     setClassList($("btn-tuner-resume"), "active", tuner.schedule_enabled !== false);
     setClassList($("btn-tuner-weekly"), "active", tuner.cadence === "weekly");
     setClassList($("btn-tuner-manual"), "active", tuner.cadence === "manual");
+    renderResearchSlider(
+      "proposal-aggr-slider",
+      "proposal-aggr-value",
+      "research_set_proposal_aggressiveness",
+      researchControls.proposal_aggressiveness_level || 5,
+      false
+    );
+    renderResearchSlider(
+      "live-aggr-slider",
+      "live-aggr-value",
+      "research_set_live_aggressiveness",
+      researchControls.live_aggressiveness_level || 5,
+      true
+    );
+    setDisabled($("btn-research-view"), false);
+    setClassList(
+      $("btn-research-view"),
+      "active",
+      String((dailyCandidateDetails.status || "")).toLowerCase() === "ready"
+    );
+    if (researchModalOpen) {
+      renderResearchModal(codex);
+    }
     syncControlButtons(controls);
     if (!controlBusy) {
       const statusText = controls.last_message || "CONTROL LINK STANDBY";

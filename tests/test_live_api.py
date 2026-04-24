@@ -24,6 +24,8 @@ class _FakeDashboardState:
                     "start": True,
                     "research_run_now": True,
                     "research_reset_runner": True,
+                    "research_set_proposal_aggressiveness": True,
+                    "research_set_live_aggressiveness": True,
                     "tuner_run_now": True,
                 },
                 "last_message": "CONTROL LINK STANDBY",
@@ -60,6 +62,37 @@ class _FakeDashboardState:
                     "fills_enriched_rows": 15,
                     "market_5m_registry_rows": 2070,
                     "candidate_status": "ready",
+                },
+                "daily_local_candidate": {
+                    "candidate_id": "local-1",
+                    "status": "ready",
+                    "summary": "Daily local candidate ready.",
+                    "paths": {"report_json": "data/research/tuner_report.json"},
+                },
+                "daily_local_candidate_details": {
+                    "candidate_id": "local-1",
+                    "status": "ready",
+                    "summary": "2 config changes proposed from 48 closed trades.",
+                    "generated_at": "2026-04-22T12:15:00+00:00",
+                    "change_count": 2,
+                    "top_changes": ["single_leg.min_velocity_30s", "single_leg.entry_min"],
+                    "data": {"closed": 48, "win_pct": 54.2, "total_pnl": 3.15},
+                    "changes": [
+                        {
+                            "path": "single_leg.min_velocity_30s",
+                            "current": 0.12,
+                            "recommended": 0.15,
+                            "evidence": "Velocity buckets improved above 0.15.",
+                        }
+                    ],
+                    "advisories": ["depth_check is rejecting too many signals."],
+                    "no_change": ["single_leg.entry_max already fits the viable band."],
+                },
+                "research_controls": {
+                    "proposal_aggressiveness_level": 5,
+                    "live_aggressiveness_level": 5,
+                    "updated_at": "2026-04-22T12:05:00+00:00",
+                    "updated_by": "dashboard",
                 },
             },
             "tuner": {
@@ -141,6 +174,8 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('data-action="session_export"', html)
         self.assertIn('data-action="research_run_now"', html)
         self.assertIn('data-action="research_reset_runner"', html)
+        self.assertIn('data-action="research_set_proposal_aggressiveness" data-value="10"', html)
+        self.assertIn('data-action="research_set_live_aggressiveness" data-value="10"', html)
         self.assertIn('data-action="tuner_run_now"', html)
         self.assertIn('data-action="tuner_schedule_pause"', html)
         self.assertIn('data-action="tuner_schedule_resume"', html)
@@ -153,6 +188,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('EXPORT SESSION', html)
         self.assertIn('RUN RESEARCH', html)
         self.assertIn('STOP RESEARCH', html)
+        self.assertIn('VIEW CHANGES', html)
         self.assertIn('PROMOTE', html)
         self.assertIn('REJECT', html)
         self.assertIn('class="topbar-meta"', html)
@@ -183,6 +219,10 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('id="codex-meta"', html)
         self.assertIn('id="codex-warehouse"', html)
         self.assertIn('id="codex-live"', html)
+        self.assertIn('id="proposal-aggr-slider"', html)
+        self.assertIn('id="live-aggr-slider"', html)
+        self.assertIn('id="research-modal-overlay"', html)
+        self.assertIn('id="research-modal-changes"', html)
         self.assertIn('id="tuner-cadence"', html)
         self.assertIn('id="tuner-next"', html)
         self.assertIn('id="tuner-primary"', html)
@@ -196,6 +236,8 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn("function describeCodexRunner(codex)", html)
         self.assertIn("function describeResearchRuntime(runtime)", html)
         self.assertIn("function describeResearchWarehouse(codex, runtime)", html)
+        self.assertIn("function renderResearchModal(codex)", html)
+        self.assertIn("function renderResearchSlider(groupId, valueId, action, level, warn)", html)
         self.assertIn("RUNNER HEARTBEAT STALE DURING", html)
         self.assertIn("pulseCodexLed(codexLedCluster, codexStatus.pulseToken);", html)
         self.assertIn("WAREHOUSE USED", html)

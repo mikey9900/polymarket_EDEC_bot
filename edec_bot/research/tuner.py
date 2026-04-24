@@ -56,10 +56,32 @@ CANDIDATE_SOURCES = ("daily_local", "weekly_ai")
 PRIMARY_SOURCE_ORDER = ("weekly_ai", "daily_local")
 DEFAULT_WEEKLY_AI_MODEL = "gpt-5.4-mini"
 DEFAULT_WEEKLY_CONTEXT_DAYS = 7
+DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL = 5
+PROPOSAL_AGGRESSIVENESS_PROFILES = {
+    1: {"sample_factor": 1.50, "win_rate_offset": 6, "delta_factor": 0.40, "disabled_coin_limit": 1},
+    2: {"sample_factor": 1.35, "win_rate_offset": 4, "delta_factor": 0.55, "disabled_coin_limit": 1},
+    3: {"sample_factor": 1.20, "win_rate_offset": 3, "delta_factor": 0.70, "disabled_coin_limit": 1},
+    4: {"sample_factor": 1.10, "win_rate_offset": 1, "delta_factor": 0.85, "disabled_coin_limit": 1},
+    5: {"sample_factor": 1.00, "win_rate_offset": 0, "delta_factor": 1.00, "disabled_coin_limit": 1},
+    6: {"sample_factor": 0.90, "win_rate_offset": -1, "delta_factor": 1.15, "disabled_coin_limit": 2},
+    7: {"sample_factor": 0.80, "win_rate_offset": -2, "delta_factor": 1.30, "disabled_coin_limit": 2},
+    8: {"sample_factor": 0.70, "win_rate_offset": -3, "delta_factor": 1.50, "disabled_coin_limit": 2},
+    9: {"sample_factor": 0.65, "win_rate_offset": -4, "delta_factor": 1.75, "disabled_coin_limit": 3},
+    10: {"sample_factor": 0.60, "win_rate_offset": -5, "delta_factor": 2.00, "disabled_coin_limit": 3},
+}
 
 
 class TuningError(RuntimeError):
     """Raised when tuning proposal inputs are missing or invalid."""
+
+
+@dataclass(frozen=True)
+class ProposalAggressivenessProfile:
+    level: int
+    sample_factor: float
+    win_rate_offset: int
+    delta_factor: float
+    disabled_coin_limit: int
 
 
 @dataclass(frozen=True)
@@ -142,6 +164,7 @@ def propose_tuning(
     patch_path: str | Path = TUNER_ACTIVE_PATCH_PATH,
     candidates_root: str | Path = CONFIG_CANDIDATES_ROOT,
     research_report_json_path: str | Path = DEFAULT_REPORT_JSON_PATH,
+    proposal_aggressiveness_level: int = DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL,
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
@@ -151,13 +174,19 @@ def propose_tuning(
     patch_path = resolve_repo_path(patch_path)
     candidates_root = resolve_repo_path(candidates_root)
     research_report = _load_json_file(research_report_json_path, default={})
+    aggressiveness = _proposal_aggressiveness_profile(proposal_aggressiveness_level)
 
     input_bundle = _build_tuning_input_bundle(tracker_db_path)
     analysis = input_bundle.analysis
     current_config = _load_yaml(config_path)
     candidate_config = _deep_copy(current_config)
 
-    changes, advisories, no_change = _recommend_changes(candidate_config, analysis, research_report=research_report)
+    changes, advisories, no_change = _recommend_changes(
+        candidate_config,
+        analysis,
+        research_report=research_report,
+        aggressiveness=aggressiveness,
+    )
     _enforce_safe_change_surface(changes)
 
     candidate_id = now.strftime("%Y%m%dT%H%M%SZ")
@@ -190,6 +219,12 @@ def propose_tuning(
             "trades_file": input_bundle.trades_path.name if input_bundle.trades_path else "",
             "signals_file": input_bundle.signals_path.name if input_bundle.signals_path else "",
             "tracker_db": str(input_bundle.tracker_db_path) if input_bundle.tracker_db_path else "",
+        },
+        "aggressiveness": {
+            "proposal_level": aggressiveness.level,
+            "sample_factor": aggressiveness.sample_factor,
+            "win_rate_offset": aggressiveness.win_rate_offset,
+            "delta_factor": aggressiveness.delta_factor,
         },
         "data": analysis["overall"],
         "research_rollups": _compact_research_report(research_report),
@@ -237,6 +272,7 @@ def propose_tuning(
         "report_md_path": str(report_md_path),
         "patch_path": str(patch_path),
         "candidate_config_path": str(candidate_path) if candidate_path else "",
+        "proposal_aggressiveness_level": aggressiveness.level,
     }
 
 
@@ -247,6 +283,7 @@ def build_weekly_ai_context(
     context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
     report_json_path: str | Path = DEFAULT_REPORT_JSON_PATH,
     window_days: int = DEFAULT_WEEKLY_CONTEXT_DAYS,
+    proposal_aggressiveness_level: int = DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL,
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
@@ -256,10 +293,16 @@ def build_weekly_ai_context(
     current_config = _load_yaml(config_path)
     research_report = _load_json_file(report_json_path, default={})
     daily_candidate = _candidate_overview(state.get("daily_local_candidate") or {})
+    aggressiveness = _proposal_aggressiveness_profile(proposal_aggressiveness_level)
 
-    snapshots, raw_refs = _build_daily_snapshots(current_config, window_days=window_days)
+    snapshots, raw_refs = _build_daily_snapshots(
+        current_config,
+        window_days=window_days,
+        aggressiveness=aggressiveness,
+    )
     payload = {
         "generated_at": now.isoformat(),
+        "proposal_aggressiveness_level": aggressiveness.level,
         "window_days": int(window_days),
         "window_start": (now - timedelta(days=int(window_days))).date().isoformat(),
         "window_end": now.date().isoformat(),
@@ -293,6 +336,7 @@ def build_weekly_ai_context(
         "snapshot_count": len(snapshots),
         "raw_ref_count": len(raw_refs),
         "window_days": int(window_days),
+        "proposal_aggressiveness_level": aggressiveness.level,
     }
 
 
@@ -1230,11 +1274,83 @@ def _analyze_rows(trades: list[dict[str, str]], signals: list[dict[str, str]], *
     }
 
 
+def _normalize_aggressiveness_level(value: Any, *, default: int = DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL) -> int:
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        level = int(default)
+    return max(1, min(10, level))
+
+
+def _proposal_aggressiveness_profile(value: Any) -> ProposalAggressivenessProfile:
+    level = _normalize_aggressiveness_level(value)
+    payload = PROPOSAL_AGGRESSIVENESS_PROFILES[level]
+    return ProposalAggressivenessProfile(
+        level=level,
+        sample_factor=float(payload["sample_factor"]),
+        win_rate_offset=int(payload["win_rate_offset"]),
+        delta_factor=float(payload["delta_factor"]),
+        disabled_coin_limit=int(payload["disabled_coin_limit"]),
+    )
+
+
+def _scaled_sample_min(base: int, aggressiveness: ProposalAggressivenessProfile) -> int:
+    scaled = round(int(base) * aggressiveness.sample_factor)
+    if int(base) <= 5:
+        return max(3, min(8, scaled))
+    return max(6, min(16, scaled))
+
+
+def _proposal_win_rate_threshold(aggressiveness: ProposalAggressivenessProfile) -> float:
+    return 45.0 + float(aggressiveness.win_rate_offset)
+
+
+def _proposal_disable_coin_threshold(aggressiveness: ProposalAggressivenessProfile) -> float:
+    return 40.0 - float(aggressiveness.win_rate_offset)
+
+
+def _max_move_for_path(path: str, aggressiveness: ProposalAggressivenessProfile) -> float | None:
+    delta_factor = aggressiveness.delta_factor
+    if path.endswith(".min_velocity_30s"):
+        return round(max(0.01, min(0.06, 0.03 * delta_factor)), 4)
+    if path in {"single_leg.entry_min", "single_leg.entry_max"}:
+        return round(max(0.02, min(0.10, 0.05 * delta_factor)), 4)
+    if path in {"single_leg.loss_cut_pct", "lead_lag.hard_stop_loss_pct"}:
+        return round(max(0.01, min(0.06, 0.03 * delta_factor)), 4)
+    if path == "single_leg.high_confidence_bid":
+        return round(max(0.01, min(0.05, 0.02 * delta_factor)), 4)
+    return None
+
+
+def _cap_numeric_recommendation(
+    path: str,
+    current: float,
+    target: float,
+    aggressiveness: ProposalAggressivenessProfile,
+) -> float:
+    max_move = _max_move_for_path(path, aggressiveness)
+    if max_move is None:
+        return round(float(target), 2)
+    delta = float(target) - float(current)
+    if abs(delta) <= max_move:
+        return round(float(target), 2)
+    direction = 1.0 if delta > 0 else -1.0
+    return round(float(current) + direction * max_move, 2)
+
+
+def _cap_suffix(target: float, recommended: float, aggressiveness: ProposalAggressivenessProfile) -> str:
+    if round(float(target), 2) == round(float(recommended), 2):
+        return ""
+    return f" Capped to {recommended:.2f} at proposal level {aggressiveness.level}."
+
+
 def _recommend_changes(
     config: dict[str, Any],
     analysis: dict[str, Any],
     research_report: dict[str, Any] | None = None,
+    aggressiveness: ProposalAggressivenessProfile | None = None,
 ) -> tuple[list[ProposedChange], list[str], list[str]]:
+    aggressiveness = aggressiveness or _proposal_aggressiveness_profile(DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL)
     changes: list[ProposedChange] = []
     advisories: list[str] = []
     no_change: list[str] = []
@@ -1245,14 +1361,14 @@ def _recommend_changes(
         row for rows in (single_rows, lead_rows) for row in rows if row.get("status") == "closed_loss"
     ]
 
-    _recommend_velocity(changes, no_change, config, single_rows, "single_leg.min_velocity_30s")
-    _recommend_velocity(changes, no_change, config, lead_rows, "lead_lag.min_velocity_30s")
-    _recommend_entry_band(changes, no_change, config, single_rows)
-    _recommend_loss_cut(changes, no_change, config, single_rows, "single_leg.loss_cut_pct")
-    _recommend_loss_cut(changes, no_change, config, lead_rows, "lead_lag.hard_stop_loss_pct")
-    _recommend_high_confidence_bid(changes, no_change, config, single_rows)
-    _recommend_disabled_coins(changes, no_change, config, single_rows, "single_leg.disabled_coins")
-    _recommend_disabled_coins(changes, no_change, config, lead_rows, "lead_lag.disabled_coins")
+    _recommend_velocity(changes, no_change, config, single_rows, "single_leg.min_velocity_30s", aggressiveness)
+    _recommend_velocity(changes, no_change, config, lead_rows, "lead_lag.min_velocity_30s", aggressiveness)
+    _recommend_entry_band(changes, no_change, config, single_rows, aggressiveness)
+    _recommend_loss_cut(changes, no_change, config, single_rows, "single_leg.loss_cut_pct", aggressiveness)
+    _recommend_loss_cut(changes, no_change, config, lead_rows, "lead_lag.hard_stop_loss_pct", aggressiveness)
+    _recommend_high_confidence_bid(changes, no_change, config, single_rows, aggressiveness)
+    _recommend_disabled_coins(changes, no_change, config, single_rows, "single_leg.disabled_coins", aggressiveness)
+    _recommend_disabled_coins(changes, no_change, config, lead_rows, "lead_lag.disabled_coins", aggressiveness)
 
     for exit_reason, payload in analysis["advisory_groups"]["by_exit_reason"].items():
         n = int(payload.get("n") or 0)
@@ -1329,30 +1445,34 @@ def _recommend_velocity(
     config: dict[str, Any],
     rows: list[dict[str, str]],
     path: str,
+    aggressiveness: ProposalAggressivenessProfile,
 ) -> None:
-    if len(rows) < 5:
-        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}).")
+    min_rows = _scaled_sample_min(5, aggressiveness)
+    if len(rows) < min_rows:
+        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}; need {min_rows}).")
         return
     buckets = _group_stats(rows, lambda row: _v30_bucket(_flt(row.get("v30"))))
     candidate: float | None = None
+    win_rate_threshold = _proposal_win_rate_threshold(aggressiveness)
     for bucket_name, payload in _sorted_range_buckets(buckets):
-        if int(payload.get("n") or 0) < 5:
+        if int(payload.get("n") or 0) < min_rows:
             continue
-        if (payload.get("win_pct") or 0.0) >= 45.0:
+        if (payload.get("win_pct") or 0.0) >= win_rate_threshold:
             candidate = _bucket_lower_bound(bucket_name)
             break
     current = float(_get_nested(config, path) or 0.0)
     if candidate is None:
-        no_change.append(f"{path}: no velocity bucket reached the win-rate threshold.")
+        no_change.append(f"{path}: no velocity bucket reached the {win_rate_threshold:.1f}% win-rate threshold.")
         return
-    if candidate > current + 0.01:
-        _set_nested(config, path, round(candidate, 2))
+    recommended = _cap_numeric_recommendation(path, current, candidate, aggressiveness)
+    if recommended > current + 0.01:
+        _set_nested(config, path, recommended)
         changes.append(
             ProposedChange(
                 path=path,
                 current=current,
-                recommended=round(candidate, 2),
-                evidence=f"Lowest viable velocity bucket starts at {candidate:.2f}.",
+                recommended=recommended,
+                evidence=f"Lowest viable velocity bucket starts at {candidate:.2f}.{_cap_suffix(candidate, recommended, aggressiveness)}",
             )
         )
         return
@@ -1364,45 +1484,52 @@ def _recommend_entry_band(
     no_change: list[str],
     config: dict[str, Any],
     rows: list[dict[str, str]],
+    aggressiveness: ProposalAggressivenessProfile,
 ) -> None:
-    if len(rows) < 5:
-        no_change.append(f"single_leg.entry_min / single_leg.entry_max: insufficient closed trades (n={len(rows)}).")
+    min_rows = _scaled_sample_min(5, aggressiveness)
+    if len(rows) < min_rows:
+        no_change.append(
+            f"single_leg.entry_min / single_leg.entry_max: insufficient closed trades (n={len(rows)}; need {min_rows})."
+        )
         return
     buckets = _group_stats(rows, lambda row: _ep_bucket(_flt(row.get("ep"))))
+    win_rate_threshold = _proposal_win_rate_threshold(aggressiveness)
     viable = [
         (bucket_name, payload)
         for bucket_name, payload in _sorted_range_buckets(buckets)
-        if int(payload.get("n") or 0) >= 5 and (payload.get("win_pct") or 0.0) >= 45.0
+        if int(payload.get("n") or 0) >= min_rows and (payload.get("win_pct") or 0.0) >= win_rate_threshold
     ]
     current_min = float(_get_nested(config, "single_leg.entry_min") or 0.0)
     current_max = float(_get_nested(config, "single_leg.entry_max") or 0.0)
     if not viable:
         no_change.append(
-            "single_leg.entry_min / single_leg.entry_max: no entry-price bucket cleared the win-rate threshold."
+            f"single_leg.entry_min / single_leg.entry_max: no entry-price bucket cleared the {win_rate_threshold:.1f}% win-rate threshold."
         )
         return
     changed = False
     new_min = _bucket_lower_bound(viable[0][0])
     new_max = _bucket_upper_bound(viable[-1][0])
-    if new_min > current_min + 0.01:
-        _set_nested(config, "single_leg.entry_min", round(new_min, 2))
+    recommended_min = _cap_numeric_recommendation("single_leg.entry_min", current_min, new_min, aggressiveness)
+    if recommended_min > current_min + 0.01:
+        _set_nested(config, "single_leg.entry_min", recommended_min)
         changes.append(
             ProposedChange(
                 path="single_leg.entry_min",
                 current=current_min,
-                recommended=round(new_min, 2),
-                evidence=f"First viable entry bucket begins at {new_min:.2f}.",
+                recommended=recommended_min,
+                evidence=f"First viable entry bucket begins at {new_min:.2f}.{_cap_suffix(new_min, recommended_min, aggressiveness)}",
             )
         )
         changed = True
-    if new_max < current_max - 0.01:
-        _set_nested(config, "single_leg.entry_max", round(new_max, 2))
+    recommended_max = _cap_numeric_recommendation("single_leg.entry_max", current_max, new_max, aggressiveness)
+    if recommended_max < current_max - 0.01:
+        _set_nested(config, "single_leg.entry_max", recommended_max)
         changes.append(
             ProposedChange(
                 path="single_leg.entry_max",
                 current=current_max,
-                recommended=round(new_max, 2),
-                evidence=f"Highest viable entry bucket tops out at {new_max:.2f}.",
+                recommended=recommended_max,
+                evidence=f"Highest viable entry bucket tops out at {new_max:.2f}.{_cap_suffix(new_max, recommended_max, aggressiveness)}",
             )
         )
         changed = True
@@ -1418,9 +1545,11 @@ def _recommend_loss_cut(
     config: dict[str, Any],
     rows: list[dict[str, str]],
     path: str,
+    aggressiveness: ProposalAggressivenessProfile,
 ) -> None:
-    if len(rows) < 10:
-        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}).")
+    min_rows = _scaled_sample_min(10, aggressiveness)
+    if len(rows) < min_rows:
+        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}; need {min_rows}).")
         return
     mae_as_pct = []
     for row in rows:
@@ -1435,14 +1564,15 @@ def _recommend_loss_cut(
         no_change.append(f"{path}: MAE distribution is incomplete in the latest local inputs.")
         return
     calibrated = round(mae_p75 + 0.02, 2)
-    if abs(calibrated - current) >= 0.02:
-        _set_nested(config, path, calibrated)
+    recommended = _cap_numeric_recommendation(path, current, calibrated, aggressiveness)
+    if abs(recommended - current) >= 0.02:
+        _set_nested(config, path, recommended)
         changes.append(
             ProposedChange(
                 path=path,
                 current=current,
-                recommended=calibrated,
-                evidence=f"MAE p75 is {mae_p75:.1%}; calibrated stop adds a 2% buffer.",
+                recommended=recommended,
+                evidence=f"MAE p75 is {mae_p75:.1%}; calibrated stop adds a 2% buffer.{_cap_suffix(calibrated, recommended, aggressiveness)}",
             )
         )
         return
@@ -1454,19 +1584,22 @@ def _recommend_high_confidence_bid(
     no_change: list[str],
     config: dict[str, Any],
     rows: list[dict[str, str]],
+    aggressiveness: ProposalAggressivenessProfile,
 ) -> None:
     path = "single_leg.high_confidence_bid"
-    if len(rows) < 10:
-        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}).")
+    min_rows = _scaled_sample_min(10, aggressiveness)
+    if len(rows) < min_rows:
+        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}; need {min_rows}).")
         return
     maxb = [_flt(row.get("maxb")) for row in rows if _flt(row.get("maxb")) is not None]
     maxb_p50 = _ptile(maxb, 50)
     current = float(_get_nested(config, path) or 0.0)
+    max_move = _max_move_for_path(path, aggressiveness) or 0.02
     if maxb_p50 is None:
         no_change.append(f"{path}: max bid distribution is incomplete in the latest local inputs.")
         return
     if maxb_p50 > current + 0.04:
-        recommended = round(current + 0.02, 2)
+        recommended = round(current + max_move, 2)
         _set_nested(config, path, recommended)
         changes.append(
             ProposedChange(
@@ -1478,7 +1611,7 @@ def _recommend_high_confidence_bid(
         )
         return
     if maxb_p50 < current - 0.03:
-        recommended = round(max(0.0, current - 0.02), 2)
+        recommended = round(max(0.0, current - max_move), 2)
         _set_nested(config, path, recommended)
         changes.append(
             ProposedChange(
@@ -1498,26 +1631,31 @@ def _recommend_disabled_coins(
     config: dict[str, Any],
     rows: list[dict[str, str]],
     path: str,
+    aggressiveness: ProposalAggressivenessProfile,
 ) -> None:
-    if len(rows) < 5:
-        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}).")
+    min_rows = _scaled_sample_min(5, aggressiveness)
+    if len(rows) < min_rows:
+        no_change.append(f"{path}: insufficient closed trades (n={len(rows)}; need {min_rows}).")
         return
     grouped = _group_stats(rows, lambda row: str(row.get("c") or row.get("coin") or "").lower())
     current = [str(item).lower() for item in (_get_nested(config, path) or [])]
     additions = []
+    disable_threshold = _proposal_disable_coin_threshold(aggressiveness)
     for coin, payload in sorted(grouped.items()):
         if not coin or coin in current:
             continue
         n = int(payload.get("n") or 0)
         win_pct = payload.get("win_pct")
-        if n >= 5 and win_pct is not None and win_pct < 40.0:
+        if n >= min_rows and win_pct is not None and win_pct < disable_threshold:
             additions.append((coin, n, win_pct))
     if not additions:
         no_change.append(f"{path}: no coin failed the disable threshold.")
         return
-    updated = sorted(set(current + [coin for coin, _, _ in additions]))
+    additions.sort(key=lambda item: (item[2], -item[1], item[0]))
+    selected = additions[: aggressiveness.disabled_coin_limit]
+    updated = sorted(set(current + [coin for coin, _, _ in selected]))
     _set_nested(config, path, updated)
-    evidence = "; ".join(f"{coin}: {win_pct:.1f}% wins (n={n})" for coin, n, win_pct in additions)
+    evidence = "; ".join(f"{coin}: {win_pct:.1f}% wins (n={n})" for coin, n, win_pct in selected)
     changes.append(
         ProposedChange(
             path=path,
@@ -1528,7 +1666,12 @@ def _recommend_disabled_coins(
     )
 
 
-def _build_daily_snapshots(current_config: dict[str, Any], *, window_days: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _build_daily_snapshots(
+    current_config: dict[str, Any],
+    *,
+    window_days: int,
+    aggressiveness: ProposalAggressivenessProfile,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     bundles = _discover_session_bundles()
     if not bundles:
         return [], []
@@ -1542,7 +1685,7 @@ def _build_daily_snapshots(current_config: dict[str, Any], *, window_days: int) 
             continue
         analysis = _analyze_session_exports(bundle.trades_path, bundle.signals_path)
         candidate_config = _deep_copy(current_config)
-        changes, advisories, _ = _recommend_changes(candidate_config, analysis)
+        changes, advisories, _ = _recommend_changes(candidate_config, analysis, aggressiveness=aggressiveness)
         key = bundle_day.isoformat()
         bucket = grouped.setdefault(
             key,
@@ -1619,6 +1762,30 @@ def _candidate_overview(candidate: dict[str, Any]) -> dict[str, Any]:
         "generated_at": candidate.get("generated_at"),
         "change_count": int(candidate.get("change_count") or 0),
         "top_changes": [item.get("path") for item in (report_payload.get("changes") or [])[:5] if item.get("path")],
+    }
+
+
+def candidate_detail_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    report_payload = _load_json_file((candidate.get("paths") or {}).get("report_json") or "", default={})
+    paths = dict(candidate.get("paths") or {})
+    return {
+        "source": candidate.get("source"),
+        "candidate_id": candidate.get("candidate_id"),
+        "status": candidate.get("status", "none"),
+        "summary": candidate.get("summary", ""),
+        "generated_at": candidate.get("generated_at"),
+        "change_count": int(candidate.get("change_count") or len(report_payload.get("changes") or [])),
+        "top_changes": [str(item) for item in (candidate.get("top_changes") or []) if str(item).strip()],
+        "data": dict(report_payload.get("data") or {}),
+        "changes": list(report_payload.get("changes") or []),
+        "advisories": [str(item) for item in (report_payload.get("advisories") or []) if str(item).strip()],
+        "no_change": [str(item) for item in (report_payload.get("no_change") or []) if str(item).strip()],
+        "paths": {
+            "report_json": str(paths.get("report_json") or ""),
+            "report_md": str(paths.get("report_md") or ""),
+            "patch": str(paths.get("patch") or ""),
+            "candidate_config": str(paths.get("candidate_config") or ""),
+        },
     }
 
 

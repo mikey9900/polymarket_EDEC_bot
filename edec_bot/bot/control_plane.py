@@ -89,6 +89,8 @@ class ControlPlane:
             "session_export": callable(self.session_export_fn),
             "research_run_now": self.codex_manager is not None,
             "research_reset_runner": self.codex_manager is not None,
+            "research_set_proposal_aggressiveness": self.codex_manager is not None,
+            "research_set_live_aggressiveness": self.codex_manager is not None,
             "tuner_run_now": self.codex_manager is not None,
             "tuner_schedule_pause": self.codex_manager is not None,
             "tuner_schedule_resume": self.codex_manager is not None,
@@ -242,6 +244,8 @@ class ControlPlane:
         if request.action in {
             "research_run_now",
             "research_reset_runner",
+            "research_set_proposal_aggressiveness",
+            "research_set_live_aggressiveness",
             "tuner_run_now",
             "tuner_schedule_pause",
             "tuner_schedule_resume",
@@ -318,6 +322,7 @@ class ControlPlane:
         action = request.action
         value = request.value
         try:
+            value_dict = value if isinstance(value, dict) else {}
             if action == "research_run_now":
                 result = self.codex_manager.enqueue_daily_refresh(requested_by="dashboard")
                 return {
@@ -331,6 +336,21 @@ class ControlPlane:
                     "ok": True,
                     "status": 200,
                     "message": str(result.get("message") or "Research runner state reset."),
+                }
+            if action == "research_set_proposal_aggressiveness":
+                result = self.codex_manager.set_proposal_aggressiveness(value, requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": str(result.get("message") or "Proposal aggressiveness updated."),
+                }
+            if action == "research_set_live_aggressiveness":
+                result = self.codex_manager.set_live_aggressiveness(value, requested_by="dashboard")
+                self._apply_live_research_aggressiveness(result.get("level", value))
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": str(result.get("message") or "Live aggressiveness updated."),
                 }
             if action == "tuner_run_now":
                 result = self.codex_manager.enqueue_tuning_proposal(requested_by="dashboard")
@@ -352,14 +372,21 @@ class ControlPlane:
                 result = self.codex_manager.skip_next_tuner_run()
                 return {"ok": True, "status": 200, "message": str(result.get("message") or "Next tuning run skipped.")}
             if action == "tuner_promote_latest":
-                result = self.codex_manager.enqueue_promote_candidate(requested_by="dashboard")
+                result = self.codex_manager.enqueue_promote_candidate(
+                    requested_by="dashboard",
+                    candidate_id=str(value_dict.get("candidate_id") or "").strip() or None,
+                )
                 return {
                     "ok": True,
                     "status": 200,
                     "message": "Candidate promotion queued." if result.get("queued") else "Candidate promotion is already queued.",
                 }
             if action == "tuner_reject_latest":
-                result = self.codex_manager.enqueue_reject_candidate(requested_by="dashboard")
+                result = self.codex_manager.enqueue_reject_candidate(
+                    requested_by="dashboard",
+                    candidate_id=str(value_dict.get("candidate_id") or "").strip() or None,
+                    reason=str(value_dict.get("reason") or "Rejected by operator."),
+                )
                 return {
                     "ok": True,
                     "status": 200,
@@ -368,3 +395,14 @@ class ControlPlane:
             return {"ok": False, "status": 400, "message": f"Unknown Codex action: {action}"}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "status": 400, "message": str(exc)}
+
+    def _apply_live_research_aggressiveness(self, level: Any) -> None:
+        if not self.tracker or not hasattr(self.tracker, "get_runtime_context") or not hasattr(self.tracker, "set_runtime_context"):
+            return
+        try:
+            normalized = max(1, min(10, int(level)))
+        except (TypeError, ValueError):
+            normalized = 5
+        context = dict(self.tracker.get_runtime_context() or {})
+        context["research_live_aggressiveness_level"] = normalized
+        self.tracker.set_runtime_context(context)

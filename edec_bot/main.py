@@ -293,6 +293,11 @@ async def main():
         session_export_fn=archive_workflows.run_session_export,
         codex_manager=codex_manager,
     )
+    runtime_context = dict(tracker.get_runtime_context() or {})
+    runtime_context["research_live_aggressiveness_level"] = int(
+        (codex_manager.research_controls() or {}).get("live_aggressiveness_level", 5)
+    )
+    tracker.set_runtime_context(runtime_context)
 
     telegram = TelegramBot(
         config,

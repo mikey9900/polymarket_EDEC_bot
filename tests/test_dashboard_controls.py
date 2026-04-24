@@ -18,6 +18,7 @@ class _FakeTracker:
     def __init__(self):
         self.reset_calls = 0
         self.open_paper_trades = []
+        self.runtime_context = {}
 
     def get_recent_signals_by_coin(self, max_age_s=30.0):
         return {}
@@ -30,6 +31,12 @@ class _FakeTracker:
 
     def get_paper_capital(self):
         return (100.0, 115.0)
+
+    def get_runtime_context(self):
+        return dict(self.runtime_context)
+
+    def set_runtime_context(self, context):
+        self.runtime_context = dict(context or {})
 
     def get_open_paper_trades(self):
         return list(self.open_paper_trades)
@@ -156,6 +163,8 @@ class _FakeCodexManager:
         self.schedule_enabled = True
         self.cadence = "weekly"
         self.skip_next = False
+        self.proposal_level = 5
+        self.live_level = 5
 
     def snapshot(self):
         return {
@@ -211,7 +220,31 @@ class _FakeCodexManager:
                     "candidate_id": "local-1",
                     "status": "ready",
                     "summary": "Daily local candidate ready.",
-                    "paths": {},
+                    "paths": {"report_json": "data/research/tuner_report.json"},
+                },
+                "daily_local_candidate_details": {
+                    "candidate_id": "local-1",
+                    "status": "ready",
+                    "summary": "2 config changes proposed from 48 closed trades.",
+                    "generated_at": "2026-04-22T12:15:00+00:00",
+                    "change_count": 2,
+                    "top_changes": ["single_leg.min_velocity_30s", "single_leg.entry_min"],
+                    "data": {"closed": 48, "win_pct": 54.2, "total_pnl": 3.15},
+                    "changes": [
+                        {
+                            "path": "single_leg.min_velocity_30s",
+                            "current": 0.12,
+                            "recommended": 0.15,
+                            "evidence": "Velocity buckets improved above 0.15.",
+                        }
+                    ],
+                    "advisories": ["depth_check is rejecting too many signals."],
+                    "no_change": ["single_leg.entry_max already fits the viable band."],
+                    "paths": {
+                        "report_json": "data/research/tuner_report.json",
+                        "report_md": "data/research/tuner_report.md",
+                        "patch": "data/research/tuner_active_patch.diff",
+                    },
                 },
                 "weekly_ai_candidate": {
                     "candidate_id": "weekly-1",
@@ -228,6 +261,12 @@ class _FakeCodexManager:
                     },
                 },
                 "primary_candidate_source": "weekly_ai",
+                "research_controls": {
+                    "proposal_aggressiveness_level": self.proposal_level,
+                    "live_aggressiveness_level": self.live_level,
+                    "updated_at": "2026-04-22T12:05:00+00:00",
+                    "updated_by": "dashboard",
+                },
             },
             "tuner": {
                 "running": False,
@@ -300,6 +339,16 @@ class _FakeCodexManager:
     def reset_runner_state(self):
         self.calls.append(("research_reset_runner",))
         return {"ok": True, "message": "Stopped 1 queued daily research job. Stale runner lock cleared."}
+
+    def set_proposal_aggressiveness(self, level, *, requested_by="dashboard"):
+        self.calls.append(("research_set_proposal_aggressiveness", requested_by, level))
+        self.proposal_level = int(level)
+        return {"ok": True, "level": self.proposal_level, "message": f"Proposal aggressiveness set to {self.proposal_level}."}
+
+    def set_live_aggressiveness(self, level, *, requested_by="dashboard"):
+        self.calls.append(("research_set_live_aggressiveness", requested_by, level))
+        self.live_level = int(level)
+        return {"ok": True, "level": self.live_level, "message": f"Live aggressiveness set to {self.live_level}."}
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args=None):
         self.calls.append(("tuner_run_now", requested_by, args))
@@ -390,6 +439,8 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["codex"]["latest_candidate"]["status"], "ready")
         self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 4)
+        self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 5)
+        self.assertEqual(snapshot["codex"]["daily_local_candidate_details"]["candidate_id"], "local-1")
         self.assertEqual(snapshot["research_runtime"]["reload_count"], 3)
         self.assertEqual(snapshot["research_runtime"]["cluster_count"], 12)
         self.assertEqual(snapshot["tuner"]["cadence"], "weekly")
@@ -401,6 +452,8 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(snapshot["controls"]["available_actions"]["research_run_now"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_runner"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_set_proposal_aggressiveness"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_set_live_aggressiveness"])
 
     async def test_apply_control_async_updates_mode_and_budget(self):
         service = self._build_service()
@@ -478,6 +531,24 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             session_result["state"]["controls"]["last_message"],
             session_result["message"],
         )
+
+    async def test_apply_control_async_updates_research_aggressiveness_and_candidate_target(self):
+        service = self._build_service(with_codex=True)
+
+        proposal_result = await service._apply_control_async("research_set_proposal_aggressiveness", 8)
+        live_result = await service._apply_control_async("research_set_live_aggressiveness", 7)
+        promote_result = await service._apply_control_async("tuner_promote_latest", {"candidate_id": "local-1"})
+        reject_result = await service._apply_control_async("tuner_reject_latest", {"candidate_id": "local-1", "reason": "Not convinced"})
+
+        self.assertTrue(proposal_result["ok"])
+        self.assertTrue(live_result["ok"])
+        self.assertEqual(service.tracker.get_runtime_context()["research_live_aggressiveness_level"], 7)
+        self.assertIn(("research_set_proposal_aggressiveness", "dashboard", 8), service.control_plane.codex_manager.calls)
+        self.assertIn(("research_set_live_aggressiveness", "dashboard", 7), service.control_plane.codex_manager.calls)
+        self.assertIn(("tuner_promote_latest", "dashboard", "local-1"), service.control_plane.codex_manager.calls)
+        self.assertIn(("tuner_reject_latest", "dashboard", "local-1", "Not convinced"), service.control_plane.codex_manager.calls)
+        self.assertTrue(promote_result["ok"])
+        self.assertTrue(reject_result["ok"])
 
     async def test_apply_control_async_reports_session_export_failure_reason(self):
         service = self._build_service(with_callbacks=True)

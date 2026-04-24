@@ -30,7 +30,10 @@ if [ -z "${WORKSPACE_PATH}" ]; then
   WORKSPACE_PATH="/share/polymarket_EDEC_bot"
 fi
 if [ -z "${CONFIG_PATH}" ]; then
-  CONFIG_PATH="edec_bot/config_phase_a_single.yaml"
+  CONFIG_PATH="/share/edec/config/active_config.yaml"
+fi
+if [ "${CONFIG_PATH}" = "edec_bot/config_phase_a_single.yaml" ] || [ "${CONFIG_PATH}" = "config_phase_a_single.yaml" ]; then
+  CONFIG_PATH="/share/edec/config/active_config.yaml"
 fi
 if [ -z "${POLL_SECONDS}" ]; then
   POLL_SECONDS="15"

@@ -19,6 +19,7 @@ import yaml
 
 from ._openai import require_openai
 from .paths import (
+    CONFIG_HISTORY_ROOT,
     CONFIG_CANDIDATES_ROOT,
     DEFAULT_CONFIG_PATH,
     DEFAULT_POLICY_PATH,
@@ -38,6 +39,7 @@ from .paths import (
     WEEKLY_REVIEW_BUNDLE_JSON_PATH,
     WEEKLY_REVIEW_BUNDLE_MD_PATH,
     discover_session_export_roots,
+    ensure_runtime_config,
     ensure_tuner_dirs,
     resolve_repo_path,
 )
@@ -159,7 +161,7 @@ def tuner_status(
     state = load_tuner_state(path)
     return {
         **state,
-        "config_path": str(resolve_repo_path(config_path)),
+        "config_path": str(ensure_runtime_config(config_path)),
     }
 
 
@@ -178,7 +180,7 @@ def propose_tuning(
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
-    config_path = resolve_repo_path(config_path)
+    config_path = ensure_runtime_config(config_path)
     report_json_path = resolve_repo_path(report_json_path)
     report_md_path = resolve_repo_path(report_md_path)
     patch_path = resolve_repo_path(patch_path)
@@ -374,7 +376,7 @@ def build_weekly_ai_context(
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
-    config_path = resolve_repo_path(config_path)
+    config_path = ensure_runtime_config(config_path)
     context_path = resolve_repo_path(context_path)
     state = load_tuner_state(tuner_state_path)
     current_config = _load_yaml(config_path)
@@ -443,7 +445,7 @@ def build_weekly_review_bundle(
         context_path=context_path,
     )
     now = _utcnow()
-    config_path = resolve_repo_path(config_path)
+    config_path = ensure_runtime_config(config_path)
     bundle_json_path = resolve_repo_path(bundle_json_path)
     bundle_md_path = resolve_repo_path(bundle_md_path)
     prompt_path = resolve_repo_path(prompt_path)
@@ -542,7 +544,7 @@ def propose_weekly_ai_tuning(
 ) -> dict[str, Any]:
     ensure_tuner_dirs()
     now = _utcnow()
-    config_path = resolve_repo_path(config_path)
+    config_path = ensure_runtime_config(config_path)
     report_json_path = resolve_repo_path(report_json_path)
     report_md_path = resolve_repo_path(report_md_path)
     prompt_bundle_path = resolve_repo_path(prompt_bundle_path)
@@ -739,9 +741,14 @@ def promote_tuning_candidate(
     if not candidate_path.exists():
         raise TuningError(f"Candidate config is missing: {candidate_path}")
 
-    config_path = resolve_repo_path(config_path)
-    config_path.write_text(candidate_path.read_text(encoding="utf-8"), encoding="utf-8")
+    config_path = ensure_runtime_config(config_path)
+    candidate_text = candidate_path.read_text(encoding="utf-8")
+    config_path.write_text(candidate_text, encoding="utf-8")
     config_hash = _config_hash(config_path)
+    history_root = resolve_repo_path(CONFIG_HISTORY_ROOT)
+    history_root.mkdir(parents=True, exist_ok=True)
+    history_path = history_root / f"{_utcnow().strftime('%Y%m%dT%H%M%SZ')}_{str(candidate.get('candidate_id') or 'promoted')}.yaml"
+    history_path.write_text(candidate_text, encoding="utf-8")
 
     now = _utcnow().isoformat()
     _set_candidate_record(
@@ -770,6 +777,7 @@ def promote_tuning_candidate(
         "candidate_source": source,
         "config_path": str(config_path),
         "config_hash": config_hash,
+        "history_config_path": str(history_path),
         "release_version_changed": False,
     }
 

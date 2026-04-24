@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 
@@ -35,7 +36,11 @@ WEEKLY_AI_PROMPT_BUNDLE_PATH = RESEARCH_ROOT / "weekly_ai_prompt_bundle.json"
 WEEKLY_AI_RESPONSE_PATH = RESEARCH_ROOT / "weekly_ai_response.json"
 WEEKLY_AI_PATCH_PATH = RESEARCH_ROOT / "weekly_ai_patch.diff"
 LOCAL_TRACKER_DB = SHARED_DATA_ROOT / "decisions.db"
-DEFAULT_CONFIG_PATH = REPO_ROOT / "edec_bot" / "config_phase_a_single.yaml"
+DEFAULT_CONFIG_TEMPLATE_PATH = REPO_ROOT / "edec_bot" / "config_phase_a_single.yaml"
+DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_TEMPLATE_PATH
+SHARED_CONFIG_ROOT = SHARED_DATA_ROOT / "config"
+SHARED_ACTIVE_CONFIG_PATH = SHARED_CONFIG_ROOT / "active_config.yaml"
+CONFIG_HISTORY_ROOT = SHARED_CONFIG_ROOT / "history"
 CONFIG_CANDIDATES_ROOT = REPO_ROOT / "edec_bot" / "config_candidates"
 CODEX_ROOT = SHARED_DATA_ROOT / "codex"
 CODEX_QUEUE_ROOT = CODEX_ROOT / "queue"
@@ -56,6 +61,30 @@ def resolve_repo_path(path_value: str | Path) -> Path:
     return REPO_ROOT / path
 
 
+def resolve_config_path(path_value: str | Path | None = None) -> Path:
+    raw_value = str(path_value or "").strip() or "config_phase_a_single.yaml"
+    path = Path(raw_value)
+    normalized = raw_value.replace("\\", "/").strip()
+    if path.is_absolute():
+        resolved = path
+    elif normalized in {"config_phase_a_single.yaml", "./config_phase_a_single.yaml"}:
+        resolved = DEFAULT_CONFIG_TEMPLATE_PATH
+    else:
+        resolved = resolve_repo_path(raw_value)
+    if _should_redirect_default_config_request(normalized=normalized, resolved=resolved):
+        return SHARED_ACTIVE_CONFIG_PATH
+    return resolved
+
+
+def ensure_runtime_config(path_value: str | Path | None = None) -> Path:
+    config_path = resolve_config_path(path_value)
+    if _paths_equal(config_path, SHARED_ACTIVE_CONFIG_PATH):
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if not config_path.exists():
+            shutil.copyfile(DEFAULT_CONFIG_TEMPLATE_PATH, config_path)
+    return config_path
+
+
 def ensure_research_dirs() -> None:
     for path in (SHARED_DATA_ROOT, RESEARCH_ROOT, PARQUET_ROOT):
         path.mkdir(parents=True, exist_ok=True)
@@ -67,7 +96,7 @@ def ensure_codex_dirs() -> None:
 
 
 def ensure_tuner_dirs() -> None:
-    for path in (SHARED_DATA_ROOT, RESEARCH_ROOT, CONFIG_CANDIDATES_ROOT):
+    for path in (SHARED_DATA_ROOT, RESEARCH_ROOT, SHARED_CONFIG_ROOT, CONFIG_HISTORY_ROOT, CONFIG_CANDIDATES_ROOT):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -104,3 +133,19 @@ def discover_session_export_files() -> list[Path]:
                 seen.add(resolved)
                 files.append(resolved)
     return files
+
+
+def _should_redirect_default_config_request(*, normalized: str, resolved: Path) -> bool:
+    if not _shared_config_redirection_enabled():
+        return False
+    if normalized in {"config_phase_a_single.yaml", "./config_phase_a_single.yaml", "edec_bot/config_phase_a_single.yaml"}:
+        return True
+    return _paths_equal(resolved, DEFAULT_CONFIG_TEMPLATE_PATH)
+
+
+def _shared_config_redirection_enabled() -> bool:
+    return not _paths_equal(SHARED_DATA_ROOT, DATA_ROOT)
+
+
+def _paths_equal(left: Path, right: Path) -> bool:
+    return left.resolve(strict=False) == right.resolve(strict=False)

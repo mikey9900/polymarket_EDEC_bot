@@ -145,6 +145,57 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
         self.assertEqual(resolved_data, shared_root / "research" / "runtime_policy.json")
         self.assertEqual(resolved_repo, repo_root / "edec_bot" / "version.py")
 
+    def test_ensure_runtime_config_seeds_shared_active_copy_for_default_config(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            repo_root = tmp_root / "repo"
+            data_root = repo_root / "data"
+            shared_root = tmp_root / "share" / "edec"
+            template_path = repo_root / "edec_bot" / "config_phase_a_single.yaml"
+            active_path = shared_root / "config" / "active_config.yaml"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text("execution:\n  dry_run: true\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(research_paths, "REPO_ROOT", repo_root),
+                mock.patch.object(research_paths, "DATA_ROOT", data_root),
+                mock.patch.object(research_paths, "SHARED_DATA_ROOT", shared_root),
+                mock.patch.object(research_paths, "DEFAULT_CONFIG_TEMPLATE_PATH", template_path),
+                mock.patch.object(research_paths, "DEFAULT_CONFIG_PATH", template_path),
+                mock.patch.object(research_paths, "SHARED_CONFIG_ROOT", shared_root / "config"),
+                mock.patch.object(research_paths, "SHARED_ACTIVE_CONFIG_PATH", active_path),
+            ):
+                resolved = research_paths.ensure_runtime_config("edec_bot/config_phase_a_single.yaml")
+                self.assertEqual(resolved, active_path)
+                self.assertTrue(active_path.exists())
+                self.assertEqual(active_path.read_text(encoding="utf-8"), template_path.read_text(encoding="utf-8"))
+
+    def test_ensure_runtime_config_preserves_existing_shared_active_copy(self):
+        with tempfile.TemporaryDirectory() as tmp_root_str:
+            tmp_root = Path(tmp_root_str)
+            repo_root = tmp_root / "repo"
+            data_root = repo_root / "data"
+            shared_root = tmp_root / "share" / "edec"
+            template_path = repo_root / "edec_bot" / "config_phase_a_single.yaml"
+            active_path = shared_root / "config" / "active_config.yaml"
+            template_path.parent.mkdir(parents=True, exist_ok=True)
+            active_path.parent.mkdir(parents=True, exist_ok=True)
+            template_path.write_text("execution:\n  dry_run: true\n", encoding="utf-8")
+            active_path.write_text("execution:\n  dry_run: false\n", encoding="utf-8")
+
+            with (
+                mock.patch.object(research_paths, "REPO_ROOT", repo_root),
+                mock.patch.object(research_paths, "DATA_ROOT", data_root),
+                mock.patch.object(research_paths, "SHARED_DATA_ROOT", shared_root),
+                mock.patch.object(research_paths, "DEFAULT_CONFIG_TEMPLATE_PATH", template_path),
+                mock.patch.object(research_paths, "DEFAULT_CONFIG_PATH", template_path),
+                mock.patch.object(research_paths, "SHARED_CONFIG_ROOT", shared_root / "config"),
+                mock.patch.object(research_paths, "SHARED_ACTIVE_CONFIG_PATH", active_path),
+            ):
+                resolved = research_paths.ensure_runtime_config("config_phase_a_single.yaml")
+                self.assertEqual(resolved, active_path)
+                self.assertEqual(active_path.read_text(encoding="utf-8"), "execution:\n  dry_run: false\n")
+
     def test_sync_recent_main_passes_http_retry_flags(self):
         fake_warehouse = mock.MagicMock()
         fake_source = mock.MagicMock()

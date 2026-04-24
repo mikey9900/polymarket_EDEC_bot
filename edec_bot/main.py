@@ -40,7 +40,7 @@ from bot.strategy import StrategyEngine
 from bot.telegram_bot import TelegramBot
 from bot.tracker import DecisionTracker
 from research.codex_automation import CodexAutomationManager
-from research.paths import LOCAL_TRACKER_DB
+from research.paths import LOCAL_TRACKER_DB, ensure_runtime_config
 from research.runtime import ResearchSnapshotProvider
 
 _dashboard_api_import_error = None
@@ -119,8 +119,8 @@ def setup_logging(config) -> None:
 
 
 async def main():
-    config_path = os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml")
-    config = load_config(config_path)
+    config_path = ensure_runtime_config(os.getenv("EDEC_CONFIG_PATH", "config_phase_a_single.yaml"))
+    config = load_config(str(config_path))
     setup_logging(config)
 
     loop = asyncio.get_running_loop()
@@ -130,7 +130,7 @@ async def main():
 
     started_at = datetime.now(timezone.utc).isoformat()
     strategy_version = _strategy_version()
-    config_hash = _config_hash(config_path)
+    config_hash = _config_hash(str(config_path))
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + f"-{config_hash}"
 
     logger.info("Using config: %s", config_path)

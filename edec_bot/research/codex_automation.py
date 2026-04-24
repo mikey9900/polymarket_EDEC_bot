@@ -25,6 +25,7 @@ from .paths import (
     LOCAL_TRACKER_DB,
     SHARED_DATA_ROOT,
     WAREHOUSE_PATH,
+    ensure_runtime_config,
     ensure_codex_dirs,
     resolve_repo_path,
 )
@@ -92,7 +93,7 @@ class CodexAutomationManager:
         self.queue_root = resolve_repo_path(queue_root)
         self.runs_root = resolve_repo_path(runs_root)
         self.lock_path = resolve_repo_path(lock_path)
-        self.config_path = resolve_repo_path(config_path)
+        self.config_path = ensure_runtime_config(config_path)
         self.tuner_state_path = resolve_repo_path(tuner_state_path) if tuner_state_path is not None else None
         ensure_codex_dirs()
         for path in (self.state_path.parent, self.queue_root, self.runs_root, self.lock_path.parent, self.latest_path.parent):

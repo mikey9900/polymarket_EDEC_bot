@@ -14,6 +14,8 @@ from typing import Any, Callable, Iterator
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from bot.archive import _github_push_file
+
 from .artifacts import build_artifacts
 from .paths import (
     CODEX_LATEST_PATH,
@@ -22,9 +24,20 @@ from .paths import (
     CODEX_RUNS_ROOT,
     CODEX_STATE_PATH,
     DEFAULT_CONFIG_PATH,
+    DEFAULT_POLICY_PATH,
+    DEFAULT_REPORT_JSON_PATH,
+    DEFAULT_REPORT_MD_PATH,
     LOCAL_TRACKER_DB,
     SHARED_DATA_ROOT,
+    TUNER_ACTIVE_PATCH_PATH,
+    TUNER_REPORT_JSON_PATH,
+    TUNER_REPORT_MD_PATH,
+    TUNER_STATE_PATH,
     WAREHOUSE_PATH,
+    WEEKLY_AI_CONTEXT_PATH,
+    WEEKLY_DESKTOP_PROMPT_PATH,
+    WEEKLY_REVIEW_BUNDLE_JSON_PATH,
+    WEEKLY_REVIEW_BUNDLE_MD_PATH,
     ensure_runtime_config,
     ensure_codex_dirs,
     resolve_repo_path,
@@ -139,16 +152,17 @@ class CodexAutomationManager:
                 "queue_depth": self.queue_depth(),
                 "active_run": active_run,
                 "last_run": last_run,
-                "next_queued_job": next_queued_job,
-                "daily_research_metrics": daily_research_metrics,
-                "latest_candidate": latest_candidate,
-                "daily_local_candidate": daily_local_candidate,
-                "daily_local_candidate_details": daily_local_candidate_details,
-                "weekly_ai_candidate": weekly_ai_candidate,
-                "weekly_review_bundle": weekly_review_bundle,
-                "primary_candidate_source": state.get("primary_candidate_source", "none"),
-                "research_controls": research_controls,
-            },
+            "next_queued_job": next_queued_job,
+            "daily_research_metrics": daily_research_metrics,
+            "latest_candidate": latest_candidate,
+            "daily_local_candidate": daily_local_candidate,
+            "daily_local_candidate_details": daily_local_candidate_details,
+            "weekly_ai_candidate": weekly_ai_candidate,
+            "weekly_review_bundle": weekly_review_bundle,
+            "primary_candidate_source": state.get("primary_candidate_source", "none"),
+            "research_controls": research_controls,
+            "github_mirror": dict(state.get("github_mirror") or {}),
+        },
             "tuner": {
                 "running": bool(active_run and active_run.get("job_type") == "tuning_proposal"),
                 "schedule_enabled": bool(tuner_schedule.get("schedule_enabled", True)),
@@ -441,7 +455,6 @@ class CodexAutomationManager:
             "ok": ok,
             "result": result,
         }
-        (run_dir / "result.json").write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
         try:
             job_path.unlink()
         except FileNotFoundError:
@@ -475,6 +488,19 @@ class CodexAutomationManager:
             }
             self.latest_path.write_text(json.dumps(latest_payload, indent=2, sort_keys=True), encoding="utf-8")
         self._sync_tuner_state(state)
+        mirror_result = self._mirror_research_latest(
+            job_type=job["job_type"],
+            run_dir=run_dir,
+            result_payload=result_payload,
+            state=state,
+        )
+        if mirror_result:
+            result_payload["github_mirror"] = mirror_result
+            state["github_mirror"] = dict(mirror_result)
+            summary = str(mirror_result.get("summary") or "").strip()
+            if summary:
+                self._log_runner_event(summary)
+        (run_dir / "result.json").write_text(json.dumps(result_payload, indent=2, sort_keys=True), encoding="utf-8")
         state["runner"]["queue_depth"] = self.queue_depth()
         self.save_state(state)
         self._log_runner_event(state["last_run"]["summary"])
@@ -908,6 +934,20 @@ class CodexAutomationManager:
                 "updated_at": None,
                 "updated_by": None,
             },
+            "github_mirror": {
+                "enabled": False,
+                "status": "disabled",
+                "summary": "",
+                "repo": "",
+                "branch": "",
+                "path": "",
+                "last_attempt_at": None,
+                "last_job_type": None,
+                "last_run_id": None,
+                "pushed_count": 0,
+                "failed_count": 0,
+                "skipped_missing_count": 0,
+            },
             "schedules": {
                 "daily_research_refresh": {
                     **SCHEDULE_DEFAULTS["daily_research_refresh"],
@@ -988,6 +1028,178 @@ class CodexAutomationManager:
             raise TuningError(f"No ready tuning candidate matches {candidate_id}.")
         if str(tuner_state.get("latest_candidate_status") or "none").lower() != "ready":
             raise TuningError("No ready tuning candidate is available.")
+
+    def _mirror_research_latest(
+        self,
+        *,
+        job_type: str,
+        run_dir: Path,
+        result_payload: dict[str, Any],
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
+        if job_type not in {"daily_research_refresh", "tuning_proposal", "promote_candidate", "reject_candidate"}:
+            return {}
+        settings = self._github_mirror_settings()
+        if settings is None:
+            return {
+                "enabled": False,
+                "status": "disabled",
+                "summary": "GitHub research mirror disabled.",
+                "repo": "",
+                "branch": "",
+                "path": "",
+                "last_attempt_at": self._utcnow().isoformat(),
+                "last_job_type": job_type,
+                "last_run_id": result_payload.get("run_id"),
+                "pushed_count": 0,
+                "failed_count": 0,
+                "skipped_missing_count": 0,
+                "files": [],
+                "failures": [],
+            }
+
+        entries = self._github_mirror_entries(
+            settings=settings,
+            run_dir=run_dir,
+            result_payload=result_payload,
+            state=state,
+        )
+        pushed: list[str] = []
+        failures: list[dict[str, Any]] = []
+        skipped_missing: list[str] = []
+        for local_path, repo_path in entries:
+            if not local_path.exists():
+                skipped_missing.append(repo_path)
+                continue
+            push_result = _github_push_file(
+                str(local_path),
+                repo_path,
+                settings["token"],
+                settings["repo"],
+                github_branch=settings["branch"],
+                commit_message=f"Mirror research latest: {job_type} {result_payload.get('run_id', '')}".strip(),
+            )
+            if push_result.get("ok"):
+                pushed.append(repo_path)
+            else:
+                failures.append(
+                    {
+                        "path": repo_path,
+                        "error": str(push_result.get("error") or "unknown error"),
+                        "status": push_result.get("status"),
+                    }
+                )
+
+        if pushed and not failures:
+            status = "ready"
+            summary = f"GitHub research mirror updated {len(pushed)} file(s)."
+        elif pushed and failures:
+            status = "warning"
+            summary = f"GitHub research mirror updated {len(pushed)} file(s); {len(failures)} failed."
+        elif failures:
+            status = "failed"
+            summary = f"GitHub research mirror failed for {len(failures)} file(s)."
+        else:
+            status = "no_files"
+            summary = "GitHub research mirror found no files to publish."
+
+        return {
+            "enabled": True,
+            "status": status,
+            "summary": summary,
+            "repo": settings["repo"],
+            "branch": settings["branch"],
+            "path": settings["path"],
+            "last_attempt_at": self._utcnow().isoformat(),
+            "last_job_type": job_type,
+            "last_run_id": result_payload.get("run_id"),
+            "pushed_count": len(pushed),
+            "failed_count": len(failures),
+            "skipped_missing_count": len(skipped_missing),
+            "files": pushed,
+            "failures": failures[:10],
+        }
+
+    def _github_mirror_settings(self) -> dict[str, str] | None:
+        token = str(os.getenv("EDEC_GITHUB_TOKEN", "")).strip()
+        repo = str(os.getenv("EDEC_GITHUB_REPO", "")).strip()
+        if not token or not repo:
+            return None
+        branch = str(os.getenv("EDEC_GITHUB_BRANCH", "")).strip() or "main"
+        path = str(os.getenv("EDEC_GITHUB_RESEARCH_PATH", "")).strip().strip("/") or "research_exports"
+        return {
+            "token": token,
+            "repo": repo,
+            "branch": branch,
+            "path": path,
+        }
+
+    def _github_mirror_entries(
+        self,
+        *,
+        settings: dict[str, str],
+        run_dir: Path,
+        result_payload: dict[str, Any],
+        state: dict[str, Any],
+    ) -> list[tuple[Path, str]]:
+        latest_root = f"{settings['path']}/latest"
+        manifest_path = run_dir / "github_research_manifest.json"
+        manifest_payload = {
+            "generated_at": self._utcnow().isoformat(),
+            "job_type": result_payload.get("job_type"),
+            "run_id": result_payload.get("run_id"),
+            "finished_at": result_payload.get("finished_at"),
+            "ok": bool(result_payload.get("ok", False)),
+            "last_run": dict(state.get("last_run") or {}),
+            "latest_candidate": dict(state.get("latest_candidate") or {}),
+            "daily_local_candidate": dict(state.get("daily_local_candidate") or {}),
+            "weekly_review_bundle": dict(state.get("weekly_review_bundle") or {}),
+            "primary_candidate_source": state.get("primary_candidate_source", "none"),
+            "research_controls": dict(state.get("research_controls") or {}),
+            "config_path": str(self.config_path),
+        }
+        manifest_path.write_text(json.dumps(manifest_payload, indent=2, sort_keys=True), encoding="utf-8")
+
+        entries: list[tuple[Path, str]] = []
+        seen_destinations: set[str] = set()
+
+        def add(local_path_value: str | Path | None, repo_suffix: str) -> None:
+            if not local_path_value:
+                return
+            local_path = resolve_repo_path(local_path_value)
+            repo_path = f"{latest_root}/{repo_suffix}".replace("\\", "/")
+            if repo_path in seen_destinations:
+                return
+            seen_destinations.add(repo_path)
+            entries.append((local_path, repo_path))
+
+        add(self.config_path, "config/active_config.yaml")
+        add(DEFAULT_POLICY_PATH, "research/runtime_policy.json")
+        add(DEFAULT_REPORT_JSON_PATH, "research/research_report.json")
+        add(DEFAULT_REPORT_MD_PATH, "research/research_report.md")
+        add(TUNER_STATE_PATH, "research/tuner_state.json")
+        add(TUNER_REPORT_JSON_PATH, "research/tuner_report.json")
+        add(TUNER_REPORT_MD_PATH, "research/tuner_report.md")
+        add(TUNER_ACTIVE_PATCH_PATH, "research/tuner_active_patch.diff")
+        add(WEEKLY_AI_CONTEXT_PATH, "research/weekly_ai_context.json")
+        add(WEEKLY_REVIEW_BUNDLE_JSON_PATH, "research/weekly_review_bundle.json")
+        add(WEEKLY_REVIEW_BUNDLE_MD_PATH, "research/weekly_review_bundle.md")
+        add(WEEKLY_DESKTOP_PROMPT_PATH, "research/weekly_desktop_prompt.txt")
+        add(manifest_path, "manifest.json")
+
+        for candidate_key in ("daily_local_candidate", "weekly_ai_candidate"):
+            candidate = dict(state.get(candidate_key) or {})
+            paths = dict(candidate.get("paths") or {})
+            candidate_path = paths.get("candidate_config")
+            patch_path = paths.get("patch")
+            if candidate_path:
+                source_name = "daily_local" if candidate_key == "daily_local_candidate" else "weekly_ai"
+                add(candidate_path, f"candidates/{source_name}_{Path(candidate_path).name}")
+            if patch_path:
+                source_name = "daily_local" if candidate_key == "daily_local_candidate" else "weekly_ai"
+                add(patch_path, f"candidates/{source_name}_{Path(patch_path).name}")
+
+        return entries
 
     def _compute_next_run(self, job_type: str, now: datetime) -> datetime:
         tz = self._local_timezone()

@@ -25,6 +25,10 @@ CONFIG_PATH="$(read_option config_path)"
 POLL_SECONDS="$(read_option poll_seconds)"
 TIMEZONE_NAME="$(read_option timezone)"
 CODEX_HOME_VALUE="$(read_option codex_home)"
+GITHUB_TOKEN="$(read_option github_token)"
+GITHUB_REPO="$(read_option github_repo)"
+GITHUB_BRANCH="$(read_option github_branch)"
+GITHUB_RESEARCH_PATH="$(read_option github_research_path)"
 
 if [ -z "${WORKSPACE_PATH}" ]; then
   WORKSPACE_PATH="/share/polymarket_EDEC_bot"
@@ -43,6 +47,12 @@ if [ -z "${TIMEZONE_NAME}" ]; then
 fi
 if [ -z "${CODEX_HOME_VALUE}" ]; then
   CODEX_HOME_VALUE="/data/codex"
+fi
+if [ -z "${GITHUB_BRANCH}" ]; then
+  GITHUB_BRANCH="main"
+fi
+if [ -z "${GITHUB_RESEARCH_PATH}" ]; then
+  GITHUB_RESEARCH_PATH="research_exports"
 fi
 
 if [ ! -d "${WORKSPACE_PATH}" ]; then
@@ -65,6 +75,10 @@ export EDEC_SHARED_DATA_ROOT="/share/edec"
 export EDEC_LOCAL_TIMEZONE="${TIMEZONE_NAME}"
 export CODEX_HOME="${CODEX_HOME_VALUE}"
 export EDEC_CONFIG_PATH="${CONFIG_PATH}"
+export EDEC_GITHUB_TOKEN="${GITHUB_TOKEN}"
+export EDEC_GITHUB_REPO="${GITHUB_REPO}"
+export EDEC_GITHUB_BRANCH="${GITHUB_BRANCH}"
+export EDEC_GITHUB_RESEARCH_PATH="${GITHUB_RESEARCH_PATH}"
 
 CURRENT_REQ_HASH="$(python - "${REQ_FILE}" <<'PY'
 import hashlib

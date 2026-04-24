@@ -13,10 +13,15 @@ This repo now contains two Home Assistant add-ons:
 4. Install `EDEC Codex Runner`.
 5. Configure `EDEC Codex Runner`:
    - `workspace_path`: `/share/polymarket_EDEC_bot`
-   - `config_path`: `edec_bot/config_phase_a_single.yaml`
+   - `config_path`: `/share/edec/config/active_config.yaml`
    - `poll_seconds`: `15`
    - `timezone`: your local timezone
    - `codex_home`: `/data/codex`
+   - optional GitHub mirroring:
+     - `github_token`: a GitHub token with repo contents write access
+     - `github_repo`: a data repo such as `owner/edec-research-data`
+     - `github_branch`: usually `main`
+     - `github_research_path`: folder root like `research_exports`
 6. Start `EDEC Codex Runner`.
 7. Verify `/share/edec/codex/state.json` appears.
 8. Start `EDEC Polymarket Bot`.
@@ -42,3 +47,4 @@ This repo now contains two Home Assistant add-ons:
 - Daily tuning proposals are deterministic repo code.
 - Weekly runs prepare a compact desktop review bundle instead of calling an API from HA.
 - Promotion remains manual.
+- If GitHub mirroring is configured on the runner, it publishes the latest research bundle and active config without touching the code repo checkout.

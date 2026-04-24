@@ -359,6 +359,159 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["result"]["status"], "ready")
 
+    def test_tuning_proposal_job_stays_successful_when_github_mirror_fails(self):
+        self.manager.enqueue_tuning_proposal(requested_by="test")
+
+        with (
+            mock.patch(
+                "research.codex_automation.build_weekly_review_bundle",
+                return_value={"ok": True, "status": "ready", "bundle_md_path": "data/research/weekly_review_bundle.md"},
+            ),
+            mock.patch(
+                "research.codex_automation.CodexAutomationManager._mirror_research_latest",
+                return_value={"enabled": True, "status": "failed", "summary": "GitHub mirror failed."},
+            ),
+        ):
+            result = self.manager.run_once()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["result"]["status"], "ready")
+        self.assertEqual(result["github_mirror"]["status"], "failed")
+
+    def test_github_mirror_publishes_latest_research_bundle(self):
+        research_report_json = self.tmpdir / "research_report.json"
+        research_report_md = self.tmpdir / "research_report.md"
+        runtime_policy = self.tmpdir / "runtime_policy.json"
+        tuner_report_json = self.tmpdir / "tuner_report.json"
+        tuner_report_md = self.tmpdir / "tuner_report.md"
+        tuner_patch = self.tmpdir / "tuner_active_patch.diff"
+        weekly_context = self.tmpdir / "weekly_ai_context.json"
+        weekly_bundle_json = self.tmpdir / "weekly_review_bundle.json"
+        weekly_bundle_md = self.tmpdir / "weekly_review_bundle.md"
+        weekly_prompt = self.tmpdir / "weekly_desktop_prompt.txt"
+        candidate_config = self.tmpdir / "candidate.yaml"
+
+        for path in (
+            research_report_json,
+            research_report_md,
+            runtime_policy,
+            tuner_report_json,
+            tuner_report_md,
+            tuner_patch,
+            weekly_context,
+            weekly_bundle_json,
+            weekly_bundle_md,
+            weekly_prompt,
+            candidate_config,
+        ):
+            path.write_text(f"artifact:{path.name}", encoding="utf-8")
+
+        self.manager.tuner_state_path.write_text(
+            json.dumps(
+                {
+                    "daily_local_candidate": {
+                        "candidate_id": "daily-1",
+                        "status": "ready",
+                        "summary": "Daily candidate ready.",
+                        "paths": {
+                            "report_json": str(tuner_report_json),
+                            "report_md": str(tuner_report_md),
+                            "patch": str(tuner_patch),
+                            "candidate_config": str(candidate_config),
+                        },
+                        "generated_at": "2026-04-24T12:18:27+00:00",
+                        "last_result": "ready",
+                    },
+                    "weekly_review_bundle": {
+                        "generated_at": "2026-04-24T12:30:00+00:00",
+                        "status": "ready",
+                        "summary": "Weekly review bundle ready.",
+                        "paths": {
+                            "bundle_json": str(weekly_bundle_json),
+                            "bundle_md": str(weekly_bundle_md),
+                            "context_json": str(weekly_context),
+                            "desktop_prompt": str(weekly_prompt),
+                        },
+                        "last_result": "ready",
+                    },
+                    "latest_candidate_id": "daily-1",
+                    "latest_candidate_status": "ready",
+                    "latest_candidate_summary": "Daily candidate ready.",
+                    "latest_candidate_paths": {
+                        "report_json": str(tuner_report_json),
+                        "report_md": str(tuner_report_md),
+                        "patch": str(tuner_patch),
+                        "candidate_config": str(candidate_config),
+                    },
+                    "latest_candidate_source": "daily_local",
+                    "primary_candidate_source": "daily_local",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        state = self.manager.read_state()
+        run_dir = self.tmpdir / "runs" / "run-1"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        pushed_paths: list[str] = []
+
+        def fake_push(local_path, repo_path, github_token, github_repo, github_branch="main", commit_message=None):
+            pushed_paths.append(repo_path)
+            if repo_path.endswith("weekly_review_bundle.json"):
+                return {"ok": False, "path": repo_path, "error": "nope", "status": 500}
+            return {"ok": True, "path": repo_path, "sha": "abc123"}
+
+        with (
+            mock.patch.dict(
+                "os.environ",
+                {
+                    "EDEC_GITHUB_TOKEN": "gh-token",
+                    "EDEC_GITHUB_REPO": "owner/data-repo",
+                    "EDEC_GITHUB_BRANCH": "main",
+                    "EDEC_GITHUB_RESEARCH_PATH": "research_exports",
+                },
+                clear=False,
+            ),
+            mock.patch.multiple(
+                "research.codex_automation",
+                DEFAULT_POLICY_PATH=runtime_policy,
+                DEFAULT_REPORT_JSON_PATH=research_report_json,
+                DEFAULT_REPORT_MD_PATH=research_report_md,
+                TUNER_STATE_PATH=self.manager.tuner_state_path,
+                TUNER_REPORT_JSON_PATH=tuner_report_json,
+                TUNER_REPORT_MD_PATH=tuner_report_md,
+                TUNER_ACTIVE_PATCH_PATH=tuner_patch,
+                WEEKLY_AI_CONTEXT_PATH=weekly_context,
+                WEEKLY_REVIEW_BUNDLE_JSON_PATH=weekly_bundle_json,
+                WEEKLY_REVIEW_BUNDLE_MD_PATH=weekly_bundle_md,
+                WEEKLY_DESKTOP_PROMPT_PATH=weekly_prompt,
+            ),
+            mock.patch("research.codex_automation._github_push_file", side_effect=fake_push),
+        ):
+            result = self.manager._mirror_research_latest(
+                job_type="daily_research_refresh",
+                run_dir=run_dir,
+                result_payload={
+                    "run_id": "run-1",
+                    "job_type": "daily_research_refresh",
+                    "finished_at": "2026-04-24T12:40:00+00:00",
+                    "ok": True,
+                },
+                state=state,
+            )
+
+        self.assertTrue(result["enabled"])
+        self.assertEqual(result["status"], "warning")
+        self.assertEqual(result["repo"], "owner/data-repo")
+        self.assertEqual(result["branch"], "main")
+        self.assertIn("research_exports/latest/config/active_config.yaml", pushed_paths)
+        self.assertIn("research_exports/latest/research/tuner_report.json", pushed_paths)
+        self.assertIn("research_exports/latest/research/weekly_review_bundle.json", pushed_paths)
+        self.assertTrue(any(path.endswith("manifest.json") for path in pushed_paths))
+        self.assertEqual(result["failed_count"], 1)
+        self.assertEqual(result["pushed_count"], len(pushed_paths) - 1)
+
     def test_daily_refresh_runner_defaults_to_recent_only_scan(self):
         fake_warehouse = mock.MagicMock()
         fake_market_source = mock.MagicMock()

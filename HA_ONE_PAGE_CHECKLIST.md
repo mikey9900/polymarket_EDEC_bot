@@ -22,10 +22,15 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 - [ ] Install `EDEC Codex Runner`
 - [ ] Set options:
   - [ ] `workspace_path=/share/polymarket_EDEC_bot`
-  - [ ] `config_path=edec_bot/config_phase_a_single.yaml`
+  - [ ] `config_path=/share/edec/config/active_config.yaml`
   - [ ] `poll_seconds=15`
   - [ ] `timezone=America/Edmonton` or your local timezone
   - [ ] `codex_home=/data/codex`
+  - [ ] Optional mirroring:
+    - [ ] `github_token=<token>`
+    - [ ] `github_repo=<owner/repo>`
+    - [ ] `github_branch=main`
+    - [ ] `github_research_path=research_exports`
 - [ ] Start the add-on
 - [ ] Confirm the add-on stays healthy after first boot
 
@@ -48,12 +53,12 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 - [ ] `RUN NOW` under `TUNER` queues a weekly desktop review bundle
 - [ ] `PAUSE` and `RESUME` change weekly tuning state
 - [ ] `WEEKLY` and `MANUAL` change cadence
-- [ ] `SKIP NEXT` sets the next weekly run to skip
-- [ ] `PROMOTE` only works when a candidate is ready
-- [ ] `REJECT` marks the latest candidate rejected
+- [ ] `VIEW CHANGES` opens the daily local candidate popup
+- [ ] Candidate `PROMOTE` / `REJECT` actions work from that popup
 
 ## Final Success Check
 
 - [ ] Daily research runs appear under `/share/edec/codex/runs/`
 - [ ] Weekly review bundles write compact bundle artifacts for desktop Codex review
 - [ ] The dashboard shows live `codex` queue depth and tuner status
+- [ ] Optional GitHub mirror writes a latest research bundle for remote review

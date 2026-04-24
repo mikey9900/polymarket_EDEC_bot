@@ -1,6 +1,6 @@
 {
   "name": "EDEC Codex Runner",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "slug": "edec_codex_runner",
   "description": "HA-local Codex sidecar for EDEC research refresh and tuning workflow jobs",
   "url": "https://github.com/mikey9900/polymarket_EDEC_bot",
@@ -19,14 +19,22 @@
     "config_path": "/share/edec/config/active_config.yaml",
     "poll_seconds": 15,
     "timezone": "America/Edmonton",
-    "codex_home": "/data/codex"
+    "codex_home": "/data/codex",
+    "github_token": "",
+    "github_repo": "",
+    "github_branch": "main",
+    "github_research_path": "research_exports"
   },
   "schema": {
     "workspace_path": "str",
     "config_path": "str",
     "poll_seconds": "float(1,300)",
     "timezone": "str",
-    "codex_home": "str"
+    "codex_home": "str",
+    "github_token": "password",
+    "github_repo": "str",
+    "github_branch": "str",
+    "github_research_path": "str"
   },
   "map": [
     "config:rw",

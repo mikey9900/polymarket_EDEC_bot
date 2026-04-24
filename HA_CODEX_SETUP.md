@@ -19,7 +19,7 @@ This repo now contains two Home Assistant add-ons:
    - `codex_home`: `/data/codex`
    - optional GitHub mirroring:
      - `github_token`: a GitHub token with repo contents write access
-     - `github_repo`: a data repo such as `owner/edec-research-data`
+     - `github_repo`: reuse your existing data repo, for example `mikey9900/edec-bot-data`
      - `github_branch`: usually `main`
      - `github_research_path`: folder root like `research_exports`
 6. Start `EDEC Codex Runner`.
@@ -48,3 +48,16 @@ This repo now contains two Home Assistant add-ons:
 - Weekly runs prepare a compact desktop review bundle instead of calling an API from HA.
 - Promotion remains manual.
 - If GitHub mirroring is configured on the runner, it publishes the latest research bundle and active config without touching the code repo checkout.
+
+## Recommended data-repo layout
+
+Use the same data repo for both session exports and research mirrors, but keep them in separate folders:
+
+- Bot add-on:
+  - `github_repo`: `mikey9900/edec-bot-data`
+  - `github_export_path`: `session_exports`
+- Codex Runner add-on:
+  - `github_repo`: `mikey9900/edec-bot-data`
+  - `github_research_path`: `research_exports`
+
+That gives you one data repo with clean separation between raw session exports and the latest research/tuning artifacts.

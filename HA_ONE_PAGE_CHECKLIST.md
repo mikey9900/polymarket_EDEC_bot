@@ -28,7 +28,7 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
   - [ ] `codex_home=/data/codex`
   - [ ] Optional mirroring:
     - [ ] `github_token=<token>`
-    - [ ] `github_repo=<owner/repo>`
+    - [ ] `github_repo=mikey9900/edec-bot-data`
     - [ ] `github_branch=main`
     - [ ] `github_research_path=research_exports`
 - [ ] Start the add-on
@@ -44,6 +44,9 @@ Use this when installing the bot and Codex runner on Home Assistant OS.
 
 - [ ] Install or update `EDEC Polymarket Bot`
 - [ ] Enter the normal bot secrets and GitHub/archive settings
+  - [ ] Recommended GitHub export target:
+    - [ ] `github_repo=mikey9900/edec-bot-data`
+    - [ ] `github_export_path=session_exports`
 - [ ] Start the bot add-on
 - [ ] Open the dashboard
 

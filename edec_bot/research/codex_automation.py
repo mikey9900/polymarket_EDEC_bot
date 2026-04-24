@@ -14,7 +14,10 @@ from typing import Any, Callable, Iterator
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from bot.archive import _github_push_file
+try:  # Support both package execution on HA and local test imports.
+    from ..bot.archive import _github_push_file
+except ImportError:  # pragma: no cover - compatibility for legacy test/module paths.
+    from bot.archive import _github_push_file
 
 from .artifacts import build_artifacts
 from .paths import (

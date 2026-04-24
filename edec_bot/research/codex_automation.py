@@ -1172,10 +1172,16 @@ class CodexAutomationManager:
             summary = f"GitHub research mirror updated {len(pushed)} file(s)."
         elif pushed and failures:
             status = "warning"
-            summary = f"GitHub research mirror updated {len(pushed)} file(s); {len(failures)} failed."
+            summary = (
+                f"GitHub research mirror updated {len(pushed)} file(s); "
+                f"{len(failures)} failed. First failure: {self._format_github_failure(failures[0])}."
+            )
         elif failures:
             status = "failed"
-            summary = f"GitHub research mirror failed for {len(failures)} file(s)."
+            summary = (
+                f"GitHub research mirror failed for {len(failures)} file(s). "
+                f"First failure: {self._format_github_failure(failures[0])}."
+            )
         else:
             status = "no_files"
             summary = "GitHub research mirror found no files to publish."
@@ -1196,6 +1202,21 @@ class CodexAutomationManager:
             "files": pushed,
             "failures": failures[:10],
         }
+
+    def _format_github_failure(self, failure: dict[str, Any]) -> str:
+        path = str(failure.get("path") or "").strip()
+        status = failure.get("status")
+        raw_error = str(failure.get("error") or "unknown error").strip()
+        compact = " ".join(raw_error.split())
+        if len(compact) > 180:
+            compact = compact[:177].rstrip() + "..."
+        if status not in (None, ""):
+            if path:
+                return f"{path} [{status}] {compact}"
+            return f"[{status}] {compact}"
+        if path:
+            return f"{path} {compact}"
+        return compact
 
     def _github_mirror_settings(self) -> dict[str, str] | None:
         token = str(os.getenv("EDEC_GITHUB_TOKEN", "")).strip()

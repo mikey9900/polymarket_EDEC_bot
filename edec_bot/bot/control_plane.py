@@ -300,7 +300,20 @@ class ControlPlane:
             key for key, payload in github_pushes.items() if isinstance(payload, dict) and not bool(payload.get("ok"))
         ]
         if github_failures:
-            warning_parts.append(f"GitHub push issues for {len(github_failures)} file(s).")
+            first_key = github_failures[0]
+            first_payload = github_pushes.get(first_key) or {}
+            first_status = first_payload.get("status")
+            first_error = " ".join(str(first_payload.get("error") or "unknown error").split())
+            if len(first_error) > 140:
+                first_error = first_error[:137].rstrip() + "..."
+            failure_detail = (
+                f"{first_key} [{first_status}] {first_error}"
+                if first_status not in (None, "")
+                else f"{first_key} {first_error}"
+            )
+            warning_parts.append(
+                f"GitHub push issues for {len(github_failures)} file(s). First failure: {failure_detail}."
+            )
         message = (
             f"Session export ready: {int(result.get('trade_count', 0))} trades, "
             f"{int(result.get('signal_count', 0))} signals, "

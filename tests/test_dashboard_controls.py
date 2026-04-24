@@ -532,6 +532,24 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
             session_result["message"],
         )
 
+    async def test_apply_control_async_reports_first_github_session_export_failure(self):
+        service = self._build_service(with_callbacks=True)
+        service.control_plane.session_export_fn = lambda: {
+            "trade_count": 7,
+            "signal_count": 14,
+            "session_dir": "data/exports/2026-04-19_170000_EDEC-BOT_session_export",
+            "github_pushes": {
+                "excel": {"ok": False, "status": 401, "error": "bad credentials"},
+                "signals": {"ok": False, "status": 401, "error": "bad credentials"},
+            },
+        }
+
+        session_result = await service._apply_control_async("session_export")
+
+        self.assertTrue(session_result["ok"])
+        self.assertIn("GitHub push issues for 2 file(s).", session_result["message"])
+        self.assertIn("excel [401] bad credentials", session_result["message"])
+
     async def test_apply_control_async_updates_research_aggressiveness_and_candidate_target(self):
         service = self._build_service(with_codex=True)
 

@@ -511,6 +511,8 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertTrue(any(path.endswith("manifest.json") for path in pushed_paths))
         self.assertEqual(result["failed_count"], 1)
         self.assertEqual(result["pushed_count"], len(pushed_paths) - 1)
+        self.assertIn("weekly_review_bundle.json", result["summary"])
+        self.assertIn("[500]", result["summary"])
 
     def test_daily_refresh_runner_defaults_to_recent_only_scan(self):
         fake_warehouse = mock.MagicMock()

@@ -16,7 +16,7 @@ class ResearchSnapshotProvider:
     def __init__(self, artifact_path: str | Path = DEFAULT_POLICY_PATH):
         self.path = resolve_repo_path(artifact_path)
         self._mtime_ns: int | None = None
-        self._snapshot: dict = {"clusters": {}, "coin_features": {}}
+        self._snapshot: dict = {"clusters": {}, "coin_features": {}, "live_filter_overrides": {}}
         self._last_loaded_at: str | None = None
         self._last_source_modified_at: str | None = None
         self._reload_count = 0
@@ -50,10 +50,27 @@ class ResearchSnapshotProvider:
             "research_signal_score_adjustment": float(coin_features.get("signal_score_adjustment") or 0.0),
         }
 
+    def filter_overrides(self, *, strategy_type: str, coin: str) -> dict[str, object]:
+        self._reload_if_needed()
+        override_bundle = (self._snapshot.get("live_filter_overrides") or {})
+        if not isinstance(override_bundle, dict):
+            return {}
+        strategies = override_bundle.get("strategies") or {}
+        if not isinstance(strategies, dict):
+            return {}
+        payload = strategies.get(str(strategy_type or "").strip()) or {}
+        if not isinstance(payload, dict):
+            return {}
+        return dict(payload)
+
     def status(self) -> dict[str, object]:
         self._reload_if_needed()
         clusters = self._snapshot.get("clusters") or {}
         coin_features = self._snapshot.get("coin_features") or {}
+        live_filter_overrides = (self._snapshot.get("live_filter_overrides") or {}).get("strategies") or {}
+        override_count = 0
+        if isinstance(live_filter_overrides, dict):
+            override_count = sum(len(payload or {}) for payload in live_filter_overrides.values() if isinstance(payload, dict))
         return {
             "artifact_path": str(self.path),
             "artifact_exists": self.path.exists(),
@@ -62,6 +79,7 @@ class ResearchSnapshotProvider:
             "reload_count": int(self._reload_count),
             "cluster_count": len(clusters) if isinstance(clusters, dict) else 0,
             "coin_feature_count": len(coin_features) if isinstance(coin_features, dict) else 0,
+            "live_filter_override_count": int(override_count),
             "last_error": self._last_error,
         }
 
@@ -69,7 +87,7 @@ class ResearchSnapshotProvider:
         try:
             stat = self.path.stat()
         except FileNotFoundError:
-            self._snapshot = {"clusters": {}, "coin_features": {}}
+            self._snapshot = {"clusters": {}, "coin_features": {}, "live_filter_overrides": {}}
             self._mtime_ns = None
             self._last_source_modified_at = None
             self._last_error = None

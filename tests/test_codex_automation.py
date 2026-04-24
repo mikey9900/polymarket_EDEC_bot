@@ -387,6 +387,7 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertEqual(fill_sync.call_args.kwargs["lookback_hours"], 24)
         self.assertEqual(fill_sync.call_args.kwargs["history_lookback_days"], 1)
         self.assertEqual(propose.call_args.kwargs["proposal_aggressiveness_level"], 5)
+        self.assertEqual(propose.call_args.kwargs["policy_path"], "data/research/runtime_policy.json")
         self.assertEqual(weekly.call_args.kwargs["proposal_aggressiveness_level"], 5)
 
     def test_candidate_specific_queue_validation_requires_ready_match(self):

@@ -580,6 +580,7 @@ class CodexAutomationManager:
                 config_path=args.get("config_path", self.config_path),
                 tracker_db_path=args.get("tracker_db", LOCAL_TRACKER_DB),
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
+                policy_path=args.get("policy_path", "data/research/runtime_policy.json"),
                 research_report_json_path=args.get("report_json_path", "data/research/research_report.json"),
                 proposal_aggressiveness_level=proposal_aggressiveness,
             )
@@ -1048,10 +1049,12 @@ class CodexAutomationManager:
             sync_result = payload["result"].get("sync", {}).get("result") or {}
             fill_result = (sync_result.get("fills") or {}) if isinstance(sync_result, dict) else {}
             local = payload["result"].get("daily_local_tuning", {}).get("result") or {}
+            live_override_count = int(local.get("live_filter_override_count") or 0)
             return (
                 f"Daily refresh built {int(build_result.get('cluster_count', 0))} clusters; "
                 f"warehouse fetched {int(fill_result.get('fetched', 0))} fills; "
-                f"local candidate {str(local.get('candidate_status') or 'unknown')}."
+                f"local candidate {str(local.get('candidate_status') or 'unknown')}; "
+                f"live filter overrides {live_override_count}."
             )
         if job_type == "tuning_proposal":
             return f"Weekly desktop review bundle status: {payload['result'].get('status', 'unknown')}."

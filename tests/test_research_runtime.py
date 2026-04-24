@@ -89,6 +89,23 @@ class _ThinCrowdedResearchProvider:
         }
 
 
+class _FilterOverrideResearchProvider(_OverlayResearchProvider):
+    def filter_overrides(self, *, strategy_type: str, coin: str):
+        if strategy_type == "single_leg":
+            return {
+                "entry_min": 0.52,
+                "entry_max": 0.63,
+                "min_velocity_30s": 0.10,
+            }
+        if strategy_type == "lead_lag":
+            return {
+                "min_entry": 0.52,
+                "max_entry": 0.63,
+                "min_velocity_30s": 0.10,
+            }
+        return {}
+
+
 class ResearchRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -152,6 +169,37 @@ class ResearchRuntimeTests(unittest.TestCase):
         self.assertEqual(status["coin_feature_count"], 1)
         self.assertEqual(status["cluster_count"], 0)
         self.assertIsNotNone(status["last_loaded_at"])
+
+    def test_snapshot_provider_returns_live_filter_overrides(self):
+        tmp_root = ROOT / ".tmp_testdata"
+        tmp_root.mkdir(parents=True, exist_ok=True)
+        policy_path = tmp_root / f"policy_{uuid4().hex}.json"
+        self.addCleanup(lambda: policy_path.unlink(missing_ok=True))
+        policy_path.write_text(
+            json.dumps(
+                {
+                    "clusters": {},
+                    "coin_features": {},
+                    "live_filter_overrides": {
+                        "strategies": {
+                            "single_leg": {"entry_min": 0.52, "entry_max": 0.63, "min_velocity_30s": 0.10},
+                            "lead_lag": {"min_entry": 0.52, "max_entry": 0.63, "min_velocity_30s": 0.10},
+                        }
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        provider = ResearchSnapshotProvider(policy_path)
+        single_leg = provider.filter_overrides(strategy_type="single_leg", coin="btc")
+        lead_lag = provider.filter_overrides(strategy_type="lead_lag", coin="btc")
+        status = provider.status()
+
+        self.assertEqual(single_leg["entry_min"], 0.52)
+        self.assertEqual(single_leg["min_velocity_30s"], 0.10)
+        self.assertEqual(lead_lag["max_entry"], 0.63)
+        self.assertEqual(status["live_filter_override_count"], 6)
 
     def test_snapshot_provider_resolves_data_relative_artifact_path_to_shared_root(self):
         with tempfile.TemporaryDirectory() as tmp_root_str:
@@ -347,6 +395,128 @@ class ResearchRuntimeTests(unittest.TestCase):
         thin_provider = _ThinCrowdedResearchProvider()
         gate_reason = engine._research_gate_reason("TRADE", thin_provider.lookup())
         self.assertIn("thin_crowded_block", gate_reason or "")
+
+    def test_single_leg_uses_live_filter_overrides_in_dry_run(self):
+        tracker = _CapturingTracker()
+        strict_single = replace(
+            self.base_config.single_leg,
+            entry_min=0.58,
+            entry_max=0.60,
+            min_velocity_30s=0.14,
+        )
+        config = replace(
+            self.base_config,
+            single_leg=strict_single,
+            research=replace(self.base_config.research, enabled=True, paper_gate_enabled=False),
+        )
+        baseline_engine = StrategyEngine(
+            config,
+            aggregator=None,
+            scanner=None,
+            tracker=_CapturingTracker(),
+            research_provider=_OverlayResearchProvider(),
+        )
+        engine = StrategyEngine(
+            config,
+            aggregator=None,
+            scanner=None,
+            tracker=tracker,
+            research_provider=_FilterOverrideResearchProvider(),
+        )
+        now = datetime.now(timezone.utc)
+        market = MarketInfo(
+            event_id="evt-btc",
+            condition_id="cond-btc",
+            slug="btc-updown-5m-1713577200",
+            coin="btc",
+            up_token_id="up-token",
+            down_token_id="down-token",
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(minutes=3),
+            fee_rate=0.02,
+            tick_size="0.01",
+            neg_risk=False,
+        )
+        up_book = OrderBookSnapshot("up-token", best_bid=0.54, best_ask=0.55, bid_depth_usd=20.0, ask_depth_usd=20.0, timestamp=now.timestamp())
+        down_book = OrderBookSnapshot("down-token", best_bid=0.45, best_ask=0.52, bid_depth_usd=20.0, ask_depth_usd=20.0, timestamp=now.timestamp())
+        agg = AggregatedPrice(
+            price=85000.0,
+            timestamp=now.timestamp(),
+            velocity_30s=0.11,
+            velocity_60s=0.13,
+            is_trending=True,
+            source_count=3,
+            sources={"binance": 85000.0, "coinbase": 85010.0, "coingecko": 84990.0},
+        )
+
+        baseline_signal = baseline_engine._evaluate_single_leg("btc", market, up_book, down_book, agg)
+        signal = engine._evaluate_single_leg("btc", market, up_book, down_book, agg)
+
+        self.assertIsNone(baseline_signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(engine._single_leg_params("btc")["entry_min"], 0.52)
+        self.assertEqual(engine._single_leg_params("btc")["min_velocity_30s"], 0.10)
+
+    def test_lead_lag_uses_live_filter_overrides_in_dry_run(self):
+        tracker = _CapturingTracker()
+        strict_lead = replace(
+            self.base_config.lead_lag,
+            min_entry=0.58,
+            max_entry=0.60,
+            min_velocity_30s=0.14,
+        )
+        config = replace(
+            self.base_config,
+            lead_lag=strict_lead,
+            research=replace(self.base_config.research, enabled=True, paper_gate_enabled=False),
+        )
+        baseline_engine = StrategyEngine(
+            config,
+            aggregator=None,
+            scanner=None,
+            tracker=_CapturingTracker(),
+            research_provider=_OverlayResearchProvider(),
+        )
+        engine = StrategyEngine(
+            config,
+            aggregator=None,
+            scanner=None,
+            tracker=tracker,
+            research_provider=_FilterOverrideResearchProvider(),
+        )
+        now = datetime.now(timezone.utc)
+        market = MarketInfo(
+            event_id="evt-btc",
+            condition_id="cond-btc",
+            slug="btc-updown-5m-1713577200",
+            coin="btc",
+            up_token_id="up-token",
+            down_token_id="down-token",
+            start_time=now - timedelta(minutes=1),
+            end_time=now + timedelta(minutes=3),
+            fee_rate=0.02,
+            tick_size="0.01",
+            neg_risk=False,
+        )
+        up_book = OrderBookSnapshot("up-token", best_bid=0.54, best_ask=0.55, bid_depth_usd=20.0, ask_depth_usd=20.0, timestamp=now.timestamp())
+        down_book = OrderBookSnapshot("down-token", best_bid=0.45, best_ask=0.52, bid_depth_usd=20.0, ask_depth_usd=20.0, timestamp=now.timestamp())
+        agg = AggregatedPrice(
+            price=85000.0,
+            timestamp=now.timestamp(),
+            velocity_30s=0.11,
+            velocity_60s=0.13,
+            is_trending=True,
+            source_count=3,
+            sources={"binance": 85000.0, "coinbase": 85010.0, "coingecko": 84990.0},
+        )
+
+        baseline_signal = baseline_engine._evaluate_lead_lag("btc", market, up_book, down_book, agg)
+        signal = engine._evaluate_lead_lag("btc", market, up_book, down_book, agg)
+
+        self.assertIsNone(baseline_signal)
+        self.assertIsNotNone(signal)
+        self.assertEqual(engine._lead_lag_params("btc")["min_entry"], 0.52)
+        self.assertEqual(engine._lead_lag_params("btc")["min_velocity_30s"], 0.10)
 
 
 if __name__ == "__main__":

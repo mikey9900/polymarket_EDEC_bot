@@ -21,6 +21,7 @@ from ._openai import require_openai
 from .paths import (
     CONFIG_CANDIDATES_ROOT,
     DEFAULT_CONFIG_PATH,
+    DEFAULT_POLICY_PATH,
     DEFAULT_REPORT_JSON_PATH,
     LOCAL_TRACKER_DB,
     TUNER_ACTIVE_PATCH_PATH,
@@ -57,6 +58,14 @@ PRIMARY_SOURCE_ORDER = ("weekly_ai", "daily_local")
 DEFAULT_WEEKLY_AI_MODEL = "gpt-5.4-mini"
 DEFAULT_WEEKLY_CONTEXT_DAYS = 7
 DEFAULT_PROPOSAL_AGGRESSIVENESS_LEVEL = 5
+LIVE_FILTER_OVERRIDE_PATHS = {
+    "single_leg.entry_min",
+    "single_leg.entry_max",
+    "single_leg.min_velocity_30s",
+    "lead_lag.min_entry",
+    "lead_lag.max_entry",
+    "lead_lag.min_velocity_30s",
+}
 PROPOSAL_AGGRESSIVENESS_PROFILES = {
     1: {"sample_factor": 1.50, "win_rate_offset": 6, "delta_factor": 0.40, "disabled_coin_limit": 1},
     2: {"sample_factor": 1.35, "win_rate_offset": 4, "delta_factor": 0.55, "disabled_coin_limit": 1},
@@ -159,6 +168,7 @@ def propose_tuning(
     config_path: str | Path = DEFAULT_CONFIG_PATH,
     tracker_db_path: str | Path = LOCAL_TRACKER_DB,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
+    policy_path: str | Path = DEFAULT_POLICY_PATH,
     report_json_path: str | Path = TUNER_REPORT_JSON_PATH,
     report_md_path: str | Path = TUNER_REPORT_MD_PATH,
     patch_path: str | Path = TUNER_ACTIVE_PATCH_PATH,
@@ -173,6 +183,7 @@ def propose_tuning(
     report_md_path = resolve_repo_path(report_md_path)
     patch_path = resolve_repo_path(patch_path)
     candidates_root = resolve_repo_path(candidates_root)
+    policy_path = resolve_repo_path(policy_path)
     research_report = _load_json_file(research_report_json_path, default={})
     aggressiveness = _proposal_aggressiveness_profile(proposal_aggressiveness_level)
 
@@ -232,6 +243,16 @@ def propose_tuning(
         "advisories": advisories,
         "no_change": no_change,
     }
+    live_filter_override_result = _apply_daily_live_filter_overrides(
+        policy_path=policy_path,
+        current_config=current_config,
+        candidate_config=candidate_config,
+        changes=changes,
+        candidate_id=candidate_id if changes else None,
+        generated_at=now,
+        proposal_aggressiveness_level=aggressiveness.level,
+    )
+    report_payload["live_filter_overrides"] = live_filter_override_result
     report_json_path.write_text(json.dumps(report_payload, indent=2, sort_keys=True), encoding="utf-8")
     report_md_path.write_text(_render_tuner_markdown(report_payload), encoding="utf-8")
 
@@ -273,7 +294,73 @@ def propose_tuning(
         "patch_path": str(patch_path),
         "candidate_config_path": str(candidate_path) if candidate_path else "",
         "proposal_aggressiveness_level": aggressiveness.level,
+        "live_filter_override_count": int(live_filter_override_result.get("count") or 0),
+        "live_filter_override_status": str(live_filter_override_result.get("status") or "unknown"),
+        "live_filter_override_paths": list(live_filter_override_result.get("paths") or []),
     }
+
+
+def _apply_daily_live_filter_overrides(
+    *,
+    policy_path: Path,
+    current_config: dict[str, Any],
+    candidate_config: dict[str, Any],
+    changes: list[ProposedChange],
+    candidate_id: str | None,
+    generated_at: datetime,
+    proposal_aggressiveness_level: int,
+) -> dict[str, Any]:
+    policy_file = resolve_repo_path(policy_path)
+    if not policy_file.exists():
+        return {"status": "policy_missing", "applied": False, "count": 0, "paths": []}
+
+    policy_payload = _load_json_file(policy_file, default={})
+    if not isinstance(policy_payload, dict):
+        policy_payload = {}
+
+    dry_run = bool(_get_nested(current_config, "execution.dry_run"))
+    overrides = _build_live_filter_overrides(candidate_config, changes) if dry_run else {}
+    override_paths = [
+        path
+        for strategy, values in overrides.items()
+        for path in (f"{strategy}.{key}" for key in values)
+    ]
+    if overrides:
+        policy_payload["live_filter_overrides"] = {
+            "generated_at": generated_at.isoformat(),
+            "source": "daily_local",
+            "candidate_id": candidate_id,
+            "proposal_aggressiveness_level": int(proposal_aggressiveness_level),
+            "strategies": overrides,
+        }
+        status = "applied"
+    else:
+        policy_payload.pop("live_filter_overrides", None)
+        status = "cleared" if dry_run else "disabled"
+
+    policy_file.write_text(json.dumps(policy_payload, indent=2, sort_keys=True), encoding="utf-8")
+    return {
+        "status": status,
+        "applied": bool(overrides),
+        "count": len(override_paths),
+        "paths": override_paths,
+        "dry_run_only": True,
+    }
+
+
+def _build_live_filter_overrides(
+    candidate_config: dict[str, Any],
+    changes: list[ProposedChange],
+) -> dict[str, dict[str, float]]:
+    changed_paths = {change.path for change in changes if change.path in LIVE_FILTER_OVERRIDE_PATHS}
+    overrides: dict[str, dict[str, float]] = {}
+    for path in sorted(changed_paths):
+        value = _flt(_get_nested(candidate_config, path))
+        if value is None:
+            continue
+        strategy, key = path.split(".", 1)
+        overrides.setdefault(strategy, {})[key] = round(float(value), 4)
+    return overrides
 
 
 def build_weekly_ai_context(
@@ -1313,7 +1400,7 @@ def _max_move_for_path(path: str, aggressiveness: ProposalAggressivenessProfile)
     delta_factor = aggressiveness.delta_factor
     if path.endswith(".min_velocity_30s"):
         return round(max(0.01, min(0.06, 0.03 * delta_factor)), 4)
-    if path in {"single_leg.entry_min", "single_leg.entry_max"}:
+    if path in {"single_leg.entry_min", "single_leg.entry_max", "lead_lag.min_entry", "lead_lag.max_entry"}:
         return round(max(0.02, min(0.10, 0.05 * delta_factor)), 4)
     if path in {"single_leg.loss_cut_pct", "lead_lag.hard_stop_loss_pct"}:
         return round(max(0.01, min(0.06, 0.03 * delta_factor)), 4)
@@ -1363,7 +1450,24 @@ def _recommend_changes(
 
     _recommend_velocity(changes, no_change, config, single_rows, "single_leg.min_velocity_30s", aggressiveness)
     _recommend_velocity(changes, no_change, config, lead_rows, "lead_lag.min_velocity_30s", aggressiveness)
-    _recommend_entry_band(changes, no_change, config, single_rows, aggressiveness)
+    _recommend_entry_band(
+        changes,
+        no_change,
+        config,
+        single_rows,
+        aggressiveness,
+        min_path="single_leg.entry_min",
+        max_path="single_leg.entry_max",
+    )
+    _recommend_entry_band(
+        changes,
+        no_change,
+        config,
+        lead_rows,
+        aggressiveness,
+        min_path="lead_lag.min_entry",
+        max_path="lead_lag.max_entry",
+    )
     _recommend_loss_cut(changes, no_change, config, single_rows, "single_leg.loss_cut_pct", aggressiveness)
     _recommend_loss_cut(changes, no_change, config, lead_rows, "lead_lag.hard_stop_loss_pct", aggressiveness)
     _recommend_high_confidence_bid(changes, no_change, config, single_rows, aggressiveness)
@@ -1485,12 +1589,14 @@ def _recommend_entry_band(
     config: dict[str, Any],
     rows: list[dict[str, str]],
     aggressiveness: ProposalAggressivenessProfile,
+    *,
+    min_path: str,
+    max_path: str,
 ) -> None:
+    label = f"{min_path} / {max_path}"
     min_rows = _scaled_sample_min(5, aggressiveness)
     if len(rows) < min_rows:
-        no_change.append(
-            f"single_leg.entry_min / single_leg.entry_max: insufficient closed trades (n={len(rows)}; need {min_rows})."
-        )
+        no_change.append(f"{label}: insufficient closed trades (n={len(rows)}; need {min_rows}).")
         return
     buckets = _group_stats(rows, lambda row: _ep_bucket(_flt(row.get("ep"))))
     win_rate_threshold = _proposal_win_rate_threshold(aggressiveness)
@@ -1499,34 +1605,32 @@ def _recommend_entry_band(
         for bucket_name, payload in _sorted_range_buckets(buckets)
         if int(payload.get("n") or 0) >= min_rows and (payload.get("win_pct") or 0.0) >= win_rate_threshold
     ]
-    current_min = float(_get_nested(config, "single_leg.entry_min") or 0.0)
-    current_max = float(_get_nested(config, "single_leg.entry_max") or 0.0)
+    current_min = float(_get_nested(config, min_path) or 0.0)
+    current_max = float(_get_nested(config, max_path) or 0.0)
     if not viable:
-        no_change.append(
-            f"single_leg.entry_min / single_leg.entry_max: no entry-price bucket cleared the {win_rate_threshold:.1f}% win-rate threshold."
-        )
+        no_change.append(f"{label}: no entry-price bucket cleared the {win_rate_threshold:.1f}% win-rate threshold.")
         return
     changed = False
     new_min = _bucket_lower_bound(viable[0][0])
     new_max = _bucket_upper_bound(viable[-1][0])
-    recommended_min = _cap_numeric_recommendation("single_leg.entry_min", current_min, new_min, aggressiveness)
+    recommended_min = _cap_numeric_recommendation(min_path, current_min, new_min, aggressiveness)
     if recommended_min > current_min + 0.01:
-        _set_nested(config, "single_leg.entry_min", recommended_min)
+        _set_nested(config, min_path, recommended_min)
         changes.append(
             ProposedChange(
-                path="single_leg.entry_min",
+                path=min_path,
                 current=current_min,
                 recommended=recommended_min,
                 evidence=f"First viable entry bucket begins at {new_min:.2f}.{_cap_suffix(new_min, recommended_min, aggressiveness)}",
             )
         )
         changed = True
-    recommended_max = _cap_numeric_recommendation("single_leg.entry_max", current_max, new_max, aggressiveness)
+    recommended_max = _cap_numeric_recommendation(max_path, current_max, new_max, aggressiveness)
     if recommended_max < current_max - 0.01:
-        _set_nested(config, "single_leg.entry_max", recommended_max)
+        _set_nested(config, max_path, recommended_max)
         changes.append(
             ProposedChange(
-                path="single_leg.entry_max",
+                path=max_path,
                 current=current_max,
                 recommended=recommended_max,
                 evidence=f"Highest viable entry bucket tops out at {new_max:.2f}.{_cap_suffix(new_max, recommended_max, aggressiveness)}",
@@ -1534,9 +1638,7 @@ def _recommend_entry_band(
         )
         changed = True
     if not changed:
-        no_change.append(
-            "single_leg.entry_min / single_leg.entry_max: current band already covers the viable entry buckets."
-        )
+        no_change.append(f"{label}: current band already covers the viable entry buckets.")
 
 
 def _recommend_loss_cut(
@@ -1778,6 +1880,7 @@ def candidate_detail_payload(candidate: dict[str, Any]) -> dict[str, Any]:
         "top_changes": [str(item) for item in (candidate.get("top_changes") or []) if str(item).strip()],
         "data": dict(report_payload.get("data") or {}),
         "changes": list(report_payload.get("changes") or []),
+        "live_filter_overrides": dict(report_payload.get("live_filter_overrides") or {}),
         "advisories": [str(item) for item in (report_payload.get("advisories") or []) if str(item).strip()],
         "no_change": [str(item) for item in (report_payload.get("no_change") or []) if str(item).strip()],
         "paths": {
@@ -1987,6 +2090,7 @@ def _parse_weekly_ai_output(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _render_tuner_markdown(report: dict[str, Any]) -> str:
     research_rollups = report.get("research_rollups") or {}
+    live_filter_overrides = report.get("live_filter_overrides") or {}
     lines = [
         f"# Daily Local Tuning Proposal - {report['inputs']['export_id']}",
         "",
@@ -2010,6 +2114,14 @@ def _render_tuner_markdown(report: dict[str, Any]) -> str:
             )
     else:
         lines.append("None.")
+    lines.extend(["", "## Live Filter Overrides"])
+    if live_filter_overrides.get("count"):
+        lines.append(
+            f"- Applied {int(live_filter_overrides.get('count') or 0)} dry-run filter overrides: "
+            f"{', '.join(live_filter_overrides.get('paths') or [])}"
+        )
+    else:
+        lines.append(f"- Status: {str(live_filter_overrides.get('status') or 'none')}")
     lines.extend(["", "## Advisory Flags"])
     if report["advisories"]:
         lines.extend(f"- {item}" for item in report["advisories"])

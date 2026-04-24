@@ -67,6 +67,7 @@ class ResearchTunerTests(unittest.TestCase):
         self.report_json_path = self.tmpdir / "tuner_report.json"
         self.report_md_path = self.tmpdir / "tuner_report.md"
         self.patch_path = self.tmpdir / "tuner_active_patch.diff"
+        self.policy_path = self.tmpdir / "runtime_policy.json"
         self.weekly_context_path = self.tmpdir / "weekly_ai_context.json"
         self.weekly_report_json_path = self.tmpdir / "weekly_ai_tuner_report.json"
         self.weekly_report_md_path = self.tmpdir / "weekly_ai_tuner_report.md"
@@ -93,6 +94,16 @@ class ResearchTunerTests(unittest.TestCase):
             ),
             encoding="utf-8",
         )
+        self.policy_path.write_text(
+            json.dumps(
+                {
+                    "clusters": {"btc_single": {"sample_size": 3}},
+                    "coin_features": {"btc": {"signal_score_adjustment": 1.5}},
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
         self.candidates_root = self.tmpdir / "config_candidates"
         self.candidates_root.mkdir(parents=True, exist_ok=True)
         self.tracker_db_path = self.tmpdir / "decisions.db"
@@ -106,6 +117,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
                 research_report_json_path=self.research_report_json_path,
             )
@@ -119,7 +131,7 @@ class ResearchTunerTests(unittest.TestCase):
         self.assertTrue(self.patch_path.exists())
 
         candidate = yaml.safe_load(Path(result["candidate_config_path"]).read_text(encoding="utf-8"))
-        self.assertEqual(candidate["single_leg"]["min_velocity_30s"], 0.15)
+        self.assertEqual(candidate["single_leg"]["min_velocity_30s"], 0.13)
         self.assertEqual(candidate["single_leg"]["entry_min"], 0.56)
         self.assertEqual(candidate["single_leg"]["entry_max"], 0.58)
         self.assertEqual(candidate["single_leg"]["high_confidence_bid"], 0.72)
@@ -128,9 +140,16 @@ class ResearchTunerTests(unittest.TestCase):
         report_payload = json.loads(self.report_json_path.read_text(encoding="utf-8"))
         self.assertEqual(report_payload["candidate_status"], "ready")
         self.assertEqual(report_payload["aggressiveness"]["proposal_level"], 5)
+        self.assertEqual(report_payload["live_filter_overrides"]["status"], "applied")
+        self.assertEqual(report_payload["live_filter_overrides"]["count"], 3)
         self.assertIn("depth_check", "\n".join(report_payload["advisories"]))
         self.assertEqual(report_payload["research_rollups"]["cluster_count"], 4)
         self.assertIn("Warehouse", self.report_md_path.read_text(encoding="utf-8"))
+        policy_payload = json.loads(self.policy_path.read_text(encoding="utf-8"))
+        self.assertIn("live_filter_overrides", policy_payload)
+        self.assertEqual(policy_payload["live_filter_overrides"]["candidate_id"], result["candidate_id"])
+        self.assertEqual(policy_payload["live_filter_overrides"]["strategies"]["single_leg"]["entry_min"], 0.56)
+        self.assertEqual(policy_payload["live_filter_overrides"]["strategies"]["single_leg"]["min_velocity_30s"], 0.13)
 
     def test_propose_tuning_aggressiveness_changes_thresholds_and_caps(self):
         with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
@@ -141,6 +160,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
                 proposal_aggressiveness_level=1,
             )
@@ -151,6 +171,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
                 proposal_aggressiveness_level=10,
             )
@@ -160,6 +181,7 @@ class ResearchTunerTests(unittest.TestCase):
         aggressive_candidate = yaml.safe_load(Path(aggressive["candidate_config_path"]).read_text(encoding="utf-8"))
         self.assertEqual(aggressive["proposal_aggressiveness_level"], 10)
         self.assertEqual(aggressive_candidate["single_leg"]["loss_cut_pct"], 0.10)
+        self.assertEqual(aggressive_candidate["single_leg"]["min_velocity_30s"], 0.15)
         aggressive_report = json.loads(self.report_json_path.read_text(encoding="utf-8"))
         self.assertEqual(aggressive_report["aggressiveness"]["proposal_level"], 10)
 
@@ -172,6 +194,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
             )
             result = build_weekly_ai_context(
@@ -220,6 +243,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
             )
             result = propose_weekly_ai_tuning(
@@ -269,6 +293,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
             )
             result = build_weekly_review_bundle(
@@ -331,6 +356,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
             )
             weekly = propose_weekly_ai_tuning(
@@ -375,6 +401,7 @@ class ResearchTunerTests(unittest.TestCase):
                 report_json_path=self.report_json_path,
                 report_md_path=self.report_md_path,
                 patch_path=self.patch_path,
+                policy_path=self.policy_path,
                 candidates_root=self.candidates_root,
             )
 
@@ -454,6 +481,7 @@ class ResearchTunerTests(unittest.TestCase):
             report_json_path=self.report_json_path,
             report_md_path=self.report_md_path,
             patch_path=self.patch_path,
+            policy_path=self.policy_path,
             candidates_root=self.candidates_root,
             research_report_json_path=self.research_report_json_path,
         )
@@ -464,6 +492,43 @@ class ResearchTunerTests(unittest.TestCase):
         payload = json.loads(self.report_json_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["inputs"]["source"], "tracker_db")
         self.assertEqual(payload["inputs"]["tracker_db"], str(self.tracker_db_path))
+
+    def test_propose_tuning_clears_live_filter_overrides_when_not_dry_run(self):
+        config_payload = yaml.safe_load(self.config_path.read_text(encoding="utf-8"))
+        config_payload["execution"]["dry_run"] = False
+        self.config_path.write_text(yaml.safe_dump(config_payload, sort_keys=False), encoding="utf-8")
+        self.policy_path.write_text(
+            json.dumps(
+                {
+                    "clusters": {},
+                    "coin_features": {},
+                    "live_filter_overrides": {
+                        "strategies": {
+                            "single_leg": {"entry_min": 0.56},
+                        }
+                    },
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
+            result = propose_tuning(
+                config_path=self.config_path,
+                tracker_db_path=self.tmpdir / "missing_decisions.db",
+                tuner_state_path=self.tuner_state_path,
+                policy_path=self.policy_path,
+                report_json_path=self.report_json_path,
+                report_md_path=self.report_md_path,
+                patch_path=self.patch_path,
+                candidates_root=self.candidates_root,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["live_filter_override_status"], "disabled")
+        policy_payload = json.loads(self.policy_path.read_text(encoding="utf-8"))
+        self.assertNotIn("live_filter_overrides", policy_payload)
 
     def _write_trades_csv(self) -> None:
         rows = [

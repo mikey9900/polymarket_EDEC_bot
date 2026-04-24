@@ -300,7 +300,63 @@ class StrategyEngine:
         return numerator / denominator
 
     def _lead_lag_params(self, coin: str) -> dict[str, float]:
-        return resolve_lead_lag_params(self.config.lead_lag, coin)
+        params = resolve_lead_lag_params(self.config.lead_lag, coin)
+        overrides = self._research_filter_overrides("lead_lag", coin)
+        for key in ("min_velocity_30s", "min_entry", "max_entry"):
+            try:
+                if key in overrides:
+                    params[key] = float(overrides[key])
+            except (TypeError, ValueError):
+                continue
+        return params
+
+    def _single_leg_params(self, coin: str) -> dict[str, float | bool | tuple]:
+        cfg = self.config.single_leg
+        params: dict[str, float | bool | tuple] = {
+            "entry_max": cfg.entry_max,
+            "opposite_min": cfg.opposite_min,
+            "min_time_remaining_s": cfg.min_time_remaining_s,
+            "min_book_depth_usd": cfg.min_book_depth_usd,
+            "hold_if_unfilled": cfg.hold_if_unfilled,
+            "order_size_usd": cfg.order_size_usd,
+            "min_velocity_30s": cfg.min_velocity_30s,
+            "loss_cut_pct": cfg.loss_cut_pct,
+            "loss_cut_max_factor": cfg.loss_cut_max_factor,
+            "high_confidence_bid": cfg.high_confidence_bid,
+            "time_pressure_s": cfg.time_pressure_s,
+            "max_time_remaining_s": cfg.max_time_remaining_s,
+            "max_vel_divergence": cfg.max_vel_divergence,
+            "entry_min": cfg.entry_min,
+            "scalp_take_profit_bid": cfg.scalp_take_profit_bid,
+            "scalp_min_profit_usd": cfg.scalp_min_profit_usd,
+            "resignal_cooldown_s": cfg.resignal_cooldown_s,
+            "min_price_improvement": cfg.min_price_improvement,
+            "max_entry_spread": cfg.max_entry_spread,
+            "max_source_dispersion_pct": cfg.max_source_dispersion_pct,
+            "max_source_staleness_s": cfg.max_source_staleness_s,
+            "disabled_coins": tuple(cfg.disabled_coins),
+        }
+        overrides = self._research_filter_overrides("single_leg", coin)
+        for key in ("entry_min", "entry_max", "min_velocity_30s", "high_confidence_bid"):
+            try:
+                if key in overrides:
+                    params[key] = float(overrides[key])
+            except (TypeError, ValueError):
+                continue
+        return params
+
+    def _research_filter_overrides(self, strategy_type: str, coin: str) -> dict[str, object]:
+        if not self.research_provider or not self.config.execution.dry_run:
+            return {}
+        provider = getattr(self.research_provider, "filter_overrides", None)
+        if not callable(provider):
+            return {}
+        try:
+            overrides = provider(strategy_type=strategy_type, coin=coin)
+        except Exception as exc:
+            logger.debug("Research filter override lookup failed for %s/%s: %s", strategy_type, coin, exc)
+            return {}
+        return dict(overrides or {}) if isinstance(overrides, dict) else {}
 
     def _lead_lag_target_price(self, entry_price: float, coin: str) -> float:
         params = self._lead_lag_params(coin)

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal | None:
     """Run the single-leg momentum filter chain."""
-    cfg = engine.config.single_leg
+    params = engine._single_leg_params(coin)
     filters: list[FilterResult] = []
     failed_reason = ""
 
@@ -24,17 +24,27 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
 
     now = datetime.now(timezone.utc)
     remaining = (market.end_time - now).total_seconds()
-    f = FilterResult("time_remaining", remaining > cfg.min_time_remaining_s, f"{remaining:.0f}s", f">{cfg.min_time_remaining_s}s")
+    f = FilterResult(
+        "time_remaining",
+        remaining > float(params["min_time_remaining_s"]),
+        f"{remaining:.0f}s",
+        f">{float(params['min_time_remaining_s'])}s",
+    )
     filters.append(f)
     if not f.passed and not failed_reason:
         failed_reason = f"Only {remaining:.0f}s remaining"
 
-    f = FilterResult("entry_window", remaining <= cfg.max_time_remaining_s, f"{remaining:.0f}s", f"<={cfg.max_time_remaining_s:.0f}s")
+    f = FilterResult(
+        "entry_window",
+        remaining <= float(params["max_time_remaining_s"]),
+        f"{remaining:.0f}s",
+        f"<={float(params['max_time_remaining_s']):.0f}s",
+    )
     filters.append(f)
     if not f.passed and not failed_reason:
         failed_reason = f"Too early: {remaining:.0f}s remaining (wait for direction)"
 
-    if (coin or "").lower() in cfg.disabled_coins:
+    if (coin or "").lower() in params["disabled_coins"]:
         engine._log_decision(
             coin,
             market,
@@ -63,7 +73,7 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         engine._log_decision(coin, market, up_book, down_book, agg, remaining, filters, "SKIP", failed_reason, "single_leg")
         return None
 
-    min_vel = cfg.min_velocity_30s
+    min_vel = float(params["min_velocity_30s"])
     if agg is not None:
         vel_ok = abs(agg.velocity_30s) >= min_vel
         f = FilterResult("coin_velocity", vel_ok, f"30s={agg.velocity_30s:.3f}%", f">={min_vel}%")
@@ -73,8 +83,10 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
     if not f.passed and not failed_reason:
         failed_reason = f"{coin.upper()} not moving enough: {f.value} (need >={min_vel}%)"
 
-    up_cheap = up_book.best_ask <= cfg.entry_max and down_book.best_ask >= cfg.opposite_min
-    down_cheap = down_book.best_ask <= cfg.entry_max and up_book.best_ask >= cfg.opposite_min
+    entry_max = float(params["entry_max"])
+    opposite_min = float(params["opposite_min"])
+    up_cheap = up_book.best_ask <= entry_max and down_book.best_ask >= opposite_min
+    down_cheap = down_book.best_ask <= entry_max and up_book.best_ask >= opposite_min
     entry_ok = up_cheap or down_cheap
 
     if up_cheap:
@@ -100,32 +112,34 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         "entry_threshold",
         entry_ok,
         f"up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f}",
-        f"one side<={cfg.entry_max}, other>={cfg.opposite_min}",
+        f"one side<={entry_max}, other>={opposite_min}",
     )
     filters.append(f)
     if not f.passed and not failed_reason:
         failed_reason = (
             f"No cheap side: up={up_book.best_ask:.3f}, down={down_book.best_ask:.3f} "
-            f"(need one <={cfg.entry_max}, other >={cfg.opposite_min})"
+            f"(need one <={entry_max}, other >={opposite_min})"
         )
 
     if side in ("up", "down"):
-        floor_ok = entry_price >= cfg.entry_min
-        f = FilterResult("entry_floor", floor_ok, f"{entry_price:.3f}", f">={cfg.entry_min:.2f}")
+        entry_min = float(params["entry_min"])
+        floor_ok = entry_price >= entry_min
+        f = FilterResult("entry_floor", floor_ok, f"{entry_price:.3f}", f">={entry_min:.2f}")
     else:
         f = FilterResult("entry_floor", True, "n/a", "n/a")
     filters.append(f)
     if not f.passed and not failed_reason:
-        failed_reason = f"Ask too low: {entry_price:.3f} < floor {cfg.entry_min:.2f} (market near-resolved)"
+        failed_reason = f"Ask too low: {entry_price:.3f} < floor {float(params['entry_min']):.2f} (market near-resolved)"
 
     if agg is not None and side in ("up", "down"):
         vel60 = agg.velocity_60s
-        div_ok = vel60 >= -cfg.max_vel_divergence if side == "up" else vel60 <= cfg.max_vel_divergence
+        max_vel_divergence = float(params["max_vel_divergence"])
+        div_ok = vel60 >= -max_vel_divergence if side == "up" else vel60 <= max_vel_divergence
         f = FilterResult(
             "vel_divergence",
             div_ok,
             f"30s={agg.velocity_30s:+.3f}% 60s={vel60:+.3f}%",
-            f"60s aligned with {side} (max_div={cfg.max_vel_divergence}%)",
+            f"60s aligned with {side} (max_div={max_vel_divergence}%)",
         )
     else:
         f = FilterResult("vel_divergence", True, "n/a", "n/a")
@@ -133,7 +147,8 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
     if not f.passed and not failed_reason:
         failed_reason = f"Vel divergence: 60s={agg.velocity_60s:+.3f}% opposes {side} direction"
 
-    f = FilterResult("liquidity_depth", entry_depth >= cfg.min_book_depth_usd, f"${entry_depth:.1f}", f">=${cfg.min_book_depth_usd}")
+    min_book_depth = float(params["min_book_depth_usd"])
+    f = FilterResult("liquidity_depth", entry_depth >= min_book_depth, f"${entry_depth:.1f}", f">=${min_book_depth}")
     filters.append(f)
     if not f.passed and not failed_reason:
         failed_reason = f"Thin entry liquidity: ${entry_depth:.1f}"
@@ -146,24 +161,27 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
 
     if side in ("up", "down"):
         es = max(0.0, entry_price - entry_bid)
-        f = FilterResult("entry_spread", es <= cfg.max_entry_spread, f"{es:.3f}", f"<={cfg.max_entry_spread:.3f}")
+        max_entry_spread = float(params["max_entry_spread"])
+        f = FilterResult("entry_spread", es <= max_entry_spread, f"{es:.3f}", f"<={max_entry_spread:.3f}")
     else:
         f = FilterResult("entry_spread", True, "n/a", "n/a")
     filters.append(f)
     if not f.passed and not failed_reason:
-        failed_reason = f"Entry spread too wide: {es:.3f} > {cfg.max_entry_spread:.3f}"
+        failed_reason = f"Entry spread too wide: {es:.3f} > {float(params['max_entry_spread']):.3f}"
 
     sdp = agg.source_dispersion_pct if agg else 0.0
-    f = FilterResult("source_dispersion", sdp <= cfg.max_source_dispersion_pct, f"{sdp:.3f}%", f"<={cfg.max_source_dispersion_pct:.3f}%")
+    max_source_dispersion = float(params["max_source_dispersion_pct"])
+    f = FilterResult("source_dispersion", sdp <= max_source_dispersion, f"{sdp:.3f}%", f"<={max_source_dispersion:.3f}%")
     filters.append(f)
     if not f.passed and not failed_reason:
-        failed_reason = f"Source dispersion too high: {sdp:.3f}% > {cfg.max_source_dispersion_pct:.3f}%"
+        failed_reason = f"Source dispersion too high: {sdp:.3f}% > {max_source_dispersion:.3f}%"
 
     ssx = agg.source_staleness_max_s if agg else 0.0
-    f = FilterResult("source_staleness", ssx <= cfg.max_source_staleness_s, f"{ssx:.2f}s", f"<={cfg.max_source_staleness_s:.2f}s")
+    max_source_staleness = float(params["max_source_staleness_s"])
+    f = FilterResult("source_staleness", ssx <= max_source_staleness, f"{ssx:.2f}s", f"<={max_source_staleness:.2f}s")
     filters.append(f)
     if not f.passed and not failed_reason:
-        failed_reason = f"Source staleness too high: {ssx:.2f}s > {cfg.max_source_staleness_s:.2f}s"
+        failed_reason = f"Source staleness too high: {ssx:.2f}s > {max_source_staleness:.2f}s"
 
     risk_ok = engine.risk_manager.can_trade() if engine.risk_manager else True
     f = FilterResult("risk_limits", risk_ok, "ok" if risk_ok else "blocked", "ok")
@@ -172,7 +190,7 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         failed_reason = "Risk limits breached"
 
     all_passed = all(result.passed for result in filters)
-    notional_target = cfg.scalp_take_profit_bid
+    notional_target = float(params["scalp_take_profit_bid"])
     fee_buy = engine._per_share_fee(entry_price, market.fee_rate)
     fee_sell = engine._per_share_fee(notional_target, market.fee_rate)
     expected_profit = (notional_target - entry_price) - fee_buy - fee_sell
@@ -180,14 +198,14 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
     score_payload = engine._repricing_score(
         velocity_30s=agg.velocity_30s if agg else 0.0,
         entry_price=entry_price,
-        min_entry=cfg.entry_min,
-        max_entry=cfg.entry_max,
+        min_entry=float(params["entry_min"]),
+        max_entry=float(params["entry_max"]),
         entry_depth=entry_depth,
-        min_depth=cfg.min_book_depth_usd,
+        min_depth=float(params["min_book_depth_usd"]),
         spread=max(0.0, entry_price - entry_bid),
         remaining=remaining,
-        min_remaining=cfg.min_time_remaining_s,
-        max_remaining=cfg.max_time_remaining_s,
+        min_remaining=float(params["min_time_remaining_s"]),
+        max_remaining=float(params["max_time_remaining_s"]),
         depth_ratio=depth_ratio,
     )
     research_payload = engine._research_annotation(
@@ -235,8 +253,8 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         depth_ratio=depth_ratio,
         suppressed_reason=suppressed_reason,
         order_size_usd=order_size_payload["order_size_usd"],
-        resignal_cooldown_s=cfg.resignal_cooldown_s,
-        min_price_improvement=cfg.min_price_improvement,
+        resignal_cooldown_s=float(params["resignal_cooldown_s"]),
+        min_price_improvement=float(params["min_price_improvement"]),
         **research_payload,
         **score_payload,
     )
@@ -264,11 +282,11 @@ def evaluate(engine: Any, coin, market, up_book, down_book, agg) -> TradeSignal 
         down_book=down_book,
         filter_results=filters,
         target_delta=max(0.0, notional_target - entry_price),
-        hard_stop_delta=max(0.0, entry_price * cfg.loss_cut_pct),
+        hard_stop_delta=max(0.0, entry_price * float(params["loss_cut_pct"])),
         order_size_usd=order_size_payload["order_size_usd"],
         order_size_multiplier=order_size_payload["order_size_multiplier"],
-        resignal_cooldown_s=cfg.resignal_cooldown_s,
-        min_price_improvement=cfg.min_price_improvement,
+        resignal_cooldown_s=float(params["resignal_cooldown_s"]),
+        min_price_improvement=float(params["min_price_improvement"]),
         **score_payload,
     )
     logger.info(

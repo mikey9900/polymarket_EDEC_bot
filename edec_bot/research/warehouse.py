@@ -467,7 +467,7 @@ class ResearchWarehouse:
         rows = self.conn.execute(
             (
                 """
-                SELECT window_start, COALESCE(window_end, window_start) AS effective_window_end, up_token_id, down_token_id
+                SELECT window_start, COALESCE(window_end, window_start) AS effective_window_end, coin, up_token_id, down_token_id
                 FROM market_5m_registry
                 WHERE COALESCE(window_end, window_start) >= ?
                 """
@@ -480,19 +480,21 @@ class ResearchWarehouse:
         ).fetchall()
         if bucket_minutes <= 0:
             raise ValueError("bucket_minutes must be positive")
-        buckets: dict[int, dict[str, object]] = {}
+        buckets: dict[tuple[int, str], dict[str, object]] = {}
         bucket_span_s = bucket_minutes * 60
-        for window_start, window_end, up_token_id, down_token_id in rows:
+        for window_start, window_end, coin, up_token_id, down_token_id in rows:
             if window_start is None:
                 continue
             start_aware = _ensure_utc(window_start)
             end_aware = _ensure_utc(window_end or window_start)
             bucket_epoch = int(start_aware.timestamp()) // bucket_span_s * bucket_span_s
+            coin_key = str(coin or "").lower()
             bucket = buckets.setdefault(
-                bucket_epoch,
+                (bucket_epoch, coin_key),
                 {
                     "bucket_start": datetime.fromtimestamp(bucket_epoch, tz=timezone.utc),
                     "bucket_end": end_aware,
+                    "coin": coin_key,
                     "asset_ids": set(),
                 },
             )
@@ -503,12 +505,13 @@ class ResearchWarehouse:
             if down_token_id:
                 bucket["asset_ids"].add(str(down_token_id))
         result: list[dict[str, object]] = []
-        for bucket_epoch in sorted(buckets):
-            bucket = buckets[bucket_epoch]
+        for bucket_key in sorted(buckets):
+            bucket = buckets[bucket_key]
             result.append(
                 {
                     "bucket_start": bucket["bucket_start"],
                     "bucket_end": bucket["bucket_end"],
+                    "coin": str(bucket.get("coin") or ""),
                     "asset_ids": sorted(bucket["asset_ids"]),
                 }
             )

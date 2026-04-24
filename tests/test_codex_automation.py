@@ -536,12 +536,42 @@ class CodexAutomationManagerTests(unittest.TestCase):
         market_sync.assert_called_once()
         self.assertEqual(market_sync.call_args.kwargs["lookback_days"], 1)
         self.assertEqual(market_sync.call_args.kwargs["max_batches"], 2)
+        self.assertEqual(market_sync.call_args.kwargs["target_coins"], [])
         fill_sync.assert_called_once()
         self.assertEqual(fill_sync.call_args.kwargs["lookback_hours"], 24)
         self.assertEqual(fill_sync.call_args.kwargs["history_lookback_days"], 1)
+        self.assertEqual(fill_sync.call_args.kwargs["target_coins"], [])
         self.assertEqual(propose.call_args.kwargs["proposal_aggressiveness_level"], 5)
         self.assertEqual(propose.call_args.kwargs["policy_path"], "data/research/runtime_policy.json")
         self.assertEqual(weekly.call_args.kwargs["proposal_aggressiveness_level"], 5)
+
+    def test_daily_refresh_runner_targets_top_level_config_coins(self):
+        self.manager.config_path.write_text(
+            "coins:\n  - btc\n  - eth\n  - sol\nsingle_leg:\n  min_velocity_30s: 0.12\n",
+            encoding="utf-8",
+        )
+        fake_warehouse = mock.MagicMock()
+        fake_market_source = mock.MagicMock()
+        fake_market_source.close = mock.MagicMock()
+        fake_fill_source = mock.MagicMock()
+        fake_fill_source.close = mock.MagicMock()
+        fake_warehouse.close = mock.MagicMock()
+
+        with (
+            mock.patch("research.codex_automation.ResearchWarehouse", return_value=fake_warehouse),
+            mock.patch("research.codex_automation.GammaMarketSource", return_value=fake_market_source),
+            mock.patch("research.codex_automation.GoldskyFillSource", return_value=fake_fill_source),
+            mock.patch("research.codex_automation.sync_recent_markets", return_value={"fetched": 10}) as market_sync,
+            mock.patch("research.codex_automation.sync_recent_5m_fills", return_value={"fetched": 5}) as fill_sync,
+            mock.patch("research.codex_automation.build_artifacts", return_value={"cluster_count": 1}),
+            mock.patch("research.codex_automation.propose_tuning", return_value={"candidate_status": "none"}),
+            mock.patch("research.codex_automation.build_weekly_ai_context", return_value={"context_path": "data/research/weekly_ai_context.json"}),
+        ):
+            result = self.manager._run_daily_refresh({})
+
+        self.assertTrue(result["sync"]["ok"])
+        self.assertEqual(market_sync.call_args.kwargs["target_coins"], ["btc", "eth", "sol"])
+        self.assertEqual(fill_sync.call_args.kwargs["target_coins"], ["btc", "eth", "sol"])
 
     def test_candidate_specific_queue_validation_requires_ready_match(self):
         (self.tmpdir / "tuner_state.json").write_text(

@@ -8,6 +8,7 @@ import os
 import subprocess
 import threading
 import time
+import yaml
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -584,6 +585,7 @@ class CodexAutomationManager:
 
     def _run_daily_refresh(self, args: dict[str, Any]) -> dict[str, Any]:
         proposal_aggressiveness = self.research_controls().get("proposal_aggressiveness_level", 5)
+        target_coins = self._target_coins_from_config(args.get("config_path", self.config_path))
         warehouse = ResearchWarehouse(args.get("warehouse_path", WAREHOUSE_PATH))
         market_source = GammaMarketSource(
             timeout_seconds=float(args.get("http_timeout_seconds", 30.0)),
@@ -613,6 +615,7 @@ class CodexAutomationManager:
                     lookback_days=int(args.get("market_lookback_days", 1)),
                     batch_size=int(args.get("market_batch_size", 500)),
                     max_batches=self._optional_int(args.get("market_max_batches", 2)),
+                    target_coins=target_coins,
                     progress_callback=market_progress,
                 )
             with self._phase_monitor("syncing fills", "Refreshing recent Goldsky 5m fills.") as fill_progress:
@@ -628,6 +631,7 @@ class CodexAutomationManager:
                     bucket_buffer_seconds=int(args.get("bucket_buffer_seconds", 900)),
                     max_batches_per_chunk=self._optional_int(args.get("max_batches_per_chunk", 2)),
                     max_history_batches_per_chunk=self._optional_int(args.get("max_history_batches_per_chunk", 1)),
+                    target_coins=target_coins,
                     progress_callback=fill_progress,
                 )
             sync_result = {
@@ -1040,6 +1044,29 @@ class CodexAutomationManager:
             elif schedule.get("next_auto_run_at") is None:
                 schedule["next_auto_run_at"] = self._compute_next_run(job_type, self._utcnow()).isoformat()
         return base
+
+    def _target_coins_from_config(self, config_path: str | Path | None) -> list[str]:
+        path = resolve_repo_path(config_path or self.config_path)
+        if not path.exists():
+            return []
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            return []
+        if not isinstance(payload, dict):
+            return []
+        coins = payload.get("coins") or []
+        if not isinstance(coins, list):
+            return []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for coin in coins:
+            value = str(coin or "").strip().lower()
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        return normalized
 
     def _normalize_aggressiveness_level(self, value: Any) -> int:
         try:

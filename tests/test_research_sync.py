@@ -403,6 +403,27 @@ class ResearchSyncTests(unittest.TestCase):
         rows = warehouse.conn.execute("SELECT market_slug FROM markets").fetchall()
         self.assertEqual([row[0] for row in rows], ["btc-updown-5m-closed-recent"])
 
+    def test_recent_market_sync_filters_to_target_coins(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_markets_target_coins.duckdb")
+        self.addCleanup(warehouse.close)
+        source = _FakeMarketSource()
+
+        result = sync_recent_markets(
+            warehouse,
+            source,
+            lookback_days=30,
+            batch_size=50,
+            max_batches=2,
+            target_coins=["eth"],
+        )
+
+        self.assertEqual(result["target_coins"], ["eth"])
+        self.assertEqual(result["open_markets"]["inserted"], 0)
+        self.assertEqual(result["closed_markets"]["inserted"], 1)
+        self.assertEqual(result["closed_markets"]["matched_coins"], ["eth"])
+        rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
+        self.assertEqual([row[0] for row in rows], ["eth-updown-5m-1713744000"])
+
     def test_recent_5m_fill_sync_filters_by_registry_tokens(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent.duckdb")
         self.addCleanup(warehouse.close)
@@ -521,6 +542,74 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(result["history"]["fetched"], 1)
         self.assertEqual(result["fills_enriched_rows"], 2)
         self.assertEqual(result["history_lookback_days"], 30)
+
+    def test_recent_5m_fill_sync_filters_asset_windows_to_target_coins(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_target_coins.duckdb")
+        self.addCleanup(warehouse.close)
+        warehouse.insert_markets(
+            [
+                {
+                    "market_id": "m-btc",
+                    "created_at": "2026-04-22T00:00:00Z",
+                    "market_slug": "btc-updown-5m-target",
+                    "question": "BTC target market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-btc-up",
+                    "token2": "tok-btc-down",
+                    "condition_id": "cond-btc",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": "2026-04-22T00:05:00Z",
+                    "start_time": "2026-04-22T00:00:00Z",
+                    "end_time": "2026-04-22T00:05:00Z",
+                    "active": False,
+                    "accepting_orders": False,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+                {
+                    "market_id": "m-eth",
+                    "created_at": "2026-04-22T00:00:00Z",
+                    "market_slug": "eth-updown-5m-target",
+                    "question": "ETH target market",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-eth-up",
+                    "token2": "tok-eth-down",
+                    "condition_id": "cond-eth",
+                    "volume": 10.0,
+                    "ticker": "ETH",
+                    "closed_time": "2026-04-22T00:05:00Z",
+                    "start_time": "2026-04-22T00:00:00Z",
+                    "end_time": "2026-04-22T00:05:00Z",
+                    "active": False,
+                    "accepting_orders": False,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                },
+            ]
+        )
+        warehouse.rebuild_market_5m_registry()
+        fill_source = _RecordingFillSource()
+
+        with mock.patch("research.sync.datetime") as dt_mock:
+            dt_mock.now.return_value = datetime.fromisoformat("2026-04-22T12:00:00+00:00")
+            dt_mock.side_effect = datetime
+            result = sync_recent_5m_fills(
+                warehouse,
+                fill_source,
+                lookback_hours=24,
+                history_lookback_days=0,
+                batch_size=1000,
+                asset_chunk_size=10,
+                target_coins=["eth"],
+            )
+
+        self.assertEqual(result["target_coins"], ["eth"])
+        self.assertEqual(fill_source.seen_assets, [("tok-eth-down", "tok-eth-up")])
 
     def test_recent_5m_fill_sync_reports_progress(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_progress.duckdb")

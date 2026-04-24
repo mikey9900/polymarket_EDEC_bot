@@ -61,9 +61,11 @@ def sync_recent_markets(
     lookback_days: int = 30,
     batch_size: int = 500,
     max_batches: int | None = None,
+    target_coins: list[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=int(lookback_days))
+    normalized_target_coins = _normalize_target_coins(target_coins)
     _emit_progress(progress_callback, f"Gamma recent markets: cutoff {cutoff.isoformat()}.")
     open_stats = _sync_recent_market_feed(
         warehouse,
@@ -71,6 +73,7 @@ def sync_recent_markets(
         cutoff=cutoff,
         batch_size=batch_size,
         max_batches=max_batches,
+        target_coins=normalized_target_coins,
         closed=None,
         order="createdAt",
         progress_callback=progress_callback,
@@ -81,6 +84,7 @@ def sync_recent_markets(
         cutoff=cutoff,
         batch_size=batch_size,
         max_batches=max_batches,
+        target_coins=normalized_target_coins,
         closed=True,
         order="closedTime",
         progress_callback=progress_callback,
@@ -95,6 +99,7 @@ def sync_recent_markets(
         "dataset": "recent_markets",
         "lookback_days": int(lookback_days),
         "cutoff": cutoff.isoformat(),
+        "target_coins": normalized_target_coins,
         "fetched": int(open_stats["fetched"]) + int(closed_stats["fetched"]),
         "inserted": int(open_stats["inserted"]) + int(closed_stats["inserted"]),
         "batches": int(open_stats["batches"]) + int(closed_stats["batches"]),
@@ -162,16 +167,19 @@ def sync_recent_5m_fills(
     bucket_buffer_seconds: int = 900,
     max_batches_per_chunk: int | None = None,
     max_history_batches_per_chunk: int | None = 1,
+    target_coins: list[str] | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(hours=int(lookback_hours))
     history_cutoff = now - timedelta(days=int(history_lookback_days))
+    normalized_target_coins = _normalize_target_coins(target_coins)
     recent_windows = warehouse.asset_windows_between(
         since=recent_cutoff,
         until=now,
         bucket_minutes=bucket_minutes,
     )
+    recent_windows = _filter_asset_windows_by_coin(recent_windows, normalized_target_coins)
     _emit_progress(
         progress_callback,
         f"Goldsky recent windows: {len(recent_windows)} windows | {_count_asset_ids(recent_windows)} assets.",
@@ -183,6 +191,7 @@ def sync_recent_5m_fills(
             until=recent_cutoff,
             bucket_minutes=history_bucket_minutes,
         )
+        history_windows = _filter_asset_windows_by_coin(history_windows, normalized_target_coins)
     _emit_progress(
         progress_callback,
         f"Goldsky history windows: {len(history_windows)} windows | {_count_asset_ids(history_windows)} assets.",
@@ -220,6 +229,7 @@ def sync_recent_5m_fills(
         "window_end": now.isoformat(),
         "lookback_hours": int(lookback_hours),
         "history_lookback_days": int(history_lookback_days),
+        "target_coins": normalized_target_coins,
         "recent_since_timestamp": int(recent_cutoff.timestamp()) - 1,
         "history_since_timestamp": int(history_cutoff.timestamp()) - 1 if int(history_lookback_days) > 0 else None,
         "asset_window_count": int(recent_stats["asset_window_count"]) + int(history_stats["asset_window_count"]),
@@ -257,6 +267,7 @@ def sync_daily_research_window(
     bucket_buffer_seconds: int = 900,
     max_batches_per_chunk: int | None = None,
     max_history_batches_per_chunk: int | None = 1,
+    target_coins: list[str] | None = None,
 ) -> dict[str, object]:
     market_result = sync_recent_markets(
         warehouse,
@@ -264,6 +275,7 @@ def sync_daily_research_window(
         lookback_days=market_lookback_days,
         batch_size=market_batch_size,
         max_batches=market_max_batches,
+        target_coins=target_coins,
     )
     fill_result = sync_recent_5m_fills(
         warehouse,
@@ -277,6 +289,7 @@ def sync_daily_research_window(
         bucket_buffer_seconds=bucket_buffer_seconds,
         max_batches_per_chunk=max_batches_per_chunk,
         max_history_batches_per_chunk=max_history_batches_per_chunk,
+        target_coins=target_coins,
     )
     return {
         "dataset": "daily_research_sync",
@@ -366,16 +379,22 @@ def _sync_recent_market_feed(
     cutoff: datetime,
     batch_size: int,
     max_batches: int | None,
+    target_coins: list[str] | None,
     closed: bool | None,
     order: str,
     progress_callback: ProgressCallback | None,
 ) -> dict[str, int | bool]:
+    normalized_target_coins = _normalize_target_coins(target_coins)
     fetched = 0
     inserted = 0
     batches = 0
     offset = 0
     reached_cutoff = False
+    matched_coins: set[str] = set()
     feed_label = "closed" if closed else "open"
+    effective_max_batches = max_batches
+    if normalized_target_coins and max_batches is not None:
+        effective_max_batches = max(int(max_batches), min(10, max(2, len(normalized_target_coins) * 2)))
     while True:
         _emit_progress(
             progress_callback,
@@ -400,8 +419,13 @@ def _sync_recent_market_feed(
             if comparison_ts is not None and comparison_ts < cutoff:
                 reached_cutoff = True
                 break
+            market_coin = _market_coin(market)
+            if normalized_target_coins and market_coin not in normalized_target_coins:
+                continue
             if market.get("market_id"):
                 normalized.append(market)
+                if market_coin:
+                    matched_coins.add(market_coin)
         inserted += warehouse.insert_markets(normalized)
         fetched += len(rows)
         offset += len(rows)
@@ -412,11 +436,13 @@ def _sync_recent_market_feed(
         )
         if reached_cutoff or len(rows) < batch_size:
             break
-        if max_batches is not None and batches >= max_batches:
+        if effective_max_batches is not None and batches >= effective_max_batches:
             break
     return {
         "closed": bool(closed),
         "order": str(order or "createdAt"),
+        "target_coins": normalized_target_coins,
+        "matched_coins": sorted(matched_coins),
         "fetched": fetched,
         "inserted": inserted,
         "batches": batches,
@@ -439,6 +465,42 @@ def _chunked(values: list[str], chunk_size: int) -> list[list[str]]:
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     return [values[idx:idx + chunk_size] for idx in range(0, len(values), chunk_size)]
+
+
+def _market_coin(market: dict[str, object]) -> str:
+    ticker = str(market.get("ticker") or "").strip().lower()
+    if ticker:
+        return ticker
+    slug = str(market.get("market_slug") or "").strip().lower()
+    if "-updown-5m-" in slug:
+        return slug.split("-updown-5m-", 1)[0]
+    return slug.split("-", 1)[0] if slug else ""
+
+
+def _normalize_target_coins(target_coins: list[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for coin in list(target_coins or []):
+        value = str(coin or "").strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
+def _filter_asset_windows_by_coin(
+    asset_windows: list[dict[str, object]],
+    target_coins: list[str] | None,
+) -> list[dict[str, object]]:
+    normalized_target_coins = _normalize_target_coins(target_coins)
+    if not normalized_target_coins:
+        return list(asset_windows)
+    return [
+        dict(window)
+        for window in asset_windows
+        if str(window.get("coin") or "").strip().lower() in normalized_target_coins
+    ]
 
 
 def _emit_progress(callback: ProgressCallback | None, message: str) -> None:

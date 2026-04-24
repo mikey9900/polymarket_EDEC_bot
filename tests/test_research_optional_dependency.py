@@ -16,7 +16,7 @@ import main as app_main
 from research import artifacts
 from research import paths as research_paths
 from research import _duckdb as optional_duckdb
-from research.cli import build_parser, main
+from research.cli import _config_target_coins, build_parser, main
 
 
 class ResearchOptionalDependencyTests(unittest.TestCase):
@@ -248,19 +248,18 @@ class ResearchOptionalDependencyTests(unittest.TestCase):
             retry_backoff_seconds=0.75,
             retry_max_backoff_seconds=9.0,
         )
-        sync_mock.assert_called_once_with(
-            fake_warehouse,
-            fake_source,
-            lookback_hours=24,
-            history_lookback_days=30,
-            batch_size=1000,
-            asset_chunk_size=20,
-            bucket_minutes=60,
-            history_bucket_minutes=360,
-            bucket_buffer_seconds=900,
-            max_batches_per_chunk=2,
-            max_history_batches_per_chunk=1,
-        )
+        sync_mock.assert_called_once()
+        self.assertEqual(sync_mock.call_args.args, (fake_warehouse, fake_source))
+        self.assertEqual(sync_mock.call_args.kwargs["target_coins"], _config_target_coins(research_paths.DEFAULT_CONFIG_PATH))
+        self.assertEqual(sync_mock.call_args.kwargs["lookback_hours"], 24)
+        self.assertEqual(sync_mock.call_args.kwargs["history_lookback_days"], 30)
+        self.assertEqual(sync_mock.call_args.kwargs["batch_size"], 1000)
+        self.assertEqual(sync_mock.call_args.kwargs["asset_chunk_size"], 20)
+        self.assertEqual(sync_mock.call_args.kwargs["bucket_minutes"], 60)
+        self.assertEqual(sync_mock.call_args.kwargs["history_bucket_minutes"], 360)
+        self.assertEqual(sync_mock.call_args.kwargs["bucket_buffer_seconds"], 900)
+        self.assertEqual(sync_mock.call_args.kwargs["max_batches_per_chunk"], 2)
+        self.assertEqual(sync_mock.call_args.kwargs["max_history_batches_per_chunk"], 1)
         fake_source.close.assert_called_once()
         fake_warehouse.close.assert_called_once()
 

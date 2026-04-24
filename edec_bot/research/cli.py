@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import yaml
+from pathlib import Path
 
 from .codex_automation import CodexAutomationManager
 from .paths import (
@@ -98,6 +100,30 @@ def _source_retry_kwargs(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def _config_target_coins(config_path: str | Path | None) -> list[str]:
+    path = Path(config_path or DEFAULT_CONFIG_PATH)
+    if not path.exists():
+        return []
+    try:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    if not isinstance(payload, dict):
+        return []
+    coins = payload.get("coins") or []
+    if not isinstance(coins, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for coin in coins:
+        value = str(coin or "").strip().lower()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m edec_bot.research")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -116,6 +142,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_recent_markets_parser.add_argument("--lookback-days", type=int, default=30)
     sync_recent_markets_parser.add_argument("--batch-size", type=int, default=500)
     sync_recent_markets_parser.add_argument("--max-batches", type=int, default=None)
+    _add_config_path_arg(sync_recent_markets_parser)
     _add_http_retry_args(sync_recent_markets_parser)
 
     sync_fills_parser = subparsers.add_parser("sync-fills", help="Sync Goldsky fills into the warehouse")
@@ -138,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync_recent_fills_parser.add_argument("--bucket-buffer-seconds", type=int, default=900)
     sync_recent_fills_parser.add_argument("--max-batches-per-chunk", type=int, default=None)
     sync_recent_fills_parser.add_argument("--max-history-batches-per-chunk", type=int, default=1)
+    _add_config_path_arg(sync_recent_fills_parser)
     _add_http_retry_args(sync_recent_fills_parser)
 
     build_artifacts_parser = subparsers.add_parser("build-artifacts", help="Build runtime policy and reports")
@@ -258,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
                 lookback_days=args.lookback_days,
                 batch_size=args.batch_size,
                 max_batches=args.max_batches,
+                target_coins=_config_target_coins(args.config_path),
             )
         finally:
             source.close()
@@ -284,7 +313,12 @@ def main(argv: list[str] | None = None) -> int:
         warehouse = ResearchWarehouse(args.warehouse_path)
         source = GoldskyFillSource(**_source_retry_kwargs(args))
         try:
-            result = sync_recent_5m_fills(warehouse, source, **_recent_5m_sync_kwargs(args))
+            result = sync_recent_5m_fills(
+                warehouse,
+                source,
+                target_coins=_config_target_coins(args.config_path),
+                **_recent_5m_sync_kwargs(args),
+            )
         finally:
             source.close()
             warehouse.close()
@@ -311,6 +345,7 @@ def main(argv: list[str] | None = None) -> int:
                     market_lookback_days=args.market_lookback_days,
                     market_batch_size=args.market_batch_size,
                     market_max_batches=args.market_max_batches,
+                    target_coins=_config_target_coins(args.config_path),
                     **_recent_5m_sync_kwargs(args),
                 )
             finally:

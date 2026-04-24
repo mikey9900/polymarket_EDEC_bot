@@ -468,13 +468,15 @@ def _chunked(values: list[str], chunk_size: int) -> list[list[str]]:
 
 
 def _market_coin(market: dict[str, object]) -> str:
-    ticker = str(market.get("ticker") or "").strip().lower()
-    if ticker:
-        return ticker
     slug = str(market.get("market_slug") or "").strip().lower()
     if "-updown-5m-" in slug:
         return slug.split("-updown-5m-", 1)[0]
-    return slug.split("-", 1)[0] if slug else ""
+    if slug:
+        return slug.split("-", 1)[0]
+    ticker = str(market.get("ticker") or "").strip().lower()
+    if ticker:
+        return ticker.split("-", 1)[0]
+    return ""
 
 
 def _normalize_target_coins(target_coins: list[str] | None) -> list[str]:

@@ -116,6 +116,35 @@ class _FakeMarketSource:
         ]
 
 
+class _TickerMismatchMarketSource:
+    def __init__(self):
+        self.calls = 0
+
+    def fetch_markets(self, *, offset: int, limit: int, ascending: bool = True, closed=None, order="createdAt"):
+        self.calls += 1
+        if closed is not True or ascending or offset > 0:
+            return []
+        return [
+            {
+                "id": "m-eth",
+                "createdAt": "2026-04-24T12:00:00Z",
+                "slug": "eth-updown-5m-1777046400",
+                "question": "Will ETH go up in 5 minutes?",
+                "outcomes": ["Up", "Down"],
+                "clobTokenIds": ["tok-eth-up", "tok-eth-down"],
+                "conditionId": "cond-eth",
+                "volume": "987.6",
+                "closedTime": "2026-04-24T12:05:00Z",
+                "eventStartTime": "2026-04-24T12:00:00Z",
+                "endDate": "2026-04-24T12:05:00Z",
+                "acceptingOrders": False,
+                "negRisk": False,
+                "feeSchedule": {"rate": 0.072},
+                "events": [{"ticker": "ETH-APR-24-2026"}],
+            }
+        ]
+
+
 class _FakeFillSource:
     def fetch_fills(self, *, cursor: FillCursor, limit: int):
         if cursor == FillCursor():
@@ -423,6 +452,25 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(result["closed_markets"]["matched_coins"], ["eth"])
         rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
         self.assertEqual([row[0] for row in rows], ["eth-updown-5m-1713744000"])
+
+    def test_recent_market_sync_prefers_slug_coin_when_ticker_is_mismatched(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_markets_ticker_mismatch.duckdb")
+        self.addCleanup(warehouse.close)
+        source = _TickerMismatchMarketSource()
+
+        result = sync_recent_markets(
+            warehouse,
+            source,
+            lookback_days=30,
+            batch_size=50,
+            max_batches=2,
+            target_coins=["eth"],
+        )
+
+        self.assertEqual(result["closed_markets"]["inserted"], 1)
+        self.assertEqual(result["closed_markets"]["matched_coins"], ["eth"])
+        rows = warehouse.conn.execute("SELECT market_slug FROM markets").fetchall()
+        self.assertEqual([row[0] for row in rows], ["eth-updown-5m-1777046400"])
 
     def test_recent_5m_fill_sync_filters_by_registry_tokens(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent.duckdb")

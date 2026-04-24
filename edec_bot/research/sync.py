@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 from .sources import FillCursor, FillSource, GammaMarketSource, GoldskyFillSource, normalize_gamma_market, normalize_goldsky_fill
 
 if TYPE_CHECKING:
     from .warehouse import ResearchWarehouse
+
+
+ProgressCallback = Callable[[str], None]
 
 
 def sync_markets(
@@ -58,8 +61,10 @@ def sync_recent_markets(
     lookback_days: int = 30,
     batch_size: int = 500,
     max_batches: int | None = None,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     cutoff = datetime.now(timezone.utc) - timedelta(days=int(lookback_days))
+    _emit_progress(progress_callback, f"Gamma recent markets: cutoff {cutoff.isoformat()}.")
     open_stats = _sync_recent_market_feed(
         warehouse,
         source,
@@ -68,6 +73,7 @@ def sync_recent_markets(
         max_batches=max_batches,
         closed=None,
         order="createdAt",
+        progress_callback=progress_callback,
     )
     closed_stats = _sync_recent_market_feed(
         warehouse,
@@ -77,6 +83,7 @@ def sync_recent_markets(
         max_batches=max_batches,
         closed=True,
         order="closedTime",
+        progress_callback=progress_callback,
     )
     registry_rows = warehouse.rebuild_market_5m_registry()
     enriched_rows = warehouse.rebuild_fills_enriched()
@@ -152,6 +159,7 @@ def sync_recent_5m_fills(
     bucket_buffer_seconds: int = 900,
     max_batches_per_chunk: int | None = None,
     max_history_batches_per_chunk: int | None = 1,
+    progress_callback: ProgressCallback | None = None,
 ) -> dict[str, object]:
     now = datetime.now(timezone.utc)
     recent_cutoff = now - timedelta(hours=int(lookback_hours))
@@ -161,6 +169,10 @@ def sync_recent_5m_fills(
         until=now,
         bucket_minutes=bucket_minutes,
     )
+    _emit_progress(
+        progress_callback,
+        f"Goldsky recent windows: {len(recent_windows)} windows | {_count_asset_ids(recent_windows)} assets.",
+    )
     history_windows: list[dict[str, object]] = []
     if int(history_lookback_days) > 0 and history_cutoff < recent_cutoff:
         history_windows = warehouse.asset_windows_between(
@@ -168,6 +180,10 @@ def sync_recent_5m_fills(
             until=recent_cutoff,
             bucket_minutes=history_bucket_minutes,
         )
+    _emit_progress(
+        progress_callback,
+        f"Goldsky history windows: {len(history_windows)} windows | {_count_asset_ids(history_windows)} assets.",
+    )
     recent_stats = _sync_asset_windows(
         warehouse,
         source,
@@ -176,6 +192,8 @@ def sync_recent_5m_fills(
         asset_chunk_size=asset_chunk_size,
         bucket_buffer_seconds=bucket_buffer_seconds,
         max_batches_per_chunk=max_batches_per_chunk,
+        progress_callback=progress_callback,
+        label="recent",
     )
     history_stats = _sync_asset_windows(
         warehouse,
@@ -185,6 +203,8 @@ def sync_recent_5m_fills(
         asset_chunk_size=asset_chunk_size,
         bucket_buffer_seconds=bucket_buffer_seconds,
         max_batches_per_chunk=max_history_batches_per_chunk,
+        progress_callback=progress_callback,
+        label="history",
     )
     registry_rows = warehouse.rebuild_market_5m_registry()
     enriched_rows = warehouse.rebuild_fills_enriched()
@@ -268,12 +288,17 @@ def _sync_asset_windows(
     asset_chunk_size: int,
     bucket_buffer_seconds: int,
     max_batches_per_chunk: int | None,
+    progress_callback: ProgressCallback | None,
+    label: str,
 ) -> dict[str, int]:
     fetched = 0
     inserted = 0
     total_batches = 0
     chunks_processed = 0
     asset_count = 0
+    total_chunks = _count_chunks(asset_windows, asset_chunk_size)
+    if not asset_windows:
+        _emit_progress(progress_callback, f"Goldsky {label}: no asset windows to scan.")
     for asset_window in asset_windows:
         bucket_start = asset_window["bucket_start"]
         bucket_end = asset_window["bucket_end"]
@@ -282,6 +307,12 @@ def _sync_asset_windows(
         since_timestamp = int((bucket_start - timedelta(seconds=bucket_buffer_seconds)).timestamp()) - 1
         until_timestamp = int((bucket_end + timedelta(seconds=bucket_buffer_seconds)).timestamp())
         for asset_chunk in _chunked(window_asset_ids, asset_chunk_size):
+            next_chunk_number = chunks_processed + 1
+            _emit_progress(
+                progress_callback,
+                f"Goldsky {label} chunk {next_chunk_number}/{total_chunks}: "
+                f"{len(asset_chunk)} assets | fetched {fetched} fills so far.",
+            )
             cursor = FillCursor(last_timestamp=since_timestamp)
             chunk_batches = 0
             while True:
@@ -302,6 +333,11 @@ def _sync_asset_windows(
                 fetched += len(rows)
                 total_batches += 1
                 chunk_batches += 1
+                _emit_progress(
+                    progress_callback,
+                    f"Goldsky {label} chunk {next_chunk_number}/{total_chunks}: "
+                    f"batch {chunk_batches} fetched {len(rows)} fills | total {fetched}.",
+                )
                 if max_batches_per_chunk is not None and chunk_batches >= max_batches_per_chunk:
                     break
                 if len(rows) < batch_size and prior.sticky_timestamp is None and cursor.sticky_timestamp is None:
@@ -326,13 +362,19 @@ def _sync_recent_market_feed(
     max_batches: int | None,
     closed: bool | None,
     order: str,
+    progress_callback: ProgressCallback | None,
 ) -> dict[str, int | bool]:
     fetched = 0
     inserted = 0
     batches = 0
     offset = 0
     reached_cutoff = False
+    feed_label = "closed" if closed else "open"
     while True:
+        _emit_progress(
+            progress_callback,
+            f"Gamma {feed_label} feed: batch {batches + 1} offset {offset} order {order}.",
+        )
         rows = source.fetch_markets(
             offset=offset,
             limit=batch_size,
@@ -358,6 +400,10 @@ def _sync_recent_market_feed(
         fetched += len(rows)
         offset += len(rows)
         batches += 1
+        _emit_progress(
+            progress_callback,
+            f"Gamma {feed_label} feed: fetched {fetched} markets across {batches} batches.",
+        )
         if reached_cutoff or len(rows) < batch_size:
             break
         if max_batches is not None and batches >= max_batches:
@@ -387,3 +433,23 @@ def _chunked(values: list[str], chunk_size: int) -> list[list[str]]:
     if chunk_size <= 0:
         raise ValueError("chunk_size must be positive")
     return [values[idx:idx + chunk_size] for idx in range(0, len(values), chunk_size)]
+
+
+def _emit_progress(callback: ProgressCallback | None, message: str) -> None:
+    if callback is None:
+        return
+    callback(str(message))
+
+
+def _count_asset_ids(asset_windows: list[dict[str, object]]) -> int:
+    return sum(len(list(window.get("asset_ids") or [])) for window in asset_windows)
+
+
+def _count_chunks(asset_windows: list[dict[str, object]], chunk_size: int) -> int:
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be positive")
+    total = 0
+    for window in asset_windows:
+        asset_count = len(list(window.get("asset_ids") or []))
+        total += (asset_count + chunk_size - 1) // chunk_size
+    return total

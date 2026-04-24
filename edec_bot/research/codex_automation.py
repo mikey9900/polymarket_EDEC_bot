@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
@@ -339,6 +341,7 @@ class CodexAutomationManager:
 
     def run_loop(self, *, poll_seconds: float = 15.0) -> None:
         delay = max(1.0, float(poll_seconds))
+        self._log_runner_event(f"Runner online. Polling every {delay:.0f}s.")
         while True:
             self.run_once()
             time.sleep(delay)
@@ -392,6 +395,7 @@ class CodexAutomationManager:
             "detail": "Preparing job workspace.",
         }
         self._update_runner_status(state=state, healthy=True)
+        self._log_runner_event(f"Started {job['job_type']} ({run_id}).")
 
         ok = False
         result: dict[str, Any]
@@ -450,6 +454,7 @@ class CodexAutomationManager:
         self._sync_tuner_state(state)
         state["runner"]["queue_depth"] = self.queue_depth()
         self.save_state(state)
+        self._log_runner_event(state["last_run"]["summary"])
         return result_payload
 
     def _execute_job(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -501,28 +506,30 @@ class CodexAutomationManager:
         weekly_context_result: dict[str, Any] | None = None
         weekly_context_error: dict[str, str] | None = None
         try:
-            self._refresh_active_run(phase="syncing markets", detail="Refreshing recent Gamma markets.")
-            market_result = sync_recent_markets(
-                warehouse,
-                market_source,
-                lookback_days=int(args.get("market_lookback_days", 30)),
-                batch_size=int(args.get("market_batch_size", 500)),
-                max_batches=self._optional_int(args.get("market_max_batches")),
-            )
-            self._refresh_active_run(phase="syncing fills", detail="Refreshing recent Goldsky 5m fills.")
-            fill_result = sync_recent_5m_fills(
-                warehouse,
-                fill_source,
-                lookback_hours=int(args.get("lookback_hours", 24)),
-                history_lookback_days=int(args.get("history_lookback_days", 30)),
-                batch_size=int(args.get("batch_size", 1000)),
-                asset_chunk_size=int(args.get("asset_chunk_size", 20)),
-                bucket_minutes=int(args.get("bucket_minutes", 60)),
-                history_bucket_minutes=int(args.get("history_bucket_minutes", 360)),
-                bucket_buffer_seconds=int(args.get("bucket_buffer_seconds", 900)),
-                max_batches_per_chunk=self._optional_int(args.get("max_batches_per_chunk", 2)),
-                max_history_batches_per_chunk=self._optional_int(args.get("max_history_batches_per_chunk", 1)),
-            )
+            with self._phase_monitor("syncing markets", "Refreshing recent Gamma markets.") as market_progress:
+                market_result = sync_recent_markets(
+                    warehouse,
+                    market_source,
+                    lookback_days=int(args.get("market_lookback_days", 30)),
+                    batch_size=int(args.get("market_batch_size", 500)),
+                    max_batches=self._optional_int(args.get("market_max_batches")),
+                    progress_callback=market_progress,
+                )
+            with self._phase_monitor("syncing fills", "Refreshing recent Goldsky 5m fills.") as fill_progress:
+                fill_result = sync_recent_5m_fills(
+                    warehouse,
+                    fill_source,
+                    lookback_hours=int(args.get("lookback_hours", 24)),
+                    history_lookback_days=int(args.get("history_lookback_days", 30)),
+                    batch_size=int(args.get("batch_size", 1000)),
+                    asset_chunk_size=int(args.get("asset_chunk_size", 20)),
+                    bucket_minutes=int(args.get("bucket_minutes", 60)),
+                    history_bucket_minutes=int(args.get("history_bucket_minutes", 360)),
+                    bucket_buffer_seconds=int(args.get("bucket_buffer_seconds", 900)),
+                    max_batches_per_chunk=self._optional_int(args.get("max_batches_per_chunk", 2)),
+                    max_history_batches_per_chunk=self._optional_int(args.get("max_history_batches_per_chunk", 1)),
+                    progress_callback=fill_progress,
+                )
             sync_result = {
                 "dataset": "daily_research_sync",
                 "markets": market_result,
@@ -688,6 +695,34 @@ class CodexAutomationManager:
         active["progress_at"] = self._utcnow().isoformat()
         state["active_run"] = active
         self._update_runner_status(state=state, healthy=True)
+
+    @contextmanager
+    def _phase_monitor(self, phase: str, initial_detail: str) -> Iterator[Callable[[str], None]]:
+        default_detail = str(initial_detail or "").strip()
+        current = {"detail": ""}
+
+        def update(detail: str) -> None:
+            text = str(detail or "").strip() or default_detail or current["detail"]
+            detail_changed = text != current["detail"]
+            current["detail"] = text
+            self._refresh_active_run(phase=phase, detail=current["detail"])
+            if detail_changed:
+                self._log_runner_event(f"{phase}: {current['detail']}")
+
+        update(default_detail)
+        stop_event = threading.Event()
+
+        def _heartbeat() -> None:
+            while not stop_event.wait(5.0):
+                self._refresh_active_run(phase=phase, detail=current["detail"])
+
+        thread = threading.Thread(target=_heartbeat, name=f"codex-{phase}", daemon=True)
+        thread.start()
+        try:
+            yield update
+        finally:
+            stop_event.set()
+            thread.join(timeout=1.0)
 
     def _clear_orphaned_active_run(self, state: dict[str, Any]) -> bool:
         active = state.get("active_run") or {}
@@ -910,6 +945,10 @@ class CodexAutomationManager:
             self.lock_path.unlink()
         except FileNotFoundError:
             pass
+
+    def _log_runner_event(self, message: str) -> None:
+        timestamp = self._utcnow().strftime("%Y-%m-%d %H:%M:%S%z")
+        print(f"[codex-runner] {timestamp} {message}", flush=True)
 
     def _pid_is_running(self, pid: int) -> bool:
         try:

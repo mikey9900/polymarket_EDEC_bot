@@ -318,6 +318,24 @@ class ResearchSyncTests(unittest.TestCase):
         rows = warehouse.conn.execute("SELECT market_slug FROM markets ORDER BY market_slug ASC").fetchall()
         self.assertEqual([row[0] for row in rows], ["btc-updown-5m-1713577200", "eth-updown-5m-1713744000"])
 
+    def test_recent_market_sync_reports_progress(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_markets_progress.duckdb")
+        self.addCleanup(warehouse.close)
+        source = _FakeMarketSource()
+        progress: list[str] = []
+
+        sync_recent_markets(
+            warehouse,
+            source,
+            lookback_days=30,
+            batch_size=50,
+            progress_callback=progress.append,
+        )
+
+        self.assertTrue(any("Gamma recent markets:" in item for item in progress))
+        self.assertTrue(any("Gamma open feed:" in item for item in progress))
+        self.assertTrue(any("Gamma closed feed:" in item for item in progress))
+
     def test_recent_market_sync_uses_closed_time_cutoff_for_closed_feed(self):
         now = datetime.now(timezone.utc).replace(microsecond=0)
         recent_closed = now - timedelta(days=1)
@@ -500,6 +518,59 @@ class ResearchSyncTests(unittest.TestCase):
         self.assertEqual(result["history"]["fetched"], 1)
         self.assertEqual(result["fills_enriched_rows"], 2)
         self.assertEqual(result["history_lookback_days"], 30)
+
+    def test_recent_5m_fill_sync_reports_progress(self):
+        warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_progress.duckdb")
+        self.addCleanup(warehouse.close)
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        start_at = now - timedelta(hours=1)
+        end_at = start_at + timedelta(minutes=5)
+        warehouse.insert_markets(
+            [
+                {
+                    "market_id": "m-recent",
+                    "created_at": start_at.isoformat().replace("+00:00", "Z"),
+                    "market_slug": "btc-updown-5m-1713577200",
+                    "question": "Will BTC go up in 5 minutes?",
+                    "answer1": "Up",
+                    "answer2": "Down",
+                    "token1": "tok-up",
+                    "token2": "tok-down",
+                    "condition_id": "cond-recent",
+                    "volume": 10.0,
+                    "ticker": "BTC",
+                    "closed_time": end_at.isoformat().replace("+00:00", "Z"),
+                    "start_time": start_at.isoformat().replace("+00:00", "Z"),
+                    "end_time": end_at.isoformat().replace("+00:00", "Z"),
+                    "active": False,
+                    "accepting_orders": False,
+                    "neg_risk": False,
+                    "fee_rate": 0.072,
+                    "raw_json": "{}",
+                }
+            ]
+        )
+        warehouse.rebuild_market_5m_registry()
+        progress: list[str] = []
+
+        sync_recent_5m_fills(
+            warehouse,
+            _FakeRecentFillSource(),
+            lookback_hours=24,
+            history_lookback_days=1,
+            batch_size=100,
+            asset_chunk_size=10,
+            bucket_minutes=60,
+            history_bucket_minutes=360,
+            bucket_buffer_seconds=60,
+            max_batches_per_chunk=2,
+            max_history_batches_per_chunk=1,
+            progress_callback=progress.append,
+        )
+
+        self.assertTrue(any("Goldsky recent windows:" in item for item in progress))
+        self.assertTrue(any("Goldsky history windows:" in item for item in progress))
+        self.assertTrue(any("Goldsky recent chunk" in item for item in progress))
 
     def test_recent_5m_fill_sync_excludes_future_windows_from_recent_pass(self):
         warehouse = ResearchWarehouse(self.tmpdir / "warehouse_recent_future.duckdb")

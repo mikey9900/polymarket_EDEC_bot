@@ -265,137 +265,137 @@ class ResearchWarehouse:
         return len(payload)
 
     def rebuild_market_5m_registry(self) -> int:
-        market_rows = self.conn.execute(
+        self.conn.execute("DELETE FROM market_5m_registry")
+        self.conn.execute(
             """
-            SELECT market_id, market_slug, answer1, answer2, token1, token2, start_time, end_time
+            INSERT INTO market_5m_registry (
+                market_id, market_slug, coin, window_start, window_end, window_date, up_token_id, down_token_id
+            )
+            SELECT
+                market_id,
+                market_slug,
+                split_part(lower(market_slug), '-updown-5m-', 1) AS coin,
+                start_time,
+                end_time,
+                CAST(start_time AS DATE) AS window_date,
+                CASE
+                    WHEN lower(trim(coalesce(answer1, ''))) IN ('up', 'yes') THEN coalesce(token1, '')
+                    WHEN lower(trim(coalesce(answer2, ''))) IN ('up', 'yes') THEN coalesce(token2, '')
+                    ELSE coalesce(token1, '')
+                END AS up_token_id,
+                CASE
+                    WHEN lower(trim(coalesce(answer2, ''))) IN ('down', 'no') THEN coalesce(token2, '')
+                    WHEN lower(trim(coalesce(answer1, ''))) IN ('down', 'no') THEN coalesce(token1, '')
+                    ELSE coalesce(token2, '')
+                END AS down_token_id
             FROM markets
             WHERE market_slug LIKE '%-updown-5m-%'
             """
-        ).fetchall()
-        payload = []
-        for market_id, market_slug, answer1, answer2, token1, token2, start_time, end_time in market_rows:
-            coin = _slug_coin(market_slug)
-            up_token_id, down_token_id = _up_down_tokens(answer1, answer2, token1, token2)
-            payload.append(
-                [
-                    market_id,
-                    market_slug,
-                    coin,
-                    start_time,
-                    end_time,
-                    start_time.date() if start_time else None,
-                    up_token_id,
-                    down_token_id,
-                ]
-            )
-        self.conn.execute("DELETE FROM market_5m_registry")
-        if payload:
-            self.conn.executemany(
-                """
-                INSERT INTO market_5m_registry (
-                    market_id, market_slug, coin, window_start, window_end, window_date, up_token_id, down_token_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                payload,
-            )
-        return len(payload)
+        )
+        row = self.conn.execute("SELECT COUNT(*) FROM market_5m_registry").fetchone()
+        return int(row[0] or 0)
 
     def rebuild_fills_enriched(self) -> int:
-        market_rows = self.conn.execute(
-            """
-            SELECT market_id, market_slug, answer1, answer2, token1, token2
-            FROM markets
-            """
-        ).fetchall()
-        by_token: dict[str, dict[str, Any]] = {}
-        for market_id, market_slug, answer1, answer2, token1, token2 in market_rows:
-            coin = _slug_coin(market_slug)
-            row = {
-                "market_id": market_id,
-                "market_slug": market_slug,
-                "coin": coin,
-                "token_map": {
-                    str(token1 or ""): _token_side(answer1, "token1"),
-                    str(token2 or ""): _token_side(answer2, "token2"),
-                },
-            }
-            if token1:
-                by_token[str(token1)] = row
-            if token2:
-                by_token[str(token2)] = row
-
-        fill_rows = self.conn.execute(
-            """
-            SELECT event_id, event_timestamp, event_time, transaction_hash, maker, taker,
-                   maker_asset_id, maker_amount_filled, taker_asset_id, taker_amount_filled
-            FROM fills_raw
-            ORDER BY event_timestamp ASC, event_id ASC
-            """
-        ).fetchall()
-        payload = []
-        for row in fill_rows:
-            (
-                event_id,
-                event_timestamp,
-                event_time,
-                transaction_hash,
-                maker,
-                taker,
-                maker_asset_id,
-                maker_amount_filled,
-                taker_asset_id,
-                taker_amount_filled,
-            ) = row
-            maker_asset = str(maker_asset_id or "")
-            taker_asset = str(taker_asset_id or "")
-            token_id = maker_asset if maker_asset != USDC_ASSET_ID else taker_asset
-            market = by_token.get(token_id)
-            if not market:
-                continue
-            maker_amount = float(maker_amount_filled or 0.0) / 1_000_000.0
-            taker_amount = float(taker_amount_filled or 0.0) / 1_000_000.0
-            taker_is_usdc = taker_asset == USDC_ASSET_ID
-            usd_amount = taker_amount if taker_is_usdc else maker_amount
-            token_amount = maker_amount if taker_is_usdc else taker_amount
-            if token_amount <= 0:
-                continue
-            payload.append(
-                [
+        self.conn.execute("DELETE FROM fills_enriched")
+        self.conn.execute(
+            f"""
+            INSERT INTO fills_enriched (
+                event_id, event_timestamp, event_time, event_date, transaction_hash,
+                maker, taker, maker_asset_id, taker_asset_id, market_id, market_slug,
+                coin, token_side, token_id, price, usd_amount, token_amount, is_5m_updown
+            )
+            WITH market_tokens AS (
+                SELECT
+                    market_id,
+                    market_slug,
+                    CASE
+                        WHEN strpos(lower(market_slug), '-updown-5m-') > 0 THEN split_part(lower(market_slug), '-updown-5m-', 1)
+                        ELSE split_part(lower(market_slug), '-', 1)
+                    END AS coin,
+                    coalesce(token1, '') AS token_id,
+                    CASE
+                        WHEN lower(trim(coalesce(answer1, ''))) IN ('up', 'yes') THEN 'up'
+                        WHEN lower(trim(coalesce(answer1, ''))) IN ('down', 'no') THEN 'down'
+                        ELSE 'token1'
+                    END AS token_side
+                FROM markets
+                WHERE token1 IS NOT NULL AND token1 <> ''
+                UNION ALL
+                SELECT
+                    market_id,
+                    market_slug,
+                    CASE
+                        WHEN strpos(lower(market_slug), '-updown-5m-') > 0 THEN split_part(lower(market_slug), '-updown-5m-', 1)
+                        ELSE split_part(lower(market_slug), '-', 1)
+                    END AS coin,
+                    coalesce(token2, '') AS token_id,
+                    CASE
+                        WHEN lower(trim(coalesce(answer2, ''))) IN ('up', 'yes') THEN 'up'
+                        WHEN lower(trim(coalesce(answer2, ''))) IN ('down', 'no') THEN 'down'
+                        ELSE 'token2'
+                    END AS token_side
+                FROM markets
+                WHERE token2 IS NOT NULL AND token2 <> ''
+            ),
+            fill_basis AS (
+                SELECT
                     event_id,
-                    int(event_timestamp or 0),
+                    CAST(coalesce(event_timestamp, 0) AS BIGINT) AS event_timestamp,
                     event_time,
-                    event_time.date() if event_time else None,
+                    CAST(event_time AS DATE) AS event_date,
                     transaction_hash,
                     maker,
                     taker,
-                    maker_asset,
-                    taker_asset,
-                    market["market_id"],
-                    market["market_slug"],
-                    market["coin"],
-                    market["token_map"].get(token_id, "unknown"),
-                    token_id,
-                    usd_amount / token_amount,
-                    usd_amount,
-                    token_amount,
-                    "-updown-5m-" in str(market["market_slug"] or ""),
-                ]
+                    coalesce(maker_asset_id, '') AS maker_asset_id,
+                    coalesce(taker_asset_id, '') AS taker_asset_id,
+                    CASE
+                        WHEN coalesce(maker_asset_id, '') <> '{USDC_ASSET_ID}' THEN coalesce(maker_asset_id, '')
+                        ELSE coalesce(taker_asset_id, '')
+                    END AS token_id,
+                    CAST(coalesce(maker_amount_filled, 0.0) AS DOUBLE) / 1000000.0 AS maker_amount,
+                    CAST(coalesce(taker_amount_filled, 0.0) AS DOUBLE) / 1000000.0 AS taker_amount
+                FROM fills_raw
             )
-        self.conn.execute("DELETE FROM fills_enriched")
-        if payload:
-            self.conn.executemany(
-                """
-                INSERT INTO fills_enriched (
-                    event_id, event_timestamp, event_time, event_date, transaction_hash,
-                    maker, taker, maker_asset_id, taker_asset_id, market_id, market_slug,
-                    coin, token_side, token_id, price, usd_amount, token_amount, is_5m_updown
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                payload,
-            )
-        return len(payload)
+            SELECT
+                f.event_id,
+                f.event_timestamp,
+                f.event_time,
+                f.event_date,
+                f.transaction_hash,
+                f.maker,
+                f.taker,
+                f.maker_asset_id,
+                f.taker_asset_id,
+                m.market_id,
+                m.market_slug,
+                m.coin,
+                m.token_side,
+                f.token_id,
+                CASE
+                    WHEN f.taker_asset_id = '{USDC_ASSET_ID}' THEN f.taker_amount / f.maker_amount
+                    ELSE f.maker_amount / f.taker_amount
+                END AS price,
+                CASE
+                    WHEN f.taker_asset_id = '{USDC_ASSET_ID}' THEN f.taker_amount
+                    ELSE f.maker_amount
+                END AS usd_amount,
+                CASE
+                    WHEN f.taker_asset_id = '{USDC_ASSET_ID}' THEN f.maker_amount
+                    ELSE f.taker_amount
+                END AS token_amount,
+                strpos(lower(m.market_slug), '-updown-5m-') > 0 AS is_5m_updown
+            FROM fill_basis AS f
+            INNER JOIN market_tokens AS m
+                ON m.token_id = f.token_id
+            WHERE CASE
+                WHEN f.taker_asset_id = '{USDC_ASSET_ID}' THEN f.maker_amount
+                ELSE f.taker_amount
+            END > 0
+            ORDER BY f.event_timestamp ASC, f.event_id ASC
+            """
+        )
+        row = self.conn.execute("SELECT COUNT(*) FROM fills_enriched").fetchone()
+        return int(row[0] or 0)
 
     def export_parquet(self, parquet_root: str | Path = PARQUET_ROOT) -> dict[str, str]:
         root = resolve_repo_path(parquet_root)

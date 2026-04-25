@@ -40,7 +40,7 @@ from bot.strategy import StrategyEngine
 from bot.telegram_bot import TelegramBot
 from bot.tracker import DecisionTracker
 from research.codex_automation import CodexAutomationManager
-from research.paths import LOCAL_TRACKER_DB, ensure_runtime_config
+from research.paths import CODEX_RESTART_REQUEST_PATH, LOCAL_TRACKER_DB, ensure_runtime_config
 from research.runtime import ResearchSnapshotProvider
 
 _dashboard_api_import_error = None
@@ -365,14 +365,19 @@ async def main():
         default_mode=default_mode,
         config_path=str(Path(config_path).resolve()),
         config_hash=config_hash,
+        restart_request_path=CODEX_RESTART_REQUEST_PATH,
     )
 
+    restart_requested = False
     try:
-        await runtime.run()
+        restart_requested = bool(await runtime.run())
     finally:
         tracker.close()
         runtime_lock.release()
         logger.info("Shutdown complete")
+    if restart_requested:
+        logger.info("Re-executing process to apply config changes.")
+        os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]])
 
 
 if __name__ == "__main__":

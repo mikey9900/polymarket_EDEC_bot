@@ -91,6 +91,9 @@ class ControlPlane:
             "research_reset_runner": self.codex_manager is not None,
             "research_set_proposal_aggressiveness": self.codex_manager is not None,
             "research_set_live_aggressiveness": self.codex_manager is not None,
+            "research_apply_reviewed_config": self.codex_manager is not None,
+            "research_reset_loose_baseline": self.codex_manager is not None,
+            "research_rollback_last_config": self.codex_manager is not None,
             "tuner_run_now": self.codex_manager is not None,
             "tuner_schedule_pause": self.codex_manager is not None,
             "tuner_schedule_resume": self.codex_manager is not None,
@@ -246,6 +249,9 @@ class ControlPlane:
             "research_reset_runner",
             "research_set_proposal_aggressiveness",
             "research_set_live_aggressiveness",
+            "research_apply_reviewed_config",
+            "research_reset_loose_baseline",
+            "research_rollback_last_config",
             "tuner_run_now",
             "tuner_schedule_pause",
             "tuner_schedule_resume",
@@ -364,6 +370,39 @@ class ControlPlane:
                     "ok": True,
                     "status": 200,
                     "message": str(result.get("message") or "Live aggressiveness updated."),
+                }
+            if action == "research_apply_reviewed_config":
+                result = self.codex_manager.enqueue_apply_reviewed_config(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": (
+                        "Reviewed config apply queued."
+                        if result.get("queued")
+                        else "Reviewed config apply is already queued."
+                    ),
+                }
+            if action == "research_reset_loose_baseline":
+                result = self.codex_manager.enqueue_reset_loose_baseline(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": (
+                        "Loose paper baseline reset queued."
+                        if result.get("queued")
+                        else "Loose paper baseline reset is already queued."
+                    ),
+                }
+            if action == "research_rollback_last_config":
+                result = self.codex_manager.enqueue_rollback_config(requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": (
+                        "Config rollback queued."
+                        if result.get("queued")
+                        else "Config rollback is already queued."
+                    ),
                 }
             if action == "tuner_run_now":
                 result = self.codex_manager.enqueue_tuning_proposal(requested_by="dashboard")

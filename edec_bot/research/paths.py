@@ -48,6 +48,9 @@ CODEX_RUNS_ROOT = CODEX_ROOT / "runs"
 CODEX_STATE_PATH = CODEX_ROOT / "state.json"
 CODEX_LATEST_PATH = CODEX_ROOT / "latest.json"
 CODEX_LOCK_PATH = CODEX_ROOT / "runner.lock"
+CODEX_RESTART_REQUEST_PATH = CODEX_ROOT / "restart_request.json"
+LAST_CONFIG_APPLY_RECEIPT_PATH = SHARED_CONFIG_ROOT / "last_apply_receipt.json"
+LOOSE_PAPER_BASELINE_PATCH_PATH = REPO_ROOT / "edec_bot" / "research" / "loose_paper_baseline_patch.json"
 
 
 def resolve_repo_path(path_value: str | Path) -> Path:
@@ -133,6 +136,31 @@ def discover_session_export_files() -> list[Path]:
                 seen.add(resolved)
                 files.append(resolved)
     return files
+
+
+def discover_local_data_repo_roots() -> list[Path]:
+    env_root = str(os.getenv("EDEC_LOCAL_DATA_REPO_ROOT", "")).strip()
+    candidates = [
+        Path(env_root) if env_root else None,
+        REPO_ROOT.parent / "edec-bot-data",
+        REPO_ROOT / ".tmp_edec_data_repo",
+    ]
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        resolved = candidate.resolve(strict=False)
+        if resolved in seen or not resolved.exists():
+            continue
+        seen.add(resolved)
+        roots.append(resolved)
+    return roots
+
+
+def discover_local_data_repo_root() -> Path | None:
+    roots = discover_local_data_repo_roots()
+    return roots[0] if roots else None
 
 
 def _should_redirect_default_config_request(*, normalized: str, resolved: Path) -> bool:

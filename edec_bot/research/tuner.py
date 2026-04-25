@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from ._openai import require_openai
+from .config_apply import commit_config_payload
 from .paths import (
     CONFIG_HISTORY_ROOT,
     CONFIG_CANDIDATES_ROOT,
@@ -742,13 +743,22 @@ def promote_tuning_candidate(
         raise TuningError(f"Candidate config is missing: {candidate_path}")
 
     config_path = ensure_runtime_config(config_path)
-    candidate_text = candidate_path.read_text(encoding="utf-8")
-    config_path.write_text(candidate_text, encoding="utf-8")
-    config_hash = _config_hash(config_path)
-    history_root = resolve_repo_path(CONFIG_HISTORY_ROOT)
-    history_root.mkdir(parents=True, exist_ok=True)
-    history_path = history_root / f"{_utcnow().strftime('%Y%m%dT%H%M%SZ')}_{str(candidate.get('candidate_id') or 'promoted')}.yaml"
-    history_path.write_text(candidate_text, encoding="utf-8")
+    candidate_config = _load_yaml(candidate_path)
+    report_payload = candidate_detail_payload(candidate)
+    apply_result = commit_config_payload(
+        target_config=candidate_config,
+        config_path=config_path,
+        action="promote_candidate",
+        summary=f"Promoted {candidate.get('candidate_id')} to {config_path.name}.",
+        source_type="tuning_candidate",
+        source_ref=str(candidate.get("candidate_id") or ""),
+        apply_mode="manual",
+        restart_required=True,
+        requested_by="tuner",
+        changes=list(report_payload.get("changes") or []),
+        metadata={"candidate_source": source},
+    )
+    receipt = dict(apply_result.get("receipt") or {})
 
     now = _utcnow().isoformat()
     _set_candidate_record(
@@ -776,8 +786,10 @@ def promote_tuning_candidate(
         "candidate_id": candidate.get("candidate_id"),
         "candidate_source": source,
         "config_path": str(config_path),
-        "config_hash": config_hash,
-        "history_config_path": str(history_path),
+        "config_hash": str(apply_result.get("config_hash") or ""),
+        "history_config_path": str(receipt.get("previous_config_path") or ""),
+        "receipt_path": str(apply_result.get("receipt_path") or ""),
+        "restart_requested": bool(apply_result.get("restart_requested", False)),
         "release_version_changed": False,
     }
 

@@ -1,0 +1,22 @@
+[
+  {
+    "path": "single_leg.entry_min",
+    "recommended": 0.52,
+    "evidence": "Loose paper exploration baseline."
+  },
+  {
+    "path": "single_leg.min_velocity_30s",
+    "recommended": 0.1,
+    "evidence": "Loose paper exploration baseline."
+  },
+  {
+    "path": "lead_lag.min_entry",
+    "recommended": 0.52,
+    "evidence": "Loose paper exploration baseline."
+  },
+  {
+    "path": "lead_lag.min_velocity_30s",
+    "recommended": 0.1,
+    "evidence": "Loose paper exploration baseline."
+  }
+]

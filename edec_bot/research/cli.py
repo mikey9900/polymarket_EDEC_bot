@@ -8,6 +8,7 @@ import yaml
 from pathlib import Path
 
 from .codex_automation import CodexAutomationManager
+from .config_apply import publish_reviewed_config
 from .paths import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_POLICY_PATH,
@@ -242,6 +243,20 @@ def build_parser() -> argparse.ArgumentParser:
     reject_candidate_parser.add_argument("--candidate-id", default=None)
     reject_candidate_parser.add_argument("--reason", default="Rejected by operator.")
 
+    reviewed_apply_parser = subparsers.add_parser(
+        "publish-reviewed-config",
+        help="Write an approved reviewed-config patch into the local edec-bot-data checkout",
+    )
+    reviewed_apply_parser.add_argument("--approved-config-path", required=True)
+    reviewed_apply_parser.add_argument("--data-repo-root", default=None)
+    reviewed_apply_parser.add_argument("--live-config-path", default=None)
+    reviewed_apply_parser.add_argument("--source-type", default="manual_review")
+    reviewed_apply_parser.add_argument("--source-ref", default="")
+    reviewed_apply_parser.add_argument("--summary", default="")
+    reviewed_apply_parser.add_argument("--apply-mode", choices=("manual", "auto"), default="manual")
+    reviewed_apply_parser.add_argument("--allow-mismatch", action="store_true")
+    reviewed_apply_parser.add_argument("--approval-id", default=None)
+
     tuner_heartbeat_parser = subparsers.add_parser(
         "tuner-heartbeat",
         help="Honor shared tuner schedule state and run a proposal only when due",
@@ -452,6 +467,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "reject-tuning-candidate":
         result = reject_tuning_candidate(candidate_id=args.candidate_id, reason=args.reason)
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    if args.command == "publish-reviewed-config":
+        result = publish_reviewed_config(
+            approved_config_path=args.approved_config_path,
+            data_repo_root=args.data_repo_root,
+            live_config_path=args.live_config_path,
+            source_type=args.source_type,
+            source_ref=args.source_ref,
+            summary=args.summary,
+            apply_mode=args.apply_mode,
+            allow_mismatch=bool(args.allow_mismatch),
+            approval_id=args.approval_id,
+        )
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
 

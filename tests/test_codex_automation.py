@@ -233,6 +233,8 @@ class CodexAutomationManagerTests(unittest.TestCase):
         snapshot = self.manager.snapshot()
         self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 5)
         self.assertEqual(snapshot["codex"]["research_controls"]["live_aggressiveness_level"], 5)
+        self.assertEqual(snapshot["codex"]["approved_config"]["status"], "none")
+        self.assertEqual(snapshot["codex"]["last_config_apply_receipt"], {})
 
         proposal = self.manager.set_proposal_aggressiveness(8, requested_by="test")
         live = self.manager.set_live_aggressiveness(7, requested_by="test")
@@ -242,6 +244,69 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertTrue(live["ok"])
         self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 8)
         self.assertEqual(snapshot["codex"]["research_controls"]["live_aggressiveness_level"], 7)
+
+    def test_refresh_approved_config_reads_pending_manifest(self):
+        state = self.manager.read_state()
+        state["daily_local_candidate"] = {"candidate_id": "daily-1", "status": "ready"}
+
+        with (
+            mock.patch.object(
+                self.manager,
+                "_github_mirror_settings",
+                return_value={"token": "gh-token", "repo": "owner/data-repo", "branch": "main", "path": "research_exports"},
+            ),
+            mock.patch.object(
+                self.manager,
+                "_github_fetch_repo_json",
+                side_effect=[
+                    {
+                        "ok": True,
+                        "data": {
+                            "approval_id": "approval-1",
+                            "source_type": "daily_local",
+                            "source_ref": "daily-1",
+                            "summary": "Reviewed patch ready.",
+                            "apply_mode": "manual",
+                            "base_config_hash": "abc123",
+                            "allow_mismatch": False,
+                            "restart_required": True,
+                            "change_count": 1,
+                        },
+                    },
+                    {
+                        "ok": True,
+                        "data": [
+                            {
+                                "path": "single_leg.entry_min",
+                                "current": 0.54,
+                                "recommended": 0.52,
+                                "evidence": "Weekly review loosened the entry floor.",
+                            }
+                        ],
+                    },
+                ],
+            ),
+        ):
+            self.manager._refresh_approved_config(state)
+
+        self.assertEqual(state["approved_config"]["status"], "pending")
+        self.assertEqual(state["approved_config"]["approval_id"], "approval-1")
+        self.assertTrue(state["approved_config"]["matched_daily_candidate"])
+        self.assertEqual(state["approved_config"]["change_count"], 1)
+
+    def test_auto_apply_reviewed_config_enqueues_one_job(self):
+        state = self.manager.read_state()
+        state["approved_config"] = {
+            "status": "pending",
+            "apply_mode": "auto",
+        }
+
+        self.manager._queue_auto_apply_reviewed_config(state)
+        self.manager._queue_auto_apply_reviewed_config(state)
+
+        self.assertEqual(self.manager.queue_depth(), 1)
+        snapshot = self.manager.snapshot()
+        self.assertEqual(snapshot["codex"]["next_queued_job"]["job_type"], "apply_reviewed_config")
 
     def test_snapshot_surfaces_latest_daily_research_metrics(self):
         run_dir = self.tmpdir / "runs" / "20260422T180000Z-daily"

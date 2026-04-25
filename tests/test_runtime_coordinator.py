@@ -1,8 +1,10 @@
 import asyncio
+import json
 import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,6 +174,59 @@ class RuntimeCoordinatorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executor.close_calls, 1)
         self.assertGreaterEqual(tracker.save_calls, 1)
         self.assertEqual(telegram.stop_calls, 1)
+
+    async def test_run_restarts_when_request_file_appears(self):
+        tracker = _FakeTracker()
+        aggregator = _FakeAggregator()
+        scanner = _FakeScanner()
+        strategy = _FakeStrategy()
+        executor = _FakeExecutor()
+        telegram = _FakeTelegram()
+        feed = _FakeFeed()
+        request_path = ROOT / ".tmp_testdata" / "runtime_restart_request.json"
+        request_path.parent.mkdir(parents=True, exist_ok=True)
+        request_path.write_text(
+            json.dumps(
+                {
+                    "request_id": "req-1",
+                    "requested_at": "2026-04-24T19:00:00+00:00",
+                    "action": "apply_reviewed_config",
+                    "config_path": "/share/edec/config/active_config.yaml",
+                    "config_hash": "next456",
+                    "requested_by": "dashboard",
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.addCleanup(lambda: request_path.unlink(missing_ok=True))
+        coordinator = RuntimeCoordinator(
+            config=SimpleNamespace(coins=["btc"], execution=SimpleNamespace(dry_run=True)),
+            tracker=tracker,
+            risk_manager=_FakeRiskManager(),
+            aggregator=aggregator,
+            scanner=scanner,
+            strategy=strategy,
+            executor=executor,
+            telegram=telegram,
+            archive_fn=None,
+            archive_enabled=False,
+            archive_send_files_to_telegram=False,
+            default_mode="both",
+            config_path="config.yaml",
+            config_hash="abc123",
+            restart_request_path=request_path,
+            feed_starter=lambda config, queue: [(asyncio.create_task(asyncio.sleep(60)), feed)],
+        )
+
+        with (
+            mock.patch("bot.runtime.recover_runtime", return_value={"live_rows": 0, "paper_rows": 0, "live_monitors": 0, "live_pending": 0}),
+            mock.patch("bot.runtime.apply_strategy_runtime_state", return_value="both"),
+        ):
+            restarted = await asyncio.wait_for(coordinator.run(), timeout=5)
+
+        self.assertTrue(restarted)
+        self.assertFalse(request_path.exists())
+        self.assertTrue(any("restarting" in alert.lower() for alert in telegram.alerts))
 
 
 if __name__ == "__main__":

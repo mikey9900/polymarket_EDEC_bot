@@ -267,6 +267,16 @@ class _FakeCodexManager:
                     "updated_at": "2026-04-22T12:05:00+00:00",
                     "updated_by": "dashboard",
                 },
+                "approved_config": {
+                    "enabled": True,
+                    "status": "pending",
+                    "summary": "Reviewed config patch pending apply.",
+                    "approval_id": "approval-1",
+                    "source_type": "manual_review",
+                    "source_ref": "weekly-review",
+                    "matched_daily_candidate": False,
+                },
+                "last_config_apply_receipt": {},
             },
             "tuner": {
                 "running": False,
@@ -349,6 +359,18 @@ class _FakeCodexManager:
         self.calls.append(("research_set_live_aggressiveness", requested_by, level))
         self.live_level = int(level)
         return {"ok": True, "level": self.live_level, "message": f"Live aggressiveness set to {self.live_level}."}
+
+    def enqueue_apply_reviewed_config(self, *, requested_by: str = "dashboard"):
+        self.calls.append(("research_apply_reviewed_config", requested_by))
+        return {"queued": True}
+
+    def enqueue_reset_loose_baseline(self, *, requested_by: str = "dashboard"):
+        self.calls.append(("research_reset_loose_baseline", requested_by))
+        return {"queued": True}
+
+    def enqueue_rollback_config(self, *, requested_by: str = "dashboard"):
+        self.calls.append(("research_rollback_last_config", requested_by))
+        return {"queued": True}
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args=None):
         self.calls.append(("tuner_run_now", requested_by, args))
@@ -454,6 +476,9 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_runner"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_set_proposal_aggressiveness"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_set_live_aggressiveness"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_apply_reviewed_config"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_loose_baseline"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_rollback_last_config"])
 
     async def test_apply_control_async_updates_mode_and_budget(self):
         service = self._build_service()
@@ -555,6 +580,9 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
 
         proposal_result = await service._apply_control_async("research_set_proposal_aggressiveness", 8)
         live_result = await service._apply_control_async("research_set_live_aggressiveness", 7)
+        reviewed_apply = await service._apply_control_async("research_apply_reviewed_config")
+        baseline_result = await service._apply_control_async("research_reset_loose_baseline")
+        rollback_result = await service._apply_control_async("research_rollback_last_config")
         promote_result = await service._apply_control_async("tuner_promote_latest", {"candidate_id": "local-1"})
         reject_result = await service._apply_control_async("tuner_reject_latest", {"candidate_id": "local-1", "reason": "Not convinced"})
 
@@ -563,8 +591,14 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.tracker.get_runtime_context()["research_live_aggressiveness_level"], 7)
         self.assertIn(("research_set_proposal_aggressiveness", "dashboard", 8), service.control_plane.codex_manager.calls)
         self.assertIn(("research_set_live_aggressiveness", "dashboard", 7), service.control_plane.codex_manager.calls)
+        self.assertIn(("research_apply_reviewed_config", "dashboard"), service.control_plane.codex_manager.calls)
+        self.assertIn(("research_reset_loose_baseline", "dashboard"), service.control_plane.codex_manager.calls)
+        self.assertIn(("research_rollback_last_config", "dashboard"), service.control_plane.codex_manager.calls)
         self.assertIn(("tuner_promote_latest", "dashboard", "local-1"), service.control_plane.codex_manager.calls)
         self.assertIn(("tuner_reject_latest", "dashboard", "local-1", "Not convinced"), service.control_plane.codex_manager.calls)
+        self.assertTrue(reviewed_apply["ok"])
+        self.assertTrue(baseline_result["ok"])
+        self.assertTrue(rollback_result["ok"])
         self.assertTrue(promote_result["ok"])
         self.assertTrue(reject_result["ok"])
 

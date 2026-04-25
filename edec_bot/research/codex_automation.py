@@ -19,16 +19,28 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from .artifacts import build_artifacts
+from .config_apply import (
+    APPROVED_CONFIG_NAME,
+    APPROVED_MANIFEST_NAME,
+    APPROVED_PATCH_NAME,
+    ConfigConflictError,
+    apply_loose_paper_baseline,
+    apply_reviewed_patch,
+    load_last_config_apply_receipt,
+    rollback_last_config_apply,
+)
 from .paths import (
     CODEX_LATEST_PATH,
     CODEX_LOCK_PATH,
     CODEX_QUEUE_ROOT,
+    CODEX_RESTART_REQUEST_PATH,
     CODEX_RUNS_ROOT,
     CODEX_STATE_PATH,
     DEFAULT_CONFIG_PATH,
     DEFAULT_POLICY_PATH,
     DEFAULT_REPORT_JSON_PATH,
     DEFAULT_REPORT_MD_PATH,
+    LAST_CONFIG_APPLY_RECEIPT_PATH,
     LOCAL_TRACKER_DB,
     SHARED_DATA_ROOT,
     TUNER_ACTIVE_PATCH_PATH,
@@ -65,6 +77,9 @@ JOB_TYPES = {
     "tuning_proposal",
     "promote_candidate",
     "reject_candidate",
+    "apply_reviewed_config",
+    "reset_loose_baseline",
+    "rollback_config",
     "repo_task",
 }
 DEFAULT_TUNER_REASON = "Rejected by operator."
@@ -196,6 +211,8 @@ class CodexAutomationManager:
         weekly_review_bundle = dict(state.get("weekly_review_bundle") or {})
         research_controls = dict(state.get("research_controls") or {})
         daily_local_candidate_details = dict(state.get("daily_local_candidate_details") or {})
+        approved_config = dict(state.get("approved_config") or {})
+        last_config_apply_receipt = dict(state.get("last_config_apply_receipt") or {})
         return {
             "codex": {
                 "healthy": bool(runner.get("healthy", False)),
@@ -212,6 +229,8 @@ class CodexAutomationManager:
             "weekly_review_bundle": weekly_review_bundle,
             "primary_candidate_source": state.get("primary_candidate_source", "none"),
             "research_controls": research_controls,
+            "approved_config": approved_config,
+            "last_config_apply_receipt": last_config_apply_receipt,
             "github_mirror": dict(state.get("github_mirror") or {}),
         },
             "tuner": {
@@ -243,6 +262,9 @@ class CodexAutomationManager:
             "research_reset_runner": True,
             "research_set_proposal_aggressiveness": True,
             "research_set_live_aggressiveness": True,
+            "research_apply_reviewed_config": True,
+            "research_reset_loose_baseline": True,
+            "research_rollback_last_config": True,
             "tuner_run_now": True,
             "tuner_schedule_pause": True,
             "tuner_schedule_resume": True,
@@ -320,6 +342,15 @@ class CodexAutomationManager:
 
     def enqueue_tuning_proposal(self, *, requested_by: str = "dashboard", args: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.enqueue_job("tuning_proposal", requested_by=requested_by, args=args)
+
+    def enqueue_apply_reviewed_config(self, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self.enqueue_job("apply_reviewed_config", requested_by=requested_by, args={})
+
+    def enqueue_reset_loose_baseline(self, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self.enqueue_job("reset_loose_baseline", requested_by=requested_by, args={})
+
+    def enqueue_rollback_config(self, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self.enqueue_job("rollback_config", requested_by=requested_by, args={})
 
     def enqueue_promote_candidate(self, *, requested_by: str = "dashboard", candidate_id: str | None = None) -> dict[str, Any]:
         tuner = load_tuner_state(self.tuner_state_path or "data/research/tuner_state.json")
@@ -414,7 +445,11 @@ class CodexAutomationManager:
         if self._clear_orphaned_active_run(state) or self._clear_stale_active_run(state):
             state = self.read_state()
         now = self._utcnow()
+        self._refresh_approved_config(state)
         self._queue_due_jobs(state, now)
+        self._queue_auto_apply_reviewed_config(state)
+        state["runner"]["queue_depth"] = self.queue_depth()
+        self.save_state(state)
         self._update_runner_status(state=state, healthy=True)
 
         next_job = self._next_job_path()
@@ -539,6 +574,7 @@ class CodexAutomationManager:
             }
             self.latest_path.write_text(json.dumps(latest_payload, indent=2, sort_keys=True), encoding="utf-8")
         self._sync_tuner_state(state)
+        self._refresh_approved_config(state)
         mirror_result = self._mirror_research_latest(
             job_type=job["job_type"],
             run_dir=run_dir,
@@ -579,6 +615,12 @@ class CodexAutomationManager:
                 tuner_state_path=self.tuner_state_path or "data/research/tuner_state.json",
                 reason=str(args.get("reason") or DEFAULT_TUNER_REASON),
             )
+        if job_type == "apply_reviewed_config":
+            return self._run_apply_reviewed_config(args)
+        if job_type == "reset_loose_baseline":
+            return self._run_reset_loose_baseline(args)
+        if job_type == "rollback_config":
+            return self._run_rollback_config(args)
         if job_type == "repo_task":
             return self._run_repo_task(args)
         raise TuningError(f"Unsupported Codex job type: {job_type}")
@@ -694,6 +736,91 @@ class CodexAutomationManager:
                 "error": weekly_context_error,
             },
         }
+
+    def _run_apply_reviewed_config(self, args: dict[str, Any]) -> dict[str, Any]:
+        state = self.read_state()
+        approved = dict(state.get("approved_config") or {})
+        if str(approved.get("status") or "none").lower() not in {"pending", "conflict"}:
+            raise TuningError("No pending reviewed config is available.")
+        manifest = dict(approved.get("manifest") or {})
+        changes = list(approved.get("changes") or [])
+        if not manifest or not changes:
+            raise TuningError("Reviewed config manifest or patch is missing.")
+
+        self._refresh_active_run(phase="applying reviewed config", detail="Validating approved patch against live config.")
+        try:
+            apply_result = apply_reviewed_patch(
+                changes=changes,
+                config_path=args.get("config_path", self.config_path),
+                action="apply_reviewed_config",
+                summary=str(manifest.get("summary") or "Applied reviewed config."),
+                source_type=str(manifest.get("source_type") or "manual_review"),
+                source_ref=str(manifest.get("source_ref") or manifest.get("approval_id") or ""),
+                approval_id=str(manifest.get("approval_id") or ""),
+                apply_mode=str(manifest.get("apply_mode") or "manual"),
+                allow_mismatch=bool(manifest.get("allow_mismatch", False)),
+                restart_required=bool(manifest.get("restart_required", True)),
+                requested_by=str(args.get("requested_by") or "runner"),
+                metadata={"approved_config": manifest},
+            )
+        except ConfigConflictError as exc:
+            conflict_paths = list(exc.conflict_paths)
+            conflict_state = self.read_state()
+            approved_state = dict(conflict_state.get("approved_config") or {})
+            approved_state["status"] = "conflict"
+            approved_state["summary"] = f"Reviewed config conflict: {', '.join(conflict_paths)}"
+            approved_state["conflict_paths"] = conflict_paths
+            approved_state["last_checked_at"] = self._utcnow().isoformat()
+            conflict_state["approved_config"] = approved_state
+            self.save_state(conflict_state)
+            return {
+                "command": "apply-reviewed-config",
+                "ok": False,
+                "status": "conflict",
+                "approval_id": str(manifest.get("approval_id") or ""),
+                "conflict_paths": conflict_paths,
+                "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            }
+
+        updated_state = self.read_state()
+        approved_state = dict(updated_state.get("approved_config") or {})
+        approved_state["status"] = "applied" if apply_result.get("ok") else "failed"
+        approved_state["last_applied_at"] = self._utcnow().isoformat()
+        approved_state["last_apply_receipt_path"] = str(apply_result.get("receipt_path") or "")
+        approved_state["summary"] = str(manifest.get("summary") or "Applied reviewed config.")
+        approved_state["conflict_paths"] = []
+        updated_state["approved_config"] = approved_state
+        updated_state["last_config_apply_receipt"] = dict(apply_result.get("receipt") or {})
+        self.save_state(updated_state)
+        return {
+            "command": "apply-reviewed-config",
+            "ok": True,
+            "status": "applied",
+            "approval_id": str(manifest.get("approval_id") or ""),
+            **apply_result,
+        }
+
+    def _run_reset_loose_baseline(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._refresh_active_run(phase="resetting baseline", detail="Applying loose paper exploration preset.")
+        result = apply_loose_paper_baseline(
+            config_path=args.get("config_path", self.config_path),
+            requested_by=str(args.get("requested_by") or "dashboard"),
+        )
+        state = self.read_state()
+        state["last_config_apply_receipt"] = dict(result.get("receipt") or {})
+        self.save_state(state)
+        return {"command": "reset-loose-baseline", **result}
+
+    def _run_rollback_config(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._refresh_active_run(phase="rolling back config", detail="Restoring previous active config snapshot.")
+        result = rollback_last_config_apply(
+            config_path=args.get("config_path", self.config_path),
+            requested_by=str(args.get("requested_by") or "dashboard"),
+        )
+        state = self.read_state()
+        state["last_config_apply_receipt"] = dict(result.get("receipt") or {})
+        self.save_state(state)
+        return {"command": "rollback-config", **result}
 
     def _run_repo_task(self, args: dict[str, Any]) -> dict[str, Any]:
         command = args.get("command")
@@ -950,6 +1077,165 @@ class CodexAutomationManager:
         schedule["last_run_at"] = weekly_bundle.get("generated_at") or schedule.get("last_run_at")
         schedule["last_result"] = weekly_bundle.get("last_result") or schedule.get("last_result")
 
+    def _refresh_approved_config(self, state: dict[str, Any]) -> None:
+        receipt = load_last_config_apply_receipt(LAST_CONFIG_APPLY_RECEIPT_PATH)
+        state["last_config_apply_receipt"] = dict(receipt or {})
+        settings = self._github_mirror_settings()
+        previous = dict(state.get("approved_config") or {})
+        checked_at = self._utcnow().isoformat()
+        if settings is None:
+            state["approved_config"] = {
+                "enabled": False,
+                "status": "none",
+                "summary": "Reviewed config mirror disabled.",
+                "approval_id": None,
+                "source_type": "",
+                "source_ref": "",
+                "apply_mode": "manual",
+                "base_config_hash": "",
+                "allow_mismatch": False,
+                "restart_required": True,
+                "change_count": 0,
+                "changes": [],
+                "conflict_paths": [],
+                "manifest": {},
+                "last_checked_at": checked_at,
+                "repo_path": "",
+            }
+            return
+
+        approved_root = f"{settings['path']}/approved"
+        manifest_path = f"{approved_root}/{APPROVED_MANIFEST_NAME}"
+        patch_path = f"{approved_root}/{APPROVED_PATCH_NAME}"
+        config_path = f"{approved_root}/{APPROVED_CONFIG_NAME}"
+
+        manifest_fetch = self._github_fetch_repo_json(settings, manifest_path, required=False)
+        if manifest_fetch.get("missing"):
+            state["approved_config"] = {
+                "enabled": True,
+                "status": "none",
+                "summary": "No reviewed config approval is published.",
+                "approval_id": None,
+                "source_type": "",
+                "source_ref": "",
+                "apply_mode": "manual",
+                "base_config_hash": "",
+                "allow_mismatch": False,
+                "restart_required": True,
+                "change_count": 0,
+                "changes": [],
+                "conflict_paths": [],
+                "manifest": {},
+                "last_checked_at": checked_at,
+                "repo_path": approved_root,
+                "manifest_repo_path": manifest_path,
+                "patch_repo_path": patch_path,
+                "approved_config_repo_path": config_path,
+            }
+            return
+        if not manifest_fetch.get("ok"):
+            state["approved_config"] = {
+                "enabled": True,
+                "status": "failed",
+                "summary": f"Failed to read reviewed config manifest: {self._format_github_failure({'path': manifest_path, 'status': manifest_fetch.get('status'), 'error': manifest_fetch.get('error')})}",
+                "approval_id": None,
+                "source_type": "",
+                "source_ref": "",
+                "apply_mode": "manual",
+                "base_config_hash": "",
+                "allow_mismatch": False,
+                "restart_required": True,
+                "change_count": 0,
+                "changes": [],
+                "conflict_paths": [],
+                "manifest": {},
+                "last_checked_at": checked_at,
+                "repo_path": approved_root,
+                "manifest_repo_path": manifest_path,
+                "patch_repo_path": patch_path,
+                "approved_config_repo_path": config_path,
+            }
+            return
+
+        patch_fetch = self._github_fetch_repo_json(settings, patch_path, required=True)
+        if not patch_fetch.get("ok"):
+            state["approved_config"] = {
+                "enabled": True,
+                "status": "failed",
+                "summary": f"Failed to read reviewed config patch: {self._format_github_failure({'path': patch_path, 'status': patch_fetch.get('status'), 'error': patch_fetch.get('error')})}",
+                "approval_id": None,
+                "source_type": "",
+                "source_ref": "",
+                "apply_mode": "manual",
+                "base_config_hash": "",
+                "allow_mismatch": False,
+                "restart_required": True,
+                "change_count": 0,
+                "changes": [],
+                "conflict_paths": [],
+                "manifest": {},
+                "last_checked_at": checked_at,
+                "repo_path": approved_root,
+                "manifest_repo_path": manifest_path,
+                "patch_repo_path": patch_path,
+                "approved_config_repo_path": config_path,
+            }
+            return
+
+        manifest = dict(manifest_fetch.get("data") or {})
+        changes = list(patch_fetch.get("data") or [])
+        approval_id = str(manifest.get("approval_id") or "").strip() or None
+        previous_status = str(previous.get("status") or "none").lower()
+        previous_approval_id = str(previous.get("approval_id") or "").strip() or None
+        status = "pending"
+        conflict_paths = list(previous.get("conflict_paths") or [])
+        if approval_id and str(receipt.get("approval_id") or "") == approval_id and str(receipt.get("action") or "") == "apply_reviewed_config":
+            status = "applied"
+            conflict_paths = []
+        elif approval_id and approval_id == previous_approval_id and previous_status == "conflict":
+            status = "conflict"
+        matched_daily_candidate = approval_id is not None and (
+            (str(manifest.get("source_type") or "") in {"daily_local", "daily_local_candidate"})
+            and str((state.get("daily_local_candidate") or {}).get("candidate_id") or "") == str(manifest.get("source_ref") or "")
+        )
+        state["approved_config"] = {
+            "enabled": True,
+            "status": status,
+            "summary": str(manifest.get("summary") or "Reviewed config approval ready."),
+            "approval_id": approval_id,
+            "source_type": str(manifest.get("source_type") or ""),
+            "source_ref": str(manifest.get("source_ref") or ""),
+            "apply_mode": str(manifest.get("apply_mode") or "manual"),
+            "base_config_hash": str(manifest.get("base_config_hash") or ""),
+            "allow_mismatch": bool(manifest.get("allow_mismatch", False)),
+            "restart_required": bool(manifest.get("restart_required", True)),
+            "change_count": int(manifest.get("change_count") or len(changes)),
+            "changes": changes,
+            "conflict_paths": conflict_paths,
+            "matched_daily_candidate": matched_daily_candidate,
+            "manifest": manifest,
+            "last_checked_at": checked_at,
+            "last_applied_at": previous.get("last_applied_at"),
+            "last_apply_receipt_path": previous.get("last_apply_receipt_path"),
+            "repo_path": approved_root,
+            "manifest_repo_path": manifest_path,
+            "patch_repo_path": patch_path,
+            "approved_config_repo_path": config_path,
+        }
+
+    def _queue_auto_apply_reviewed_config(self, state: dict[str, Any]) -> None:
+        approved = dict(state.get("approved_config") or {})
+        if str(approved.get("status") or "").lower() != "pending":
+            return
+        if str(approved.get("apply_mode") or "manual").lower() != "auto":
+            return
+        self.enqueue_job(
+            "apply_reviewed_config",
+            requested_by="approved-auto",
+            args={"requested_by": "approved-auto"},
+            dedupe=True,
+        )
+
     def _has_recent_daily_success(self, state: dict[str, Any], now: datetime) -> bool:
         schedule = state["schedules"]["daily_research_refresh"]
         last_success = self._parse_dt(schedule.get("last_success_at"))
@@ -960,7 +1246,7 @@ class CodexAutomationManager:
     def _default_state(self) -> dict[str, Any]:
         now = self._utcnow()
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "runner": {
                 "healthy": False,
                 "last_heartbeat_at": None,
@@ -982,6 +1268,31 @@ class CodexAutomationManager:
             "weekly_ai_candidate": {},
             "weekly_review_bundle": {},
             "primary_candidate_source": "none",
+            "approved_config": {
+                "enabled": False,
+                "status": "none",
+                "summary": "Reviewed config mirror disabled.",
+                "approval_id": None,
+                "source_type": "",
+                "source_ref": "",
+                "apply_mode": "manual",
+                "base_config_hash": "",
+                "allow_mismatch": False,
+                "restart_required": True,
+                "change_count": 0,
+                "changes": [],
+                "conflict_paths": [],
+                "manifest": {},
+                "last_checked_at": None,
+                "last_applied_at": None,
+                "last_apply_receipt_path": "",
+                "matched_daily_candidate": False,
+                "repo_path": "",
+                "manifest_repo_path": "",
+                "patch_repo_path": "",
+                "approved_config_repo_path": "",
+            },
+            "last_config_apply_receipt": {},
             "research_controls": {
                 "proposal_aggressiveness_level": 5,
                 "live_aggressiveness_level": 5,
@@ -1035,6 +1346,8 @@ class CodexAutomationManager:
         controls["updated_by"] = str(controls.get("updated_by") or "system")
         base["research_controls"] = controls
         base["daily_local_candidate_details"] = dict(base.get("daily_local_candidate_details") or {})
+        base["approved_config"] = dict(base.get("approved_config") or {})
+        base["last_config_apply_receipt"] = dict(base.get("last_config_apply_receipt") or {})
         for job_type, schedule in base["schedules"].items():
             enabled = bool(schedule.get("schedule_enabled", True))
             if not enabled:
@@ -1114,7 +1427,15 @@ class CodexAutomationManager:
         result_payload: dict[str, Any],
         state: dict[str, Any],
     ) -> dict[str, Any]:
-        if job_type not in {"daily_research_refresh", "tuning_proposal", "promote_candidate", "reject_candidate"}:
+        if job_type not in {
+            "daily_research_refresh",
+            "tuning_proposal",
+            "promote_candidate",
+            "reject_candidate",
+            "apply_reviewed_config",
+            "reset_loose_baseline",
+            "rollback_config",
+        }:
             return {}
         settings = self._github_mirror_settings()
         if settings is None:
@@ -1232,6 +1553,72 @@ class CodexAutomationManager:
             "path": path,
         }
 
+    def _github_fetch_repo_text(
+        self,
+        settings: dict[str, str],
+        repo_path: str,
+        *,
+        required: bool,
+    ) -> dict[str, Any]:
+        api_url = f"https://api.github.com/repos/{settings['repo']}/contents/{repo_path}?ref={settings['branch']}"
+        req = request.Request(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {settings['token']}",
+                "Accept": "application/vnd.github+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urlerror.HTTPError as exc:
+            body = exc.read().decode("utf-8")
+            if exc.code == 404 and not required:
+                return {"ok": True, "missing": True, "path": repo_path}
+            return {"ok": False, "path": repo_path, "status": exc.code, "error": body}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "path": repo_path, "error": str(exc)}
+        content = payload.get("content")
+        encoding = str(payload.get("encoding") or "").lower()
+        if not isinstance(content, str) or not content.strip():
+            return {"ok": False, "path": repo_path, "error": "GitHub response did not include file contents."}
+        try:
+            if encoding == "base64":
+                text = base64.b64decode(content.encode("utf-8")).decode("utf-8")
+            else:
+                text = content
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "path": repo_path, "error": f"Failed to decode GitHub file contents: {exc}"}
+        return {
+            "ok": True,
+            "path": repo_path,
+            "data": text,
+            "sha": payload.get("sha"),
+            "missing": False,
+        }
+
+    def _github_fetch_repo_json(
+        self,
+        settings: dict[str, str],
+        repo_path: str,
+        *,
+        required: bool,
+    ) -> dict[str, Any]:
+        text_result = self._github_fetch_repo_text(settings, repo_path, required=required)
+        if not text_result.get("ok") or text_result.get("missing"):
+            return text_result
+        try:
+            data = json.loads(str(text_result.get("data") or ""))
+        except json.JSONDecodeError as exc:
+            return {
+                "ok": False,
+                "path": repo_path,
+                "error": f"GitHub JSON decode failed: {exc}",
+            }
+        text_result["data"] = data
+        return text_result
+
     def _github_mirror_entries(
         self,
         *,
@@ -1272,6 +1659,7 @@ class CodexAutomationManager:
             entries.append((local_path, repo_path))
 
         add(self.config_path, "config/active_config.yaml")
+        add(LAST_CONFIG_APPLY_RECEIPT_PATH, "config/last_apply_receipt.json")
         add(DEFAULT_POLICY_PATH, "research/runtime_policy.json")
         add(DEFAULT_REPORT_JSON_PATH, "research/research_report.json")
         add(DEFAULT_REPORT_MD_PATH, "research/research_report.md")
@@ -1373,6 +1761,12 @@ class CodexAutomationManager:
             return f"Promoted candidate {payload['result'].get('candidate_id', '')}."
         if job_type == "reject_candidate":
             return f"Rejected candidate {payload['result'].get('candidate_id', '')}."
+        if job_type == "apply_reviewed_config":
+            return f"Applied reviewed config {payload['result'].get('approval_id', '') or 'approval'}."
+        if job_type == "reset_loose_baseline":
+            return "Applied loose paper exploration baseline."
+        if job_type == "rollback_config":
+            return "Rolled back the last applied config snapshot."
         return f"{job_type} completed."
 
     @staticmethod

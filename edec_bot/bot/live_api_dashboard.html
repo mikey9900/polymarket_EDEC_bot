@@ -539,6 +539,17 @@
     font-size: 16px;
     line-height: 1.2;
   }
+  .research-modal-banner {
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border: 1px solid #355289;
+    border-radius: 4px;
+    background: rgba(9, 18, 46, 0.78);
+    color: #ffe3a6;
+    font-size: 12px;
+    letter-spacing: 1px;
+    text-shadow: 0 0 4px rgba(255, 176, 0, 0.25);
+  }
   .research-modal-table {
     width: 100%;
     border-collapse: collapse;
@@ -1249,6 +1260,11 @@
                 <button type="button" class="ctl-btn warn" data-action="research_reset_runner">STOP RESEARCH</button>
                 <button id="btn-research-view" type="button" class="ctl-btn">VIEW CHANGES</button>
               </div>
+              <div class="control-row">
+                <button id="btn-reviewed-apply" type="button" class="ctl-btn" data-action="research_apply_reviewed_config">APPLY REVIEWED</button>
+                <button id="btn-reviewed-baseline" type="button" class="ctl-btn" data-action="research_reset_loose_baseline">RESET BASELINE</button>
+                <button id="btn-reviewed-rollback" type="button" class="ctl-btn warn" data-action="research_rollback_last_config">ROLLBACK LAST</button>
+              </div>
               <div class="control-readout">
                 <div class="readout-pill"><span class="lbl">QUEUE</span><span id="codex-queue">-</span></div>
                 <div class="readout-pill"><span class="lbl">ACTIVE</span><span id="codex-active">-</span></div>
@@ -1257,6 +1273,7 @@
               <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
               <div id="codex-warehouse" class="control-path">WAREHOUSE: -</div>
               <div id="codex-live" class="control-path">LIVE POLICY: -</div>
+              <div id="codex-reviewed" class="control-path">REVIEWED CONFIG: -</div>
             </div>
             <div class="research-side">
               <div class="synth-slider">
@@ -1347,6 +1364,7 @@
         </div>
         <div class="research-modal-summary">
           <div class="research-modal-section-title">SUMMARY</div>
+          <div id="research-modal-approved" class="research-modal-banner" hidden>APPROVED REVIEW PATCH PENDING APPLY.</div>
           <div id="research-modal-summary" class="research-modal-summary-text">No daily local candidate has been generated yet.</div>
         </div>
         <div class="research-modal-table-wrap">
@@ -1692,6 +1710,45 @@
     }
     return { text, state: "pending" };
   }
+  function describeReviewedConfig(codex) {
+    const approved = (codex && codex.approved_config) || {};
+    const receipt = (codex && codex.last_config_apply_receipt) || {};
+    const status = String(approved.status || "none").toLowerCase();
+    const approvalId = String(approved.approval_id || "").trim();
+    const sourceType = String(approved.source_type || "").replaceAll("_", " ").toUpperCase() || "REVIEW";
+    const sourceRef = String(approved.source_ref || "").trim();
+    if (!approved.enabled && status === "none") {
+      return { text: "REVIEWED CONFIG: DATA REPO MIRROR DISABLED.", state: "pending" };
+    }
+    if (status === "none") {
+      return { text: "REVIEWED CONFIG: NO APPROVED PATCH PUBLISHED.", state: "pending" };
+    }
+    if (status === "failed") {
+      return {
+        text: `REVIEWED CONFIG ISSUE: ${String(approved.summary || "FAILED TO READ APPROVAL.").toUpperCase()}`,
+        state: "err",
+      };
+    }
+    if (status === "conflict") {
+      const conflicts = Array.isArray(approved.conflict_paths) ? approved.conflict_paths : [];
+      const suffix = conflicts.length ? ` | CONFLICT ${conflicts.slice(0, 2).join(", ")}` : "";
+      return {
+        text: `REVIEWED CONFIG: ${approvalId || "PENDING"} ${sourceType}${sourceRef ? ` ${sourceRef}` : ""} | CONFLICT${suffix}`.trim(),
+        state: "err",
+      };
+    }
+    if (status === "applied") {
+      const stamp = fmtShortStamp(receipt.applied_at || approved.last_applied_at);
+      return {
+        text: `REVIEWED CONFIG: APPLIED ${approvalId || "APPROVAL"}${stamp !== "—" ? ` | ${stamp}` : ""}`,
+        state: "ready",
+      };
+    }
+    return {
+      text: `REVIEWED CONFIG: ${approvalId || "PENDING"} ${sourceType}${sourceRef ? ` ${sourceRef}` : ""} | ${String(approved.summary || "PENDING APPLY.").toUpperCase()}`.trim(),
+      state: "pending",
+    };
+  }
 
   // ----- Card rendering -----
   function ensureCard(coin) {
@@ -1840,6 +1897,7 @@
   }
   function renderResearchModal(codex) {
     const detail = (codex && codex.daily_local_candidate_details) || {};
+    const approved = (codex && codex.approved_config) || {};
     const data = detail.data || {};
     const changes = Array.isArray(detail.changes) ? detail.changes : [];
     const advisories = Array.isArray(detail.advisories) ? detail.advisories : [];
@@ -1856,6 +1914,14 @@
     setText($("research-modal-pnl"), data.total_pnl == null ? "—" : `$${Number(data.total_pnl).toFixed(4)}`);
     setText($("research-modal-top-changes"), (detail.top_changes || []).join(", ") || "NONE");
     setText($("research-modal-summary"), String(detail.summary || "No daily local candidate has been generated yet."));
+    const approvedBanner = $("research-modal-approved");
+    const reviewedPending = String(approved.status || "").toLowerCase() === "pending" && !!approved.matched_daily_candidate;
+    if (approvedBanner) {
+      approvedBanner.hidden = !reviewedPending;
+      approvedBanner.textContent = reviewedPending
+        ? `APPROVED REVIEW PATCH ${String(approved.approval_id || "").toUpperCase() || "PENDING"} MATCHES THIS DAILY CANDIDATE.`
+        : "";
+    }
     const changeRows = changes.length
       ? `
         <table class="research-modal-table">
@@ -2288,12 +2354,14 @@
     const codexMeta = $("codex-meta");
     const codexWarehouse = $("codex-warehouse");
     const codexLive = $("codex-live");
+    const codexReviewed = $("codex-reviewed");
     const codexStatus = describeCodexRunner(codex);
     const warehouseStatus = describeResearchWarehouse(codex, researchRuntime);
     const researchStatus = describeResearchRuntime(researchRuntime);
+    const reviewedStatus = describeReviewedConfig(codex);
     if (codexLedCluster) {
       codexLedCluster.className = `codex-led-cluster ${codexStatus.state}`;
-      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${warehouseStatus.text}\n${researchStatus.text}`);
+      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${warehouseStatus.text}\n${researchStatus.text}\n${reviewedStatus.text}`);
       if (researchStatus.pulseToken) {
         pulseCodexLed(codexLedCluster, researchStatus.pulseToken);
       } else if (codexStatus.pulseToken) {
@@ -2305,6 +2373,7 @@
     setText(codexMeta, codexStatus.meta);
     setText(codexWarehouse, warehouseStatus.text);
     setText(codexLive, researchStatus.text);
+    setText(codexReviewed, reviewedStatus.text);
     setClassList(codexNote, "ready", codexStatus.noteClass === "ready");
     setClassList(codexNote, "pending", codexStatus.noteClass === "pending");
     setClassList(codexNote, "err", codexStatus.noteClass === "err");
@@ -2313,6 +2382,9 @@
     }
     if (codexLive) {
       codexLive.className = `control-path ${researchStatus.state}`;
+    }
+    if (codexReviewed) {
+      codexReviewed.className = `control-path ${reviewedStatus.state}`;
     }
     setText($("tuner-cadence"), String(tuner.cadence || "—").toUpperCase());
     setText($("tuner-next"), tuner.next_auto_run_at ? String(tuner.next_auto_run_at).slice(5, 16).replace("T", " ") : "—");
@@ -2380,16 +2452,25 @@
       researchControls.live_aggressiveness_level || 5,
       true
     );
+    syncControlButtons(controls);
     setDisabled($("btn-research-view"), false);
     setClassList(
       $("btn-research-view"),
       "active",
       String((dailyCandidateDetails.status || "")).toLowerCase() === "ready"
     );
+    const approvedConfig = codex.approved_config || {};
+    const approvedPending = String(approvedConfig.status || "").toLowerCase() === "pending";
+    const approvedConflict = String(approvedConfig.status || "").toLowerCase() === "conflict";
+    setDisabled($("btn-reviewed-apply"), controlBusy || !approvedPending);
+    setClassList($("btn-reviewed-apply"), "active", approvedPending);
+    setDisabled($("btn-reviewed-baseline"), controlBusy);
+    setClassList($("btn-reviewed-baseline"), "active", false);
+    setDisabled($("btn-reviewed-rollback"), controlBusy);
+    setClassList($("btn-reviewed-rollback"), "active", approvedConflict);
     if (researchModalOpen) {
       renderResearchModal(codex);
     }
-    syncControlButtons(controls);
     if (!controlBusy) {
       const statusText = controls.last_message || "CONTROL LINK STANDBY";
       const statusClass = controls.last_ok == null ? "" : (controls.last_ok ? "ok" : "err");

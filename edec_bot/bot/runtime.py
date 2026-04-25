@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import signal
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from bot.price_feeds import start_all_feeds
 from bot.recovery import (
@@ -263,6 +265,7 @@ class RuntimeCoordinator:
         default_mode: str = "both",
         config_path: str,
         config_hash: str,
+        restart_request_path: str | Path | None = None,
         feed_starter=start_all_feeds,
     ):
         self.config = config
@@ -283,11 +286,17 @@ class RuntimeCoordinator:
         self.default_mode = default_mode
         self.config_path = config_path
         self.config_hash = config_hash
+        self.restart_request_path = Path(restart_request_path) if restart_request_path else None
         self.feed_starter = feed_starter
         self.price_queue: asyncio.Queue = asyncio.Queue()
         self.signal_queue: asyncio.Queue = asyncio.Queue()
         self.feed_pairs = []
         self.tasks: list[asyncio.Task] = []
+        self.restart_requested = False
+        self.restart_request: dict[str, object] = {}
+        self._main_task: asyncio.Task | None = None
+        self._handled_restart_request_id: str | None = None
+        self._shutdown_started = False
 
     async def _loop_lag_monitor(self):
         loop = asyncio.get_running_loop()
@@ -313,6 +322,8 @@ class RuntimeCoordinator:
         for task, _feed in self.feed_pairs:
             self.tasks.append(task)
         self.tasks.append(asyncio.create_task(self._loop_lag_monitor(), name="loop-lag-monitor"))
+        if self.restart_request_path is not None:
+            self.tasks.append(asyncio.create_task(self._restart_request_loop(), name="restart-request"))
         self.tasks.append(asyncio.create_task(self.aggregator.run(self.price_queue), name="aggregator"))
         self.tasks.append(asyncio.create_task(self.scanner.run(), name="scanner"))
         await _warmup_runtime(self.scanner, self.aggregator)
@@ -393,6 +404,54 @@ class RuntimeCoordinator:
             )
         return recovery_summary
 
+    def _consume_restart_request(self, payload: dict[str, object], *, stale_loaded: bool = False) -> None:
+        if self.restart_request_path is not None:
+            try:
+                self.restart_request_path.unlink()
+            except FileNotFoundError:
+                pass
+            except Exception as exc:
+                logger.warning("Failed to clear restart request: %s", exc)
+        request_id = str(payload.get("request_id") or "").strip() or None
+        if request_id:
+            self._handled_restart_request_id = request_id
+        if stale_loaded:
+            logger.info("Cleared stale restart request for already-loaded config hash %s", payload.get("config_hash"))
+            return
+        if self.restart_requested:
+            return
+        self.restart_requested = True
+        self.restart_request = dict(payload or {})
+        logger.info("Runtime restart requested by %s for action %s", payload.get("requested_by"), payload.get("action"))
+        if self._main_task is not None and not self._main_task.done():
+            self._main_task.cancel()
+
+    async def _restart_request_loop(self) -> None:
+        if self.restart_request_path is None:
+            return
+        while True:
+            try:
+                if self.restart_request_path.exists():
+                    payload = json.loads(self.restart_request_path.read_text(encoding="utf-8"))
+                    if isinstance(payload, dict):
+                        request_id = str(payload.get("request_id") or "").strip() or None
+                        if request_id and request_id == self._handled_restart_request_id:
+                            self._consume_restart_request(payload, stale_loaded=True)
+                        elif str(payload.get("config_hash") or "") == str(self.config_hash or ""):
+                            self._consume_restart_request(payload, stale_loaded=True)
+                        else:
+                            self._consume_restart_request(payload)
+                            return
+                await asyncio.sleep(1.0)
+            except asyncio.CancelledError:
+                break
+            except json.JSONDecodeError as exc:
+                logger.warning("Restart request is invalid JSON: %s", exc)
+                await asyncio.sleep(1.0)
+            except Exception as exc:
+                logger.warning("Restart request watcher failed: %s", exc)
+                await asyncio.sleep(1.0)
+
     async def _send_startup_alert(self, recovery_summary: dict[str, int]) -> None:
         coins_str = ", ".join(c.upper() for c in self.config.coins)
         run_type = "Dry Run" if self.config.execution.dry_run else "Wet Run"
@@ -407,6 +466,9 @@ class RuntimeCoordinator:
         )
 
     async def shutdown(self) -> None:
+        if self._shutdown_started:
+            return
+        self._shutdown_started = True
         for _, feed in self.feed_pairs:
             feed.stop()
         self.aggregator.stop()
@@ -423,7 +485,10 @@ class RuntimeCoordinator:
         for result in cleanup_results:
             if isinstance(result, Exception):
                 logger.warning("Network cleanup failed: %s", result)
-        await self.telegram.send_alert("EDEC Bot stopped")
+        if self.restart_requested:
+            await self.telegram.send_alert("EDEC Bot restarting to apply reviewed config.")
+        else:
+            await self.telegram.send_alert("EDEC Bot stopped")
         await self.telegram.stop()
         if self.live_api:
             self.live_api.stop_threaded()
@@ -440,10 +505,11 @@ class RuntimeCoordinator:
         except Exception as exc:
             logger.warning("Final runtime state persistence failed: %s", exc)
 
-    async def run(self) -> None:
+    async def run(self) -> bool:
         loop = asyncio.get_running_loop()
         installed_signal_handlers: tuple = ()
         main_task = asyncio.current_task()
+        self._main_task = main_task
         if main_task is not None:
             installed_signal_handlers = _install_shutdown_signal_handlers(loop, main_task.cancel)
         try:
@@ -452,7 +518,11 @@ class RuntimeCoordinator:
             logger.info("All systems running. Press Ctrl+C to stop.")
             await asyncio.gather(*self.tasks)
         except (KeyboardInterrupt, asyncio.CancelledError):
-            logger.info("Shutdown requested...")
+            if self.restart_requested:
+                logger.info("Restart requested...")
+            else:
+                logger.info("Shutdown requested...")
         finally:
             _remove_shutdown_signal_handlers(loop, installed_signal_handlers)
             await self.shutdown()
+        return self.restart_requested

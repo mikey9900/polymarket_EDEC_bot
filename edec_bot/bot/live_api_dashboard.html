@@ -1263,6 +1263,7 @@
               <div class="control-row">
                 <button id="btn-reviewed-apply" type="button" class="ctl-btn" data-action="research_apply_reviewed_config">APPLY REVIEWED</button>
                 <button id="btn-reviewed-baseline" type="button" class="ctl-btn" data-action="research_reset_loose_baseline">RESET BASELINE</button>
+                <button id="btn-paper-gate" type="button" class="ctl-btn" data-action="research_set_paper_gate" data-value-json="false">TURN GATE OFF</button>
                 <button id="btn-reviewed-rollback" type="button" class="ctl-btn warn" data-action="research_rollback_last_config">ROLLBACK LAST</button>
               </div>
               <div class="control-readout">
@@ -1273,6 +1274,7 @@
               <div id="codex-meta" class="control-path">LAST HEARTBEAT: -</div>
               <div id="codex-warehouse" class="control-path">WAREHOUSE: -</div>
               <div id="codex-live" class="control-path">LIVE POLICY: -</div>
+              <div id="codex-gate" class="control-path">PAPER GATE: -</div>
               <div id="codex-reviewed" class="control-path">REVIEWED CONFIG: -</div>
             </div>
             <div class="research-side">
@@ -1747,6 +1749,21 @@
     return {
       text: `REVIEWED CONFIG: ${approvalId || "PENDING"} ${sourceType}${sourceRef ? ` ${sourceRef}` : ""} | ${String(approved.summary || "PENDING APPLY.").toUpperCase()}`.trim(),
       state: "pending",
+    };
+  }
+  function describePaperGate(codex) {
+    const enabled = codex && typeof codex.paper_gate_enabled === "boolean"
+      ? codex.paper_gate_enabled
+      : null;
+    if (enabled === null) {
+      return { text: "PAPER GATE: UNKNOWN.", state: "pending", enabled: null, buttonLabel: "PAPER GATE", nextValue: false };
+    }
+    return {
+      text: `PAPER GATE: ${enabled ? "ON" : "OFF"}${enabled ? " | CLUSTER BLOCKING ACTIVE." : " | EXPLORATION MODE."}`,
+      state: enabled ? "warn" : "ready",
+      enabled,
+      buttonLabel: enabled ? "TURN GATE OFF" : "TURN GATE ON",
+      nextValue: !enabled,
     };
   }
 
@@ -2354,14 +2371,16 @@
     const codexMeta = $("codex-meta");
     const codexWarehouse = $("codex-warehouse");
     const codexLive = $("codex-live");
+    const codexGate = $("codex-gate");
     const codexReviewed = $("codex-reviewed");
     const codexStatus = describeCodexRunner(codex);
     const warehouseStatus = describeResearchWarehouse(codex, researchRuntime);
     const researchStatus = describeResearchRuntime(researchRuntime);
+    const paperGateStatus = describePaperGate(codex);
     const reviewedStatus = describeReviewedConfig(codex);
     if (codexLedCluster) {
       codexLedCluster.className = `codex-led-cluster ${codexStatus.state}`;
-      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${warehouseStatus.text}\n${researchStatus.text}\n${reviewedStatus.text}`);
+      setAttr(codexLedCluster, "title", `${codexStatus.note}\n${codexStatus.meta}\n${warehouseStatus.text}\n${researchStatus.text}\n${paperGateStatus.text}\n${reviewedStatus.text}`);
       if (researchStatus.pulseToken) {
         pulseCodexLed(codexLedCluster, researchStatus.pulseToken);
       } else if (codexStatus.pulseToken) {
@@ -2373,6 +2392,7 @@
     setText(codexMeta, codexStatus.meta);
     setText(codexWarehouse, warehouseStatus.text);
     setText(codexLive, researchStatus.text);
+    setText(codexGate, paperGateStatus.text);
     setText(codexReviewed, reviewedStatus.text);
     setClassList(codexNote, "ready", codexStatus.noteClass === "ready");
     setClassList(codexNote, "pending", codexStatus.noteClass === "pending");
@@ -2382,6 +2402,9 @@
     }
     if (codexLive) {
       codexLive.className = `control-path ${researchStatus.state}`;
+    }
+    if (codexGate) {
+      codexGate.className = `control-path ${paperGateStatus.state}`;
     }
     if (codexReviewed) {
       codexReviewed.className = `control-path ${reviewedStatus.state}`;
@@ -2466,6 +2489,14 @@
     setClassList($("btn-reviewed-apply"), "active", approvedPending);
     setDisabled($("btn-reviewed-baseline"), controlBusy);
     setClassList($("btn-reviewed-baseline"), "active", false);
+    const paperGateBtn = $("btn-paper-gate");
+    if (paperGateBtn) {
+      paperGateBtn.textContent = paperGateStatus.buttonLabel;
+      paperGateBtn.setAttribute("data-value-json", JSON.stringify(paperGateStatus.nextValue));
+      setDisabled(paperGateBtn, controlBusy || paperGateStatus.enabled == null);
+      setClassList(paperGateBtn, "active", !!paperGateStatus.enabled);
+      setClassList(paperGateBtn, "warn", !!paperGateStatus.enabled);
+    }
     setDisabled($("btn-reviewed-rollback"), controlBusy);
     setClassList($("btn-reviewed-rollback"), "active", approvedConflict);
     if (researchModalOpen) {

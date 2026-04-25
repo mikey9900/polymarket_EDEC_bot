@@ -113,6 +113,26 @@ class ConfigApplyTests(unittest.TestCase):
         self.assertEqual(rolled_back["single_leg"]["entry_min"], tightened["single_leg"]["entry_min"])
         self.assertEqual(rolled_back["lead_lag"]["min_entry"], tightened["lead_lag"]["min_entry"])
 
+    def test_set_paper_gate_enabled_preserves_unrelated_settings(self):
+        before = config_apply._load_yaml(self.config_path)
+
+        with self._patch_apply_paths():
+            result = config_apply.set_paper_gate_enabled(
+                False,
+                config_path=self.config_path,
+                requested_by="test",
+            )
+
+        after = config_apply._load_yaml(self.config_path)
+
+        self.assertTrue(result["ok"])
+        self.assertFalse(after["research"]["paper_gate_enabled"])
+        self.assertEqual(after["single_leg"]["entry_min"], before["single_leg"]["entry_min"])
+        self.assertEqual(after["lead_lag"]["min_entry"], before["lead_lag"]["min_entry"])
+        self.assertTrue(self.restart_request_path.exists())
+        self.assertTrue(self.last_receipt_path.exists())
+        self.assertTrue(Path(result["receipt_path"]).exists())
+
     def test_publish_reviewed_config_writes_approval_artifacts(self):
         reviewed_config = config_apply._load_yaml(self.config_path)
         reviewed_config["single_leg"]["entry_max"] = 0.61

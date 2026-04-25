@@ -26,6 +26,7 @@ class _FakeDashboardState:
                     "research_reset_runner": True,
                     "research_set_proposal_aggressiveness": True,
                     "research_set_live_aggressiveness": True,
+                    "research_set_paper_gate": True,
                     "research_apply_reviewed_config": True,
                     "research_reset_loose_baseline": True,
                     "research_rollback_last_config": True,
@@ -97,6 +98,7 @@ class _FakeDashboardState:
                     "updated_at": "2026-04-22T12:05:00+00:00",
                     "updated_by": "dashboard",
                 },
+                "paper_gate_enabled": True,
                 "approved_config": {
                     "enabled": True,
                     "status": "pending",
@@ -189,6 +191,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('data-action="research_reset_runner"', html)
         self.assertIn('data-action="research_apply_reviewed_config"', html)
         self.assertIn('data-action="research_reset_loose_baseline"', html)
+        self.assertIn('data-action="research_set_paper_gate"', html)
         self.assertIn('data-action="research_rollback_last_config"', html)
         self.assertIn('data-action="research_set_proposal_aggressiveness" data-value="10"', html)
         self.assertIn('data-action="research_set_live_aggressiveness" data-value="10"', html)
@@ -204,6 +207,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('VIEW CHANGES', html)
         self.assertIn('APPLY REVIEWED', html)
         self.assertIn('RESET BASELINE', html)
+        self.assertIn('TURN GATE OFF', html)
         self.assertIn('ROLLBACK LAST', html)
         self.assertIn('PROMOTE', html)
         self.assertIn('REJECT', html)
@@ -235,6 +239,7 @@ class LiveApiServerTests(unittest.TestCase):
         self.assertIn('id="codex-meta"', html)
         self.assertIn('id="codex-warehouse"', html)
         self.assertIn('id="codex-reviewed"', html)
+        self.assertIn('id="codex-gate"', html)
         self.assertIn('data-modal-close="research"', html)
         self.assertNotIn('data-action="tuner_skip_next"', html)
         self.assertNotIn('data-action="tuner_promote_latest"', html)

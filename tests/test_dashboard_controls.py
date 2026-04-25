@@ -165,6 +165,7 @@ class _FakeCodexManager:
         self.skip_next = False
         self.proposal_level = 5
         self.live_level = 5
+        self.paper_gate_enabled = True
 
     def snapshot(self):
         return {
@@ -267,6 +268,7 @@ class _FakeCodexManager:
                     "updated_at": "2026-04-22T12:05:00+00:00",
                     "updated_by": "dashboard",
                 },
+                "paper_gate_enabled": self.paper_gate_enabled,
                 "approved_config": {
                     "enabled": True,
                     "status": "pending",
@@ -359,6 +361,11 @@ class _FakeCodexManager:
         self.calls.append(("research_set_live_aggressiveness", requested_by, level))
         self.live_level = int(level)
         return {"ok": True, "level": self.live_level, "message": f"Live aggressiveness set to {self.live_level}."}
+
+    def enqueue_set_paper_gate(self, enabled, *, requested_by="dashboard"):
+        self.calls.append(("research_set_paper_gate", requested_by, bool(enabled)))
+        self.paper_gate_enabled = bool(enabled)
+        return {"queued": True}
 
     def enqueue_apply_reviewed_config(self, *, requested_by: str = "dashboard"):
         self.calls.append(("research_apply_reviewed_config", requested_by))
@@ -462,6 +469,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["codex"]["primary_candidate_source"], "weekly_ai")
         self.assertEqual(snapshot["codex"]["daily_research_metrics"]["fill_flow_rows"], 4)
         self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 5)
+        self.assertTrue(snapshot["codex"]["paper_gate_enabled"])
         self.assertEqual(snapshot["codex"]["daily_local_candidate_details"]["candidate_id"], "local-1")
         self.assertEqual(snapshot["research_runtime"]["reload_count"], 3)
         self.assertEqual(snapshot["research_runtime"]["cluster_count"], 12)
@@ -476,6 +484,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_runner"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_set_proposal_aggressiveness"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_set_live_aggressiveness"])
+        self.assertTrue(snapshot["controls"]["available_actions"]["research_set_paper_gate"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_apply_reviewed_config"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_reset_loose_baseline"])
         self.assertTrue(snapshot["controls"]["available_actions"]["research_rollback_last_config"])
@@ -580,6 +589,7 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
 
         proposal_result = await service._apply_control_async("research_set_proposal_aggressiveness", 8)
         live_result = await service._apply_control_async("research_set_live_aggressiveness", 7)
+        gate_result = await service._apply_control_async("research_set_paper_gate", False)
         reviewed_apply = await service._apply_control_async("research_apply_reviewed_config")
         baseline_result = await service._apply_control_async("research_reset_loose_baseline")
         rollback_result = await service._apply_control_async("research_rollback_last_config")
@@ -588,9 +598,11 @@ class DashboardControlTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(proposal_result["ok"])
         self.assertTrue(live_result["ok"])
+        self.assertTrue(gate_result["ok"])
         self.assertEqual(service.tracker.get_runtime_context()["research_live_aggressiveness_level"], 7)
         self.assertIn(("research_set_proposal_aggressiveness", "dashboard", 8), service.control_plane.codex_manager.calls)
         self.assertIn(("research_set_live_aggressiveness", "dashboard", 7), service.control_plane.codex_manager.calls)
+        self.assertIn(("research_set_paper_gate", "dashboard", False), service.control_plane.codex_manager.calls)
         self.assertIn(("research_apply_reviewed_config", "dashboard"), service.control_plane.codex_manager.calls)
         self.assertIn(("research_reset_loose_baseline", "dashboard"), service.control_plane.codex_manager.calls)
         self.assertIn(("research_rollback_last_config", "dashboard"), service.control_plane.codex_manager.calls)

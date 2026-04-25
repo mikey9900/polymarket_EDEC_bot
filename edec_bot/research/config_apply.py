@@ -206,6 +206,33 @@ def apply_loose_paper_baseline(
     )
 
 
+def set_paper_gate_enabled(
+    enabled: bool,
+    *,
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    requested_by: str = "dashboard",
+) -> dict[str, Any]:
+    desired = bool(enabled)
+    return apply_reviewed_patch(
+        changes=[
+            {
+                "path": "research.paper_gate_enabled",
+                "recommended": desired,
+                "evidence": "Operator toggled paper gate from the dashboard.",
+            }
+        ],
+        config_path=config_path,
+        action="set_paper_gate",
+        summary=f"Paper gate {'enabled' if desired else 'disabled'}.",
+        source_type="dashboard_toggle",
+        source_ref=f"paper_gate_{'enabled' if desired else 'disabled'}",
+        allow_mismatch=True,
+        restart_required=True,
+        requested_by=requested_by,
+        metadata={"paper_gate_enabled": desired},
+    )
+
+
 def rollback_last_config_apply(
     *,
     config_path: str | Path = DEFAULT_CONFIG_PATH,

@@ -91,6 +91,7 @@ class ControlPlane:
             "research_reset_runner": self.codex_manager is not None,
             "research_set_proposal_aggressiveness": self.codex_manager is not None,
             "research_set_live_aggressiveness": self.codex_manager is not None,
+            "research_set_paper_gate": self.codex_manager is not None,
             "research_apply_reviewed_config": self.codex_manager is not None,
             "research_reset_loose_baseline": self.codex_manager is not None,
             "research_rollback_last_config": self.codex_manager is not None,
@@ -249,6 +250,7 @@ class ControlPlane:
             "research_reset_runner",
             "research_set_proposal_aggressiveness",
             "research_set_live_aggressiveness",
+            "research_set_paper_gate",
             "research_apply_reviewed_config",
             "research_reset_loose_baseline",
             "research_rollback_last_config",
@@ -371,6 +373,18 @@ class ControlPlane:
                     "status": 200,
                     "message": str(result.get("message") or "Live aggressiveness updated."),
                 }
+            if action == "research_set_paper_gate":
+                enabled = self._normalize_bool(value)
+                result = self.codex_manager.enqueue_set_paper_gate(enabled, requested_by="dashboard")
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "message": (
+                        f"Paper gate update queued: {'ON' if enabled else 'OFF'}."
+                        if result.get("queued")
+                        else f"Paper gate update already queued: {'ON' if enabled else 'OFF'}."
+                    ),
+                }
             if action == "research_apply_reviewed_config":
                 result = self.codex_manager.enqueue_apply_reviewed_config(requested_by="dashboard")
                 return {
@@ -458,3 +472,16 @@ class ControlPlane:
         context = dict(self.tracker.get_runtime_context() or {})
         context["research_live_aggressiveness_level"] = normalized
         self.tracker.set_runtime_context(context)
+
+    @staticmethod
+    def _normalize_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        text = str(value or "").strip().lower()
+        if text in {"true", "1", "on", "yes", "enable", "enabled"}:
+            return True
+        if text in {"false", "0", "off", "no", "disable", "disabled"}:
+            return False
+        raise ValueError("Paper gate value must be true or false.")

@@ -28,6 +28,7 @@ from .config_apply import (
     apply_reviewed_patch,
     load_last_config_apply_receipt,
     rollback_last_config_apply,
+    set_paper_gate_enabled,
 )
 from .paths import (
     CODEX_LATEST_PATH,
@@ -79,6 +80,7 @@ JOB_TYPES = {
     "reject_candidate",
     "apply_reviewed_config",
     "reset_loose_baseline",
+    "set_paper_gate",
     "rollback_config",
     "repo_task",
 }
@@ -229,6 +231,7 @@ class CodexAutomationManager:
             "weekly_review_bundle": weekly_review_bundle,
             "primary_candidate_source": state.get("primary_candidate_source", "none"),
             "research_controls": research_controls,
+            "paper_gate_enabled": self.paper_gate_enabled(),
             "approved_config": approved_config,
             "last_config_apply_receipt": last_config_apply_receipt,
             "github_mirror": dict(state.get("github_mirror") or {}),
@@ -262,6 +265,7 @@ class CodexAutomationManager:
             "research_reset_runner": True,
             "research_set_proposal_aggressiveness": True,
             "research_set_live_aggressiveness": True,
+            "research_set_paper_gate": True,
             "research_apply_reviewed_config": True,
             "research_reset_loose_baseline": True,
             "research_rollback_last_config": True,
@@ -293,6 +297,24 @@ class CodexAutomationManager:
             level=level,
             requested_by=requested_by,
         )
+
+    def paper_gate_enabled(self) -> bool | None:
+        path = resolve_repo_path(self.config_path)
+        if not path.exists():
+            return None
+        try:
+            payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            return None
+        if not isinstance(payload, dict):
+            return None
+        research = payload.get("research") or {}
+        if not isinstance(research, dict):
+            return None
+        value = research.get("paper_gate_enabled")
+        if value is None:
+            return None
+        return bool(value)
 
     def reset_runner_state(self) -> dict[str, Any]:
         state = self.read_state()
@@ -348,6 +370,13 @@ class CodexAutomationManager:
 
     def enqueue_reset_loose_baseline(self, *, requested_by: str = "dashboard") -> dict[str, Any]:
         return self.enqueue_job("reset_loose_baseline", requested_by=requested_by, args={})
+
+    def enqueue_set_paper_gate(self, enabled: Any, *, requested_by: str = "dashboard") -> dict[str, Any]:
+        return self.enqueue_job(
+            "set_paper_gate",
+            requested_by=requested_by,
+            args={"enabled": bool(enabled), "requested_by": requested_by},
+        )
 
     def enqueue_rollback_config(self, *, requested_by: str = "dashboard") -> dict[str, Any]:
         return self.enqueue_job("rollback_config", requested_by=requested_by, args={})
@@ -619,6 +648,8 @@ class CodexAutomationManager:
             return self._run_apply_reviewed_config(args)
         if job_type == "reset_loose_baseline":
             return self._run_reset_loose_baseline(args)
+        if job_type == "set_paper_gate":
+            return self._run_set_paper_gate(args)
         if job_type == "rollback_config":
             return self._run_rollback_config(args)
         if job_type == "repo_task":
@@ -810,6 +841,22 @@ class CodexAutomationManager:
         state["last_config_apply_receipt"] = dict(result.get("receipt") or {})
         self.save_state(state)
         return {"command": "reset-loose-baseline", **result}
+
+    def _run_set_paper_gate(self, args: dict[str, Any]) -> dict[str, Any]:
+        desired = bool(args.get("enabled"))
+        self._refresh_active_run(
+            phase="updating paper gate",
+            detail=f"{'Enabling' if desired else 'Disabling'} paper gate in active config.",
+        )
+        result = set_paper_gate_enabled(
+            desired,
+            config_path=args.get("config_path", self.config_path),
+            requested_by=str(args.get("requested_by") or "dashboard"),
+        )
+        state = self.read_state()
+        state["last_config_apply_receipt"] = dict(result.get("receipt") or {})
+        self.save_state(state)
+        return {"command": "set-paper-gate", "paper_gate_enabled": desired, **result}
 
     def _run_rollback_config(self, args: dict[str, Any]) -> dict[str, Any]:
         self._refresh_active_run(phase="rolling back config", detail="Restoring previous active config snapshot.")
@@ -1268,6 +1315,7 @@ class CodexAutomationManager:
             "weekly_ai_candidate": {},
             "weekly_review_bundle": {},
             "primary_candidate_source": "none",
+            "paper_gate_enabled": self.paper_gate_enabled(),
             "approved_config": {
                 "enabled": False,
                 "status": "none",
@@ -1346,6 +1394,7 @@ class CodexAutomationManager:
         controls["updated_by"] = str(controls.get("updated_by") or "system")
         base["research_controls"] = controls
         base["daily_local_candidate_details"] = dict(base.get("daily_local_candidate_details") or {})
+        base["paper_gate_enabled"] = self.paper_gate_enabled()
         base["approved_config"] = dict(base.get("approved_config") or {})
         base["last_config_apply_receipt"] = dict(base.get("last_config_apply_receipt") or {})
         for job_type, schedule in base["schedules"].items():
@@ -1434,6 +1483,7 @@ class CodexAutomationManager:
             "reject_candidate",
             "apply_reviewed_config",
             "reset_loose_baseline",
+            "set_paper_gate",
             "rollback_config",
         }:
             return {}
@@ -1765,6 +1815,12 @@ class CodexAutomationManager:
             return f"Applied reviewed config {payload['result'].get('approval_id', '') or 'approval'}."
         if job_type == "reset_loose_baseline":
             return "Applied loose paper exploration baseline."
+        if job_type == "set_paper_gate":
+            return (
+                "Paper gate enabled."
+                if payload["result"].get("paper_gate_enabled")
+                else "Paper gate disabled."
+            )
         if job_type == "rollback_config":
             return "Rolled back the last applied config snapshot."
         return f"{job_type} completed."

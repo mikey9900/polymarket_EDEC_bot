@@ -1,3 +1,4 @@
+import contextlib
 import json
 import shutil
 import sys
@@ -11,6 +12,7 @@ from uuid import uuid4
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "edec_bot"))
 
+from research import config_apply
 from research.codex_automation import CodexAutomationManager
 
 
@@ -31,7 +33,25 @@ class CodexAutomationManagerTests(unittest.TestCase):
             config_path=self.tmpdir / "config_phase_a_single.yaml",
             tuner_state_path=self.tmpdir / "tuner_state.json",
         )
-        self.manager.config_path.write_text("single_leg:\n  min_velocity_30s: 0.12\n", encoding="utf-8")
+        shutil.copyfile(ROOT / "edec_bot" / "config_phase_a_single.yaml", self.manager.config_path)
+        self.history_root = self.tmpdir / "history"
+        self.last_receipt_path = self.tmpdir / "last_apply_receipt.json"
+        self.restart_request_path = self.tmpdir / "restart_request.json"
+
+    def _patch_apply_paths(self):
+        stack = contextlib.ExitStack()
+        stack.enter_context(
+            mock.patch.multiple(
+                config_apply,
+                CONFIG_HISTORY_ROOT=self.history_root,
+                LAST_CONFIG_APPLY_RECEIPT_PATH=self.last_receipt_path,
+                CODEX_RESTART_REQUEST_PATH=self.restart_request_path,
+            )
+        )
+        stack.enter_context(
+            mock.patch("research.codex_automation.LAST_CONFIG_APPLY_RECEIPT_PATH", self.last_receipt_path)
+        )
+        return stack
 
     def test_enqueue_dedupes_same_job_type(self):
         first = self.manager.enqueue_daily_refresh(requested_by="test")
@@ -233,6 +253,7 @@ class CodexAutomationManagerTests(unittest.TestCase):
         snapshot = self.manager.snapshot()
         self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 5)
         self.assertEqual(snapshot["codex"]["research_controls"]["live_aggressiveness_level"], 5)
+        self.assertTrue(snapshot["codex"]["paper_gate_enabled"])
         self.assertEqual(snapshot["codex"]["approved_config"]["status"], "none")
         self.assertEqual(snapshot["codex"]["last_config_apply_receipt"], {})
 
@@ -244,6 +265,19 @@ class CodexAutomationManagerTests(unittest.TestCase):
         self.assertTrue(live["ok"])
         self.assertEqual(snapshot["codex"]["research_controls"]["proposal_aggressiveness_level"], 8)
         self.assertEqual(snapshot["codex"]["research_controls"]["live_aggressiveness_level"], 7)
+
+    def test_enqueue_set_paper_gate_and_run_once_updates_snapshot(self):
+        self.manager.enqueue_set_paper_gate(False, requested_by="test")
+
+        with self._patch_apply_paths():
+            result = self.manager.run_once()
+
+        snapshot = self.manager.snapshot()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["job_type"], "set_paper_gate")
+        self.assertFalse(snapshot["codex"]["paper_gate_enabled"])
+        self.assertEqual(snapshot["codex"]["last_config_apply_receipt"]["action"], "set_paper_gate")
 
     def test_refresh_approved_config_reads_pending_manifest(self):
         state = self.manager.read_state()
@@ -603,11 +637,11 @@ class CodexAutomationManagerTests(unittest.TestCase):
         market_sync.assert_called_once()
         self.assertEqual(market_sync.call_args.kwargs["lookback_days"], 1)
         self.assertEqual(market_sync.call_args.kwargs["max_batches"], 2)
-        self.assertEqual(market_sync.call_args.kwargs["target_coins"], [])
+        self.assertEqual(market_sync.call_args.kwargs["target_coins"], ["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"])
         fill_sync.assert_called_once()
         self.assertEqual(fill_sync.call_args.kwargs["lookback_hours"], 24)
         self.assertEqual(fill_sync.call_args.kwargs["history_lookback_days"], 1)
-        self.assertEqual(fill_sync.call_args.kwargs["target_coins"], [])
+        self.assertEqual(fill_sync.call_args.kwargs["target_coins"], ["btc", "eth", "sol", "xrp", "bnb", "doge", "hype"])
         self.assertEqual(propose.call_args.kwargs["proposal_aggressiveness_level"], 5)
         self.assertEqual(propose.call_args.kwargs["policy_path"], "data/research/runtime_policy.json")
         self.assertEqual(weekly.call_args.kwargs["proposal_aggressiveness_level"], 5)

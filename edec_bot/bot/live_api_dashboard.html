@@ -302,155 +302,64 @@
   }
   .research-side {
     display: flex;
-    gap: 12px;
-    align-items: stretch;
-  }
-  .synth-slider {
-    display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    width: 78px;
-    padding: 10px 10px 8px;
-    border: 1px solid #7f86a0;
-    border-radius: 12px;
-    background: linear-gradient(180deg, #8088a4 0%, #727992 8%, #697087 18%, #555c74 100%);
-    box-shadow:
-      inset 0 2px 0 rgba(255,255,255,0.25),
-      inset 0 -3px 10px rgba(0,0,0,0.32),
-      0 0 12px rgba(0, 240, 255, 0.06);
-    position: relative;
+    gap: 10px;
+    align-items: stretch;
+    min-width: 150px;
   }
-  .synth-slider-label {
+  .research-select-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 10px 12px;
+    border: 1px solid #2a3a64;
+    border-radius: 8px;
+    background: linear-gradient(180deg, rgba(17, 24, 52, 0.95) 0%, rgba(8, 13, 31, 0.95) 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 0 0 1px rgba(0,0,0,0.3);
+  }
+  .research-select-label {
     color: #ffe3a6;
     font-family: "Press Start 2P", "VT323", monospace;
-    font-size: 8px;
+    font-size: 9px;
     letter-spacing: 1px;
-    text-align: center;
-    margin-top: 2px;
+    text-transform: uppercase;
   }
-  .synth-slider-light {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #ffe74c;
-    box-shadow: 0 0 8px rgba(255, 231, 76, 0.85), 0 0 1px 1px rgba(255,255,255,0.4);
-  }
-  .synth-slider-track {
-    position: relative;
-    display: flex;
-    flex-direction: column-reverse;
-    gap: 5px;
-    width: 34px;
-    padding: 10px 0;
-  }
-  .synth-slider-track::before {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 2px;
-    bottom: 2px;
-    width: 12px;
-    transform: translateX(-50%);
-    border-radius: 8px;
-    background: linear-gradient(180deg, #2e3445 0%, #111521 100%);
-    box-shadow: inset 0 1px 2px rgba(255,255,255,0.06), inset 0 -1px 2px rgba(0,0,0,0.55);
-  }
-  .synth-slider-track::after {
-    content: "";
-    position: absolute;
-    left: -13px;
-    top: 4px;
-    bottom: 4px;
-    width: 2px;
-    border-radius: 2px;
-    background: repeating-linear-gradient(
-      to bottom,
-      rgba(255,255,255,0.65) 0 1px,
-      transparent 1px 7px
-    );
-    opacity: 0.65;
-  }
-  .synth-slider-step {
-    position: relative;
-    width: 24px;
-    height: 18px;
-    padding: 0;
-    min-width: 0;
-    border-radius: 4px;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-    font-size: 0;
-    line-height: 0;
-  }
-  .synth-slider-step::before {
-    content: "";
-    position: absolute;
-    right: -18px;
-    top: 50%;
-    width: 12px;
-    height: 5px;
-    transform: translateY(-50%);
-    border-radius: 999px;
-    box-shadow: 0 0 6px rgba(0,0,0,0.22);
-  }
-  .synth-slider-step::after {
-    content: "";
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: 12px;
-    height: 5px;
-    transform: translate(-50%, -50%);
-    border-radius: 999px;
-    background: #2b3142;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 0 1px rgba(17,21,31,0.45);
-  }
-  .synth-slider-step:nth-child(1)::before,
-  .synth-slider-step:nth-child(2)::before,
-  .synth-slider-step:nth-child(3)::before,
-  .synth-slider-step:nth-child(4)::before,
-  .synth-slider-step:nth-child(5)::before {
-    background: #32ea37;
-    box-shadow: 0 0 8px rgba(50, 234, 55, 0.5);
-  }
-  .synth-slider-step:nth-child(6)::before,
-  .synth-slider-step:nth-child(7)::before {
-    background: #cfff2d;
-    box-shadow: 0 0 8px rgba(207, 255, 45, 0.45);
-  }
-  .synth-slider-step:nth-child(8)::before {
-    background: #ffc247;
-    box-shadow: 0 0 8px rgba(255, 194, 71, 0.45);
-  }
-  .synth-slider-step:nth-child(9)::before {
-    background: #ff8b54;
-    box-shadow: 0 0 8px rgba(255, 139, 84, 0.45);
-  }
-  .synth-slider-step:nth-child(10)::before {
-    background: #ff5151;
-    box-shadow: 0 0 8px rgba(255, 81, 81, 0.45);
-  }
-  .synth-slider-step.active::after {
-    width: 30px;
-    height: 17px;
-    border-radius: 4px;
+  .research-select-input {
+    min-width: 64px;
+    padding: 6px 26px 6px 10px;
+    border: 1px solid #4e6bb0;
+    border-radius: 6px;
     background:
-      linear-gradient(180deg, rgba(255,255,255,0.85) 0 6%, transparent 6% 94%, rgba(0,0,0,0.25) 94% 100%),
-      linear-gradient(180deg, #cfd3dd 0%, #7d8597 45%, #afb4c0 55%, #646b7f 100%);
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.6),
-      inset 0 -1px 0 rgba(0,0,0,0.25),
-      0 1px 0 rgba(0,0,0,0.45),
-      0 2px 8px rgba(0,0,0,0.32);
+      linear-gradient(180deg, rgba(19, 30, 66, 0.98) 0%, rgba(8, 13, 31, 0.98) 100%);
+    color: var(--neon-cyan);
+    font-family: "Press Start 2P", "VT323", monospace;
+    font-size: 10px;
+    line-height: 1.2;
+    text-align: center;
+    text-align-last: center;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 8px rgba(0, 240, 255, 0.08);
+    appearance: none;
+    -webkit-appearance: none;
+    cursor: pointer;
   }
-  .synth-slider-step.active.warn::after {
-    box-shadow:
-      inset 0 1px 0 rgba(255,255,255,0.6),
-      inset 0 -1px 0 rgba(0,0,0,0.25),
-      0 1px 0 rgba(0,0,0,0.45),
-      0 0 10px rgba(255,176,0,0.22);
+  .research-select-input.warn {
+    border-color: #8a6a2d;
+    color: #ffe3a6;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 0 8px rgba(255, 176, 0, 0.08);
+  }
+  .research-select-input:focus {
+    outline: none;
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 0 1px rgba(0,240,255,0.25), 0 0 10px rgba(0,240,255,0.15);
+  }
+  .research-select-input.warn:focus {
+    border-color: #ffc247;
+    box-shadow: 0 0 0 1px rgba(255,194,71,0.25), 0 0 10px rgba(255,194,71,0.15);
+  }
+  .research-select-input:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
   }
   .research-modal-overlay {
     position: fixed;
@@ -1278,38 +1187,36 @@
               <div id="codex-reviewed" class="control-path">REVIEWED CONFIG: -</div>
             </div>
             <div class="research-side">
-              <div class="synth-slider">
-                <div class="synth-slider-light" aria-hidden="true"></div>
-                <div class="synth-slider-label">PROPOSE</div>
-                <div id="proposal-aggr-slider" class="synth-slider-track">
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="1">1</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="2">2</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="3">3</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="4">4</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="5">5</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="6">6</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="7">7</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="8">8</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="9">9</button>
-                  <button type="button" class="ctl-btn synth-slider-step" data-action="research_set_proposal_aggressiveness" data-value="10">10</button>
-                </div>
-              </div>
-              <div class="synth-slider">
-                <div class="synth-slider-light" aria-hidden="true"></div>
-                <div class="synth-slider-label">LIVE</div>
-                <div id="live-aggr-slider" class="synth-slider-track">
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="1">1</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="2">2</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="3">3</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="4">4</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="5">5</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="6">6</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="7">7</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="8">8</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="9">9</button>
-                  <button type="button" class="ctl-btn synth-slider-step warn" data-action="research_set_live_aggressiveness" data-value="10">10</button>
-                </div>
-              </div>
+              <label class="research-select-row" for="proposal-aggr-select">
+                <span class="research-select-label">PROPOSE</span>
+                <select id="proposal-aggr-select" class="research-select-input" data-action="research_set_proposal_aggressiveness" aria-label="Proposal aggressiveness">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                </select>
+              </label>
+              <label class="research-select-row" for="live-aggr-select">
+                <span class="research-select-label">LIVE</span>
+                <select id="live-aggr-select" class="research-select-input warn" data-action="research_set_live_aggressiveness" aria-label="Live aggressiveness">
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                  <option value="4">4</option>
+                  <option value="5">5</option>
+                  <option value="6">6</option>
+                  <option value="7">7</option>
+                  <option value="8">8</option>
+                  <option value="9">9</option>
+                  <option value="10">10</option>
+                </select>
+              </label>
             </div>
           </div>
         </div>
@@ -1880,6 +1787,9 @@
         return null;
       }
     }
+    if (String(target.tagName || "").toUpperCase() === "SELECT") {
+      return target.value;
+    }
     return target.getAttribute("data-value");
   }
   function openResearchModal() {
@@ -1899,18 +1809,13 @@
       overlay.setAttribute("aria-hidden", "true");
     }
   }
-  function renderResearchSlider(groupId, action, level, warn) {
+  function renderResearchSelect(selectId, level, warn) {
     const levelNum = Math.max(1, Math.min(10, Number(level || 5)));
-    const track = $(groupId);
-    setAttr(track, "data-level", String(levelNum));
-    document.querySelectorAll(`#${groupId} .synth-slider-step`).forEach((btn) => {
-      const active = Number(btn.dataset.value || 0) === levelNum;
-      setClassList(btn, "active", active);
-      setClassList(btn, "warn", !!warn);
-      btn.dataset.action = action;
-      setAttr(btn, "aria-pressed", active ? "true" : "false");
-      setAttr(btn, "title", `${warn ? "Live" : "Propose"} aggressiveness ${btn.dataset.value}`);
-    });
+    const select = $(selectId);
+    if (!select) return;
+    select.value = String(levelNum);
+    setAttr(select, "data-selected-level", String(levelNum));
+    setAttr(select, "title", `${warn ? "Live" : "Propose"} aggressiveness ${levelNum}`);
   }
   function renderResearchModal(codex) {
     const detail = (codex && codex.daily_local_candidate_details) || {};
@@ -1999,6 +1904,15 @@
       event.preventDefault();
       openResearchModal();
     });
+    document.querySelectorAll(".research-select-input[data-action]").forEach((select) => {
+      select.addEventListener("change", (event) => {
+        const target = event.currentTarget;
+        sendControl(
+          target.getAttribute("data-action"),
+          controlValue(target)
+        );
+      });
+    });
     document.addEventListener("click", (event) => {
       const closeBtn = event.target.closest("[data-modal-close='research']");
       if (closeBtn) {
@@ -2025,6 +1939,12 @@
       const enabled = available[action] !== false;
       setDisabled(btn, controlBusy || !enabled);
       setClassList(btn, "unavailable", !enabled);
+    });
+    document.querySelectorAll(".research-select-input[data-action]").forEach((select) => {
+      const action = select.dataset.action;
+      const enabled = available[action] !== false;
+      setDisabled(select, controlBusy || !enabled);
+      setClassList(select, "unavailable", !enabled);
     });
   }
 
@@ -2463,18 +2383,8 @@
     setClassList($("btn-tuner-resume"), "active", tuner.schedule_enabled !== false);
     setClassList($("btn-tuner-weekly"), "active", tuner.cadence === "weekly");
     setClassList($("btn-tuner-manual"), "active", tuner.cadence === "manual");
-    renderResearchSlider(
-      "proposal-aggr-slider",
-      "research_set_proposal_aggressiveness",
-      researchControls.proposal_aggressiveness_level || 5,
-      false
-    );
-    renderResearchSlider(
-      "live-aggr-slider",
-      "research_set_live_aggressiveness",
-      researchControls.live_aggressiveness_level || 5,
-      true
-    );
+    renderResearchSelect("proposal-aggr-select", researchControls.proposal_aggressiveness_level || 5, false);
+    renderResearchSelect("live-aggr-select", researchControls.live_aggressiveness_level || 5, true);
     syncControlButtons(controls);
     setDisabled($("btn-research-view"), false);
     setClassList(

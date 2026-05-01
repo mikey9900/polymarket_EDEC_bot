@@ -369,6 +369,7 @@ def _build_live_filter_overrides(
 def build_weekly_ai_context(
     *,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
     context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
     report_json_path: str | Path = DEFAULT_REPORT_JSON_PATH,
@@ -389,6 +390,7 @@ def build_weekly_ai_context(
         current_config,
         window_days=window_days,
         aggressiveness=aggressiveness,
+        tracker_db_path=tracker_db_path,
     )
     payload = {
         "generated_at": now.isoformat(),
@@ -433,6 +435,7 @@ def build_weekly_ai_context(
 def build_weekly_review_bundle(
     *,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
     context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
     bundle_json_path: str | Path = WEEKLY_REVIEW_BUNDLE_JSON_PATH,
@@ -442,6 +445,7 @@ def build_weekly_review_bundle(
     ensure_tuner_dirs()
     build_weekly_ai_context(
         config_path=config_path,
+        tracker_db_path=tracker_db_path,
         tuner_state_path=tuner_state_path,
         context_path=context_path,
     )
@@ -531,6 +535,7 @@ def build_weekly_review_bundle(
 def propose_weekly_ai_tuning(
     *,
     config_path: str | Path = DEFAULT_CONFIG_PATH,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
     tuner_state_path: str | Path = TUNER_STATE_PATH,
     context_path: str | Path = WEEKLY_AI_CONTEXT_PATH,
     report_json_path: str | Path = WEEKLY_AI_REPORT_JSON_PATH,
@@ -569,6 +574,7 @@ def propose_weekly_ai_tuning(
 
     build_weekly_ai_context(
         config_path=config_path,
+        tracker_db_path=tracker_db_path,
         tuner_state_path=tuner_state_path,
         context_path=context_path,
     )
@@ -1222,6 +1228,18 @@ def _analyze_session_exports(trades_path: Path, signals_path: Path) -> dict[str,
 
 
 def _analyze_tracker_db(db_path: Path) -> dict[str, Any]:
+    trades_rows, signal_rows = _load_tracker_rows(db_path)
+    trades = _serialize_tracker_trades(trades_rows)
+    signals = _serialize_tracker_signals(signal_rows)
+    latest_ts = max(
+        [str(item.get("ts") or "") for item in trades] + [str(item.get("ts") or "") for item in signals],
+        default="",
+    )
+    folder_ts = latest_ts or f"tracker_db:{db_path.name}"
+    return _analyze_rows(trades, signals, folder_ts=folder_ts)
+
+
+def _load_tracker_rows(db_path: Path) -> tuple[list[sqlite3.Row], list[sqlite3.Row]]:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -1273,8 +1291,11 @@ def _analyze_tracker_db(db_path: Path) -> dict[str, Any]:
         ).fetchall()
     finally:
         conn.close()
+    return list(trades_rows), list(signal_rows)
 
-    trades = [
+
+def _serialize_tracker_trades(trades_rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [
         {
             "ts": row["timestamp"],
             "c": row["coin"],
@@ -1291,7 +1312,10 @@ def _analyze_tracker_db(db_path: Path) -> dict[str, Any]:
         }
         for row in trades_rows
     ]
-    signals = [
+
+
+def _serialize_tracker_signals(signal_rows: list[sqlite3.Row]) -> list[dict[str, Any]]:
+    return [
         {
             "ts": row["timestamp"],
             "c": row["coin"],
@@ -1310,12 +1334,6 @@ def _analyze_tracker_db(db_path: Path) -> dict[str, Any]:
         }
         for row in signal_rows
     ]
-    latest_ts = max(
-        [str(item.get("ts") or "") for item in trades] + [str(item.get("ts") or "") for item in signals],
-        default="",
-    )
-    folder_ts = latest_ts or f"tracker_db:{db_path.name}"
-    return _analyze_rows(trades, signals, folder_ts=folder_ts)
 
 
 def _tracker_reset_at(conn: sqlite3.Connection) -> str:
@@ -1790,10 +1808,16 @@ def _build_daily_snapshots(
     *,
     window_days: int,
     aggressiveness: ProposalAggressivenessProfile,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     bundles = _discover_session_bundles()
     if not bundles:
-        return [], []
+        return _build_tracker_daily_snapshots(
+            current_config,
+            window_days=window_days,
+            aggressiveness=aggressiveness,
+            tracker_db_path=tracker_db_path,
+        )
     now = _utcnow()
     day_cutoff = now.date() - timedelta(days=max(int(window_days) - 1, 0))
     grouped: dict[str, dict[str, Any]] = {}
@@ -1851,7 +1875,104 @@ def _build_daily_snapshots(
     selected_export_ids = {export_id for snap in snapshots for export_id in snap["export_refs"]}
     raw_refs = [item for item in raw_refs if item["export_id"] in selected_export_ids]
     raw_refs.sort(key=lambda item: item["export_id"], reverse=True)
+    if snapshots:
+        return snapshots, raw_refs
+    return _build_tracker_daily_snapshots(
+        current_config,
+        window_days=window_days,
+        aggressiveness=aggressiveness,
+        tracker_db_path=tracker_db_path,
+    )
+
+
+def _build_tracker_daily_snapshots(
+    current_config: dict[str, Any],
+    *,
+    window_days: int,
+    aggressiveness: ProposalAggressivenessProfile,
+    tracker_db_path: str | Path = LOCAL_TRACKER_DB,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    tracker_path = resolve_repo_path(tracker_db_path)
+    if not tracker_path.exists():
+        return [], []
+    try:
+        trades_rows, signal_rows = _load_tracker_rows(tracker_path)
+    except sqlite3.DatabaseError:
+        return [], []
+    trades = _serialize_tracker_trades(trades_rows)
+    signals = _serialize_tracker_signals(signal_rows)
+    if not trades and not signals:
+        return [], []
+
+    now = _utcnow()
+    day_cutoff = now.date() - timedelta(days=max(int(window_days) - 1, 0))
+    grouped_trades: dict[str, list[dict[str, Any]]] = {}
+    grouped_signals: dict[str, list[dict[str, Any]]] = {}
+
+    for row in trades:
+        day_key = _timestamp_day_key(row.get("ts"))
+        if not day_key or day_key < day_cutoff.isoformat():
+            continue
+        grouped_trades.setdefault(day_key, []).append(row)
+    for row in signals:
+        day_key = _timestamp_day_key(row.get("ts"))
+        if not day_key or day_key < day_cutoff.isoformat():
+            continue
+        grouped_signals.setdefault(day_key, []).append(row)
+
+    day_keys = sorted(set(grouped_trades) | set(grouped_signals), reverse=True)[: int(window_days)]
+    snapshots: list[dict[str, Any]] = []
+    raw_refs: list[dict[str, Any]] = []
+    for day in day_keys:
+        analysis = _analyze_rows(
+            list(grouped_trades.get(day) or []),
+            list(grouped_signals.get(day) or []),
+            folder_ts=f"tracker_day:{day}",
+        )
+        candidate_config = _deep_copy(current_config)
+        changes, advisories, _ = _recommend_changes(candidate_config, analysis, aggressiveness=aggressiveness)
+        export_id = f"tracker_day:{day}"
+        closed = int(analysis["overall"].get("closed") or 0)
+        wins = int(analysis["overall"].get("wins") or 0)
+        snapshots.append(
+            {
+                "day": day,
+                "export_count": 1,
+                "closed_trade_count": closed,
+                "win_pct": _pct(wins, closed),
+                "total_pnl": round(float(analysis["overall"].get("total_pnl") or 0.0), 4),
+                "top_advisories": _unique_trim(advisories[:3], limit=3),
+                "top_changed_params": _unique_trim([change.path for change in changes[:3]], limit=5),
+                "export_refs": [export_id],
+            }
+        )
+        raw_refs.append(
+            {
+                "export_id": export_id,
+                "bundle_day": day,
+                "closed_trade_count": closed,
+                "signal_count": int((analysis.get("filter_analysis") or {}).get("total_signals") or 0),
+                "win_pct": float(analysis["overall"].get("win_pct") or 0.0),
+                "total_pnl": float(analysis["overall"].get("total_pnl") or 0.0),
+                "coins": [
+                    key
+                    for key in sorted((analysis["advisory_groups"]["by_coin"] or {}).keys())
+                    if key and key != "null"
+                ],
+                "strategies": [
+                    key
+                    for key in sorted((analysis["advisory_groups"]["by_strategy"] or {}).keys())
+                    if key and key != "null"
+                ],
+                "source": "tracker_db",
+            }
+        )
     return snapshots, raw_refs
+
+
+def _timestamp_day_key(value: Any) -> str:
+    text = str(value or "").strip()
+    return text[:10] if len(text) >= 10 else ""
 
 
 def _build_export_ref_payload(bundle: SessionBundle, analysis: dict[str, Any]) -> dict[str, Any]:

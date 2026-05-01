@@ -2,6 +2,8 @@ import json
 import shutil
 import sys
 import unittest
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -186,7 +188,11 @@ class ResearchTunerTests(unittest.TestCase):
         self.assertEqual(aggressive_report["aggressiveness"]["proposal_level"], 10)
 
     def test_build_weekly_ai_context_compacts_exports_without_paths(self):
-        with mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]):
+        frozen_now = datetime(2026, 4, 24, 18, 0, tzinfo=timezone.utc)
+        with (
+            mock.patch("research.tuner.discover_session_export_roots", return_value=[self.tmpdir / "github_exports"]),
+            mock.patch("research.tuner._utcnow", return_value=frozen_now),
+        ):
             propose_tuning(
                 config_path=self.config_path,
                 tracker_db_path=self.tmpdir / "missing_decisions.db",
@@ -213,6 +219,138 @@ class ResearchTunerTests(unittest.TestCase):
         self.assertEqual(payload["raw_export_refs"][0]["export_id"], self.export_root.name)
         self.assertNotIn(str(self.tmpdir), json.dumps(payload))
         self.assertNotIn("session_trades.csv", json.dumps(payload))
+
+    def test_build_weekly_ai_context_falls_back_to_tracker_db_daily_snapshots(self):
+        tracker = DecisionTracker(str(self.tracker_db_path))
+        try:
+            tracker.conn.execute(
+                "INSERT OR REPLACE INTO paper_capital (id, total_capital, current_balance, reset_at) VALUES (1, 5000.0, 5000.0, ?)",
+                ("2026-04-20T00:00:00+00:00",),
+            )
+            rows = [
+                (
+                    "2026-04-21T17:00:00+00:00",
+                    "btc-updown-5m-1",
+                    "btc",
+                    "single_leg",
+                    "2026-04-21T17:05:00+00:00",
+                    "TRADE",
+                    0.16,
+                    0.18,
+                    "coin_velocity",
+                    0.57,
+                    "2026-04-21T17:01:00+00:00",
+                    "closed_win",
+                    1.2,
+                    "profit_target",
+                ),
+                (
+                    "2026-04-22T17:00:00+00:00",
+                    "eth-updown-5m-1",
+                    "eth",
+                    "lead_lag",
+                    "2026-04-22T17:05:00+00:00",
+                    "TRADE",
+                    0.14,
+                    0.15,
+                    "depth_check",
+                    0.55,
+                    "2026-04-22T17:01:00+00:00",
+                    "closed_loss",
+                    -0.8,
+                    "loss_cut",
+                ),
+            ]
+            for index, row in enumerate(rows, start=1):
+                (
+                    decision_ts,
+                    slug,
+                    coin,
+                    strategy,
+                    end_ts,
+                    action,
+                    v30,
+                    v60,
+                    filter_failed,
+                    entry_price,
+                    trade_ts,
+                    status,
+                    pnl,
+                    exit_reason,
+                ) = row
+                tracker.conn.execute(
+                    """
+                    INSERT INTO decisions (
+                        timestamp, market_slug, coin, strategy_type, market_end_time,
+                        action, coin_velocity_30s, coin_velocity_60s, filter_failed, entry_price
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision_ts,
+                        slug,
+                        coin,
+                        strategy,
+                        end_ts,
+                        action,
+                        v30,
+                        v60,
+                        filter_failed,
+                        entry_price,
+                    ),
+                )
+                decision_id = tracker.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                tracker.conn.execute(
+                    """
+                    INSERT INTO paper_trades (
+                        decision_id, timestamp, market_slug, coin, strategy_type, side,
+                        entry_price, target_price, shares, cost, fee_total, status, pnl,
+                        exit_reason, depth_ratio, max_bid_seen, mae
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        decision_id,
+                        trade_ts,
+                        slug,
+                        coin,
+                        strategy,
+                        "up",
+                        entry_price,
+                        0.64,
+                        10.0 + index,
+                        5.0 + index,
+                        0.1,
+                        status,
+                        pnl,
+                        exit_reason,
+                        1.2,
+                        0.70,
+                        -0.03,
+                    ),
+                )
+            tracker.conn.commit()
+        finally:
+            tracker.close()
+
+        frozen_now = datetime(2026, 4, 24, 18, 0, tzinfo=timezone.utc)
+        with (
+            mock.patch("research.tuner.discover_session_export_roots", return_value=[]),
+            mock.patch("research.tuner._utcnow", return_value=frozen_now),
+        ):
+            result = build_weekly_ai_context(
+                config_path=self.config_path,
+                tracker_db_path=self.tracker_db_path,
+                tuner_state_path=self.tuner_state_path,
+                context_path=self.weekly_context_path,
+                report_json_path=self.research_report_json_path,
+                window_days=7,
+            )
+
+        self.assertTrue(result["ok"])
+        payload = json.loads(self.weekly_context_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(payload["daily_snapshots"]), 2)
+        self.assertEqual(payload["raw_export_refs"][0]["source"], "tracker_db")
+        self.assertEqual(payload["raw_export_refs"][0]["export_id"], "tracker_day:2026-04-22")
+        self.assertEqual(payload["raw_export_refs"][1]["export_id"], "tracker_day:2026-04-21")
 
     def test_propose_weekly_ai_tuning_builds_candidate_and_becomes_primary(self):
         weekly_payload = {
